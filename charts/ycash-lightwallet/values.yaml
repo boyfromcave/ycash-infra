@@ -82,7 +82,9 @@ web:
 # ---- Envoy Gateway ----------------------------------------------------------------------------
 gateway:
   enabled: true
-  className: eg               # the GatewayClass installed by the Envoy Gateway helm chart
+  className: eg
+  createClass: true           # the Envoy Gateway helm chart installs the controller, not a GatewayClass
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
   host: lite.example.org
   tls:
     mode: certmanager         # certmanager | existing | none

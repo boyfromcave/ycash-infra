@@ -9,6 +9,7 @@ k() { kubectl --context "$CTX" "$@"; }
 
 echo "== Gateway API CRDs + Envoy Gateway $EG_VERSION"
 helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm --version "$EG_VERSION" \
+  --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true \
   --kube-context "$CTX" -n envoy-gateway-system --create-namespace --wait
 echo "== cert-manager $CM_VERSION"
 helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1 || true

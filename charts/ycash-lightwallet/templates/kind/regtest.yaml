@@ -1,6 +1,6 @@
 {{- if .Values.regtest.enabled }}
 {{- $fn := include "yc.fullname" . }}
-{{- $cli := printf "ycash-cli -datadir=/var/lib/ycash -rpcconnect=%s -rpcport=%d -rpcuser=$YCASHD_RPC_USER -rpcpassword=$YCASHD_RPC_PASSWORD" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) }}
+{{- $cli := printf "ycash-cli -conf=/dev/null -regtest -rpcconnect=%s -rpcport=%d -rpcuser=$YCASHD_RPC_USER -rpcpassword=$YCASHD_RPC_PASSWORD" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) }}
 # The chain on kind: mine past coinbase maturity once, then keep one block every few seconds.
 # Both run ycash-cli from the node image against the RPC Service; no wallet state of their own.
 apiVersion: batch/v1

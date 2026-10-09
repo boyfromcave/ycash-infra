@@ -58,6 +58,17 @@ attestor set created on chain, then the node restarted with `-yellowbackattestor
 follows the devnet's `up` recipe and is chunk K0b in the plan; until then the Yellowback service
 answers `GetYellowbackInfo` / `GetVaultInfo` / `ListSets` and the stock services are complete.
 
+### Troubleshooting
+
+- **Every `docker pull` / `kind create` hangs** on macOS in a non-interactive shell: Docker
+  Desktop's keychain credential helper is waiting for a GUI prompt. Run with a credential-free
+  config: `export DOCKER_CONFIG=$(mktemp -d) && echo '{}' > $DOCKER_CONFIG/config.json`.
+- **`helm upgrade` says another operation is in progress**: a previous `kind-up.sh` (`--wait`)
+  is still running or was killed; `helm rollback ycash <last good revision>` or
+  `helm uninstall ycash -n ycash` and run `make kind-up` again.
+- **`YellowbackStreamer` is "unknown service"**: the node only registers `yed_*` once an
+  attestor set exists (K0b); the stock services and the vault reads are unaffected.
+
 ## Promotion to AWS (EKS)
 
 ```bash

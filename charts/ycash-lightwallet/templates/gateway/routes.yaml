@@ -80,7 +80,7 @@ spec:
       name: {{ .Release.Namespace }}/{{ $fn }}/https
       operation:
         op: add
-        path: /default_filter_chain/filters/0/typed_config/http_filters/0
+        path: /filter_chains/0/filters/0/typed_config/http_filters/0
         value:
           name: envoy.filters.http.grpc_web
           typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_web.v3.GrpcWeb }
@@ -88,7 +88,7 @@ spec:
       name: {{ .Release.Namespace }}/{{ $fn }}/https
       operation:
         op: add
-        path: /default_filter_chain/filters/0/typed_config/http_filters/0
+        path: /filter_chains/0/filters/0/typed_config/http_filters/0
         value:
           name: envoy.filters.http.cors
           typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors }

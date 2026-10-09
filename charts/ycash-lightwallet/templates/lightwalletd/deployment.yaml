@@ -18,6 +18,7 @@ spec:
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9068"
+        prometheus.io/path: /metrics
     spec:
       securityContext: { runAsUser: 2002, runAsNonRoot: true, fsGroup: 2002 }
       initContainers:
@@ -47,9 +48,9 @@ spec:
             - { name: http, containerPort: 9068 }
           volumeMounts:
             - { name: cache, mountPath: /var/lib/lightwalletd }
-          # The HTTP status endpoint answers once the cache has caught up with the node's tip.
+          # 9068 serves Prometheus metrics (/metrics); it answers once the server is up.
           readinessProbe:
-            httpGet: { path: /, port: http }
+            httpGet: { path: /metrics, port: http }
             periodSeconds: 5
           livenessProbe:
             tcpSocket: { port: grpc }
