@@ -62,7 +62,9 @@ answers `GetYellowbackInfo` / `GetVaultInfo` / `ListSets` and the stock services
 
 - **Every `docker pull` / `kind create` hangs** on macOS in a non-interactive shell: Docker
   Desktop's keychain credential helper is waiting for a GUI prompt. Run with a credential-free
-  config: `export DOCKER_CONFIG=$(mktemp -d) && echo '{}' > $DOCKER_CONFIG/config.json`.
+  config that keeps the plugins and contexts: `make docker-noauth` prints the `export` line
+  (it writes `~/.docker` minus `credsStore` into a scratch dir and symlinks `cli-plugins`,
+  `contexts` and `buildx` into it).
 - **`helm upgrade` says another operation is in progress**: a previous `kind-up.sh` (`--wait`)
   is still running or was killed; `helm rollback ycash <last good revision>` or
   `helm uninstall ycash -n ycash` and run `make kind-up` again.

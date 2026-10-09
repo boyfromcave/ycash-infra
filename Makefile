@@ -17,7 +17,7 @@ CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
 
-.PHONY: help images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web kind-create kind-load kind-up kind-down kind-smoke kind-load-test eks-deploy lint template
+.PHONY: help docker-noauth images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web kind-create kind-load kind-up kind-down kind-smoke kind-load-test eks-deploy lint template
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -65,6 +65,10 @@ kind-load-test: ## ghz: the node RPC ceiling per method (plan K1)
 eks-deploy: ## helm upgrade --install with values-eks.yaml on CONTEXT (DOMAIN=...)
 	helm upgrade --install $(RELEASE) $(CHART) --kube-context $(CONTEXT) -n $(NAMESPACE) --create-namespace \
 	  -f $(CHART)/values-eks.yaml --set gateway.host=$(DOMAIN)
+
+docker-noauth: ## print an `export DOCKER_CONFIG=...` that bypasses Docker Desktop's hanging keychain helper
+	@d=$${TMPDIR:-/tmp}/docker-noauth; mkdir -p $$d; python3 -c "import json,sys; c=json.load(open('$(HOME)/.docker/config.json')); c.pop('credsStore',None); c['auths']={}; json.dump(c,open('$$d/config.json','w'))"; \
+	for x in cli-plugins contexts buildx; do [ -e $(HOME)/.docker/$$x ] && ln -sfn $(HOME)/.docker/$$x $$d/$$x; done; echo "export DOCKER_CONFIG=$$d"
 
 lint: ## helm lint + kubeconform + go vet
 	helm lint $(CHART) -f $(CHART)/values-kind.yaml
