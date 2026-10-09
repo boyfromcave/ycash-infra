@@ -93,6 +93,7 @@ gateway:
     issuer: ""                # ClusterIssuer name (certmanager mode); "" on kind = a self-signed one this chart creates
     secretName: ""            # existing mode
   plaintextGrpc: true         # a second listener on 9067 without TLS (kind/ghz); off on EKS
+  plaintextGrpcCors: false    # CORS (any origin) on that listener, for a browser wallet served elsewhere (kind only)
   service:
     type: LoadBalancer        # kind: NodePort with the ports kind/kind.yaml maps
     nodePorts: { https: 30443, grpc: 30067 }

@@ -92,4 +92,23 @@ spec:
         value:
           name: envoy.filters.http.cors
           typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors }
+---
+# CORS for a browser page served from another origin (the Vite dev server, wasm-bindgen's test
+# runner) calling the plaintext gRPC listener: dev only (kind, values-kind.yaml). Envoy Gateway
+# 1.3's SecurityPolicy cannot target one listener (`sectionName` is refused), so it targets the
+# gRPC route, which puts the same policy on the HTTPS listener of a kind cluster too. Production
+# never sets it: the web bundle is served from the gateway's own origin, so no CORS is needed.
+{{- if and .Values.gateway.plaintextGrpc .Values.gateway.plaintextGrpcCors }}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata: { name: {{ $fn }}-grpc-cors }
+spec:
+  targetRef: { group: gateway.networking.k8s.io, kind: GRPCRoute, name: {{ $fn }}-grpc }
+  cors:
+    allowOrigins: ["*"]
+    allowMethods: ["POST", "OPTIONS"]
+    allowHeaders: ["*"]
+    exposeHeaders: ["grpc-status", "grpc-message", "grpc-status-details-bin"]
+    maxAge: 24h
+{{- end }}
 {{- end }}

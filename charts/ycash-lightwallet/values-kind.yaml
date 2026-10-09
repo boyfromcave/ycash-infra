@@ -27,6 +27,7 @@ gateway:
   host: localhost
   tls: { mode: certmanager, issuer: "" }
   plaintextGrpc: true
+  plaintextGrpcCors: true     # the yew/web browser tests and the Vite dev server call localhost:9067 cross-origin
   service: { type: NodePort }
   rateLimit: { enabled: true, perIpPerSecond: 500, sendPerIpPerMinute: 600 }
 regtest:
