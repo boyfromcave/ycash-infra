@@ -1,6 +1,9 @@
 {{ .Release.Name }}: {{ .Values.ycashd.replicas }}x ycashd ({{ .Values.ycashd.network }}), {{ .Values.lightwalletd.replicas }}x lightwalletd-dd{{ if .Values.yindex.enabled }}, yindex{{ end }}{{ if .Values.redis.enabled }}, redis{{ end }}, gateway on {{ .Values.gateway.host }}.
 {{- if .Values.regtest.enabled }}
 regtest: the bootstrap job mines {{ .Values.regtest.bootstrapBlocks }} blocks, the miner keeps mining every {{ .Values.regtest.minerIntervalSeconds }}s.
+{{- if .Values.regtest.armYellowback }}
+regtest: job {{ include "yc.fullname" . }}-arm-yellowback creates the YED attestor set, restarts the node with it and rolls lightwalletd (kubectl logs job/{{ include "yc.fullname" . }}-arm-yellowback --all-containers).
+{{- end }}
   ycash-cli: kubectl -n {{ .Release.Namespace }} exec {{ include "yc.fullname" . }}-ycashd-0 -- ycash-cli -datadir=/var/lib/ycash getblockchaininfo
 {{- end }}
 smoke: scripts/smoke.sh https://{{ .Values.gateway.host }}

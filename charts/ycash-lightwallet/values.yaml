@@ -9,12 +9,14 @@ images:
   web:          { repository: ycash/web,          tag: local, pullPolicy: IfNotPresent }
   redis:        { repository: redis,              tag: 7.4-alpine, pullPolicy: IfNotPresent }
   postgres:     { repository: postgres,           tag: 17-alpine, pullPolicy: IfNotPresent }
+  # kind only (regtest.armYellowback): kubectl + curl + jq for the arming Job; v1.37.1 on 2026-10-09
+  kubectl:      { repository: bitnami/kubectl,    tag: latest, pullPolicy: IfNotPresent }
 
 # ---- the node pool ---------------------------------------------------------------------------
 ycashd:
   replicas: 2
   network: mainnet            # mainnet | testnet | regtest
-  extraArgs: ""               # appended verbatim (regtest: "-nuparams=6d5b7a31:1 -yellowbackattestorset=<setid>")
+  extraArgs: ""               # appended verbatim (regtest: "-nuparams=6d5b7a31:1"; the attestor set comes from the arming Job)
   confExtra: ""               # extra ycash.conf lines
   rpc:
     port: 8832                # 18832 for testnet/regtest
@@ -107,6 +109,15 @@ regtest:
   bootstrapBlocks: 200
   minerIntervalSeconds: 5
   rpcNodePort: 30832
+  # Arm YED (the devnet `up` recipe as a Job, templates/kind/arm.yaml): create the YED attestor set
+  # on chain, restart the node with -yellowbackattestorset=<setid>, roll lightwalletd. The set id
+  # lands in ConfigMap <release>-yellowback-set, one attestor key in Secret <release>-yellowback-attestor.
+  armYellowback: false
+  attestorSet:                # the regtest YED constants (ycash6/src/yellowback/params.cpp, the devnet's set_create)
+    seats: 15
+    bondMin: 10               # YEC
+    bondLockMin: 200          # blocks
+    livenessWindow: 1000      # blocks
 
 # ---- observability -----------------------------------------------------------------------------
 monitoring:

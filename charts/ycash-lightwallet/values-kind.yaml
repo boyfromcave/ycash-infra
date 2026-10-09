@@ -34,4 +34,5 @@ regtest:
   activationHeight: 1
   bootstrapBlocks: 200
   minerIntervalSeconds: 5
+  armYellowback: true         # the YED attestor set + the node restart + the lightwalletd roll (K0b)
 monitoring: { serviceMonitor: false }

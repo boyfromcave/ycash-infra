@@ -46,17 +46,21 @@ Prerequisites: Docker Desktop, `kind`, `kubectl`, `helm` (`brew install kind kub
 ```bash
 make images        # ycashd (from ../../ycash6), lightwalletd-dd (from ../../lightwalletd-dd), yindex, web
 make kind-up       # cluster + Envoy Gateway + cert-manager + the chart with values-kind.yaml
-make kind-smoke    # GetLightdInfo / GetYellowbackInfo / GetVaultInfo through the gateway over TLS
+make kind-smoke    # GetLightdInfo / GetYellowbackInfo / GetVaultInfo / GetChainInfo / ListSets through the gateway over TLS
 make kind-load     # ghz against the gateway: the node's RPC ceiling per method (plan K1)
 make kind-down
 ```
 
 The kind overlay runs one regtest `ycashd` with the vault upgrade active from height 1
 (`-nuparams=6d5b7a31:1`), a bootstrap Job that mines the chain past coinbase maturity, and a
-miner Deployment that keeps mining one block every few seconds. Arming YED on regtest (an
-attestor set created on chain, then the node restarted with `-yellowbackattestorset=<setid>`)
-follows the devnet's `up` recipe and is chunk K0b in the plan; until then the Yellowback service
-answers `GetYellowbackInfo` / `GetVaultInfo` / `ListSets` and the stock services are complete.
+miner Deployment that keeps mining one block every few seconds, and (`regtest.armYellowback`)
+the arming Job: the devnet's `up` recipe for one node — `set_create` the YED attestor set from
+the node's wallet, mine it, record its id in ConfigMap `ycash-yellowback-set` (the StatefulSet's
+`YCASHD_YELLOWBACK_ATTESTOR_SET`) and one attestor key in Secret `ycash-yellowback-attestor`,
+restart the node, wait for `yed_getinfo`, roll lightwalletd (it probes `yed_getinfo` at startup).
+After it, `GetYellowbackInfo` reports `upgrade.status: active` and `attest.status: UNARMED`
+(no attestors are registered; a persona can use the recorded key). The Job is idempotent, and
+`kubectl -n ycash logs job/ycash-arm-yellowback --all-containers` shows what it did.
 
 ### Troubleshooting
 
@@ -69,7 +73,15 @@ answers `GetYellowbackInfo` / `GetVaultInfo` / `ListSets` and the stock services
   is still running or was killed; `helm rollback ycash <last good revision>` or
   `helm uninstall ycash -n ycash` and run `make kind-up` again.
 - **`YellowbackStreamer` is "unknown service"**: the node only registers `yed_*` once an
-  attestor set exists (K0b); the stock services and the vault reads are unaffected.
+  attestor set exists and lightwalletd probes for it only at startup; check
+  `job/ycash-arm-yellowback` finished and roll `deployment/ycash-lightwalletd` if it started before
+  the node was armed.
+- **`kind load docker-image` fails with `ctr: content digest ... not found`** for a multi-arch
+  image pulled with `--platform` (the kubectl image): the kind nodes pull from Docker Hub
+  themselves, so leave it to `pullPolicy: IfNotPresent` or `docker exec ycash-worker crictl pull`.
+- **`load/run.sh` reports mostly `local_rate_limited` / `ResourceExhausted`**: from one IP the
+  gateway's per-IP limit and lightwalletd's Yellowback bucket are the ceiling; see the script's
+  header and plan §4.
 
 ## Promotion to AWS (EKS)
 

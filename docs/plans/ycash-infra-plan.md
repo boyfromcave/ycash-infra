@@ -53,8 +53,8 @@ Job (one node, one set, the restart done by patching the StatefulSet's env and r
 |---|---|---|---|
 | **K0** chart on kind | images from the node and lightwalletd repos; Helm chart; kind config; Envoy Gateway + cert-manager; regtest bootstrap + miner; `scripts/smoke.sh` | `make kind-up && make kind-smoke` green: `GetLightdInfo`, `GetLatestBlock`, `GetVaultInfo`, `GetChainInfo`, a gRPC-web request answered | **run 2026-10-08 on kind (arm64)**: cluster, Envoy Gateway, cert-manager, regtest node, bootstrap (200 blocks), miner, 2× lightwalletd-dd, yindex, Redis, Postgres all up; `GetLightdInfo`/`GetLatestBlock` over TLS through the gateway, gRPC-web answered (HTTP 200 `application/grpc-web+proto`); `YellowbackStreamer` absent until K0b (the node registers `yed_*` only with an attestor set). Fixed on the way: GatewayClass must be created by the chart, lightwalletd readiness is `/metrics`, the gRPC-web patch path is `/filter_chains/0/...`, ycash-cli in Jobs needs `-conf=/dev/null -regtest` |
 | **K0a** node images | `contrib/docker/ycashd/` in `ycash6` and `ycash-dd`: Dockerfile, entrypoint, regtest compose, README | both images build on this machine; each runs regtest, mines, reports `6d5b7a31` active in `getblockchaininfo.upgrades` | **ycash6 done 2026-10-08** (18 min build on M-series, image 6.22.0-rc1; regtest mines, `upgrades.Vault.status = active`, `consensus.nextblock = 6d5b7a31`); **ycash-dd done 2026-10-08** too (aarch64 needed `libxml2` for the depends `ld.lld` and a libc++ include alias for boost; params fetched on first start; regtest mines, Vault active); both images rebuilt from the `upgrade/vault` heads of the day (ycash6 `b3ae528`, ycash-dd `f24a691`, lightwalletd-dd `c8346c3`) and the kind smoke + yindex parity re-run green on them |
-| **K0b** arm YED on kind | the devnet `up` arming recipe as a Job; `GetYellowbackInfo` live | `GetYellowbackInfo.upgrade.status` live; `GetAddressTokens` answers | not started |
-| **K1** measurement | `load/run.sh`: ghz per method through the gateway, node RPC queue depth watched | the ceiling per method recorded in §4 | not started |
+| **K0b** arm YED on kind | the devnet `up` arming recipe as a Job; `GetYellowbackInfo` live | `GetYellowbackInfo.upgrade.status` live; `GetAddressTokens` answers | **done 2026-10-09 on the live kind cluster** (`helm upgrade`, no cluster rebuild): `regtest.armYellowback` (kind only) adds `templates/kind/arm.yaml`: ServiceAccount + Role + Job `<release>-arm-yellowback`. Init container `set` (node image, ycash-cli against the RPC Service): wait for the bootstrap height, `set_create {seats 15, unlockthreshold 1, cancelthreshold 1, slashthreshold 1, open, maturity 1, bondmin 10, bondlockmin 200, livenesswindow 1000}` from the node's wallet, `generate 1`, `set_getinfo` until it exists, `getnewaddress` + `dumpprivkey` for one attestor key. Container `roll` (`bitnami/kubectl`, kubectl + curl + jq): ConfigMap `<release>-yellowback-set` (`setid`, read by the StatefulSet's `YCASHD_YELLOWBACK_ATTESTOR_SET` env, optional until then — the entrypoint writes `yellowbackattestorset=`), Secret `<release>-yellowback-attestor` (`setid`, `address`, `wif`), `kubectl rollout restart statefulset`, wait for `yed_getinfo` (JSON-RPC via the Service), `kubectl rollout restart deployment/lightwalletd` (it probes `yed_getinfo` once at startup). Idempotent: a recorded set is reused, an armed node is left alone. Result: `yed_getinfo` rpcversion 6, `upgrade.status active`, `attestorSetId 6669fc9c…`, `attest.status UNARMED` (no attestors registered — a persona for K2+); lightwalletd logs `Yellowback service started`; smoke green with `GetYellowbackInfo`, `GetVaultInfo`, `GetChainInfo`, `ListSets` required and `GetAddressTokens` answering (empty stream for the coinbase address). No node change, no node ask |
+| **K1** measurement | `load/run.sh`: ghz per method through the gateway, node RPC queue depth watched | the ceiling per method recorded in §4 | **first run 2026-10-09** (§4); `load/run.sh` fixed on the way (one `--proto` per service, `--skipTLS` for the self-signed cert, the kind coinbase address by default, `SPREAD_PEERS=1`). The limiters, not the node, are the ceiling from one IP — see §4 and A-3 |
 | **K2** EKS | `infra/eks` applied; add-ons; ECR push; `values-eks.yaml` on a real cluster; RDS for yindex | smoke green on the public host; YEW's devnet suites pointed at it | not started |
 | **K3** yindex live | ingester + server (written) routed by the gateway; reorg test on kind; parity test against lightwalletd's node-proxied answers | `GetAddressUtxos`/`GetTaddressTxids`/`GetTaddressBalance` from yindex equal lightwalletd's for every address the regtest suite touches, across a reorg | code written 2026-10-08; **first parity check green the same day** on kind: for the regtest coinbase address, yindex through the gateway and lightwalletd's node-proxied answer agree (200 UTXOs with identical rows, balance 178250000000 zat, 200 txids); reorg test and the full-suite parity still to do |
 | **K3b** verdict cache | a tip-hash-keyed Redis cache for `yed_*` reads inside `lightwalletd-dd`'s `CallYed` (its repo; small, reviewable) | per-block, not per-user, node load for `GetAddressTokens` | not started; needs a lightwalletd-dd change |
@@ -73,7 +73,25 @@ Job (one node, one set, the restart done by patching the StatefulSet's env and r
 
 | Method | rps at p99 < 500 ms | node RPC queue at that rate | date, image |
 |---|---|---|---|
-| (to be filled by `load/run.sh`) | | | |
+| `GetLatestBlock` | 15,012 (p50 2 ms, p95 4 ms, p99 5 ms) | no queue warning (`rpcworkqueue` 32, `rpcthreads` 8); lightwalletd answers from its block cache | 2026-10-09, kind arm64, ycashd 6.22.0-rc1 (`b3ae528`), lightwalletd-dd `c8346c3` |
+| `GetAddressUtxos` (yindex) | 5,676 (p50 7 ms, p95 12 ms, p99 15 ms) | none: yindex answers from Postgres, the node is not called | same |
+| `GetTaddressBalance` (yindex) | 5,066 (p50 7 ms, p95 18 ms, p99 25 ms) | none (yindex) | same |
+| `GetPrice` | 10,365 (p50 3 ms, p95 5 ms, p99 6 ms) | no queue warning | same, `SPREAD_PEERS=1` |
+| `GetAddressTokens` | 1,340 (p50 31 ms, p95 60 ms, p99 78 ms) | no queue warning; every call is a `yed_listtokens` on the node — the K3b cache target | same, `SPREAD_PEERS=1` |
+| `GetVaultInfo` | 8,183 (p50 4 ms, p95 7 ms, p99 8 ms) | no queue warning (`vault_getinfo`) | same, `SPREAD_PEERS=1` |
+
+How measured: ghz, 2,000 requests at concurrency 50 from the laptop, TLS through the gateway
+(`load/run.sh localhost:443`). With the kind defaults a single client IP never reaches the node:
+the gateway's per-IP limit (500/s) answers `local_rate_limited` for ~70 % of the calls, and
+lightwalletd-dd's per-peer Yellowback bucket (20 calls, +1/s, light calls cost 0.2) answers
+`ResourceExhausted` for ~90 % of the Yellowback calls. The rows above were taken with
+`gateway.rateLimit.enabled=false` (restored afterwards) and, for the Yellowback methods, a
+distinct `x-real-ip` per request (`SPREAD_PEERS=1`), which measures the node and not the bucket.
+The node's RPC work queue (depth 32, 8 threads) logged no overflow at any of these rates; the
+one regtest node is far from its ceiling for the stock reads, and `GetAddressTokens` at ~1.3 k
+calls/s is the only method whose cost is a node walk per call. Re-run on EKS (K2) with the
+mainnet image and a real tip.
+
 
 ## 5. Node asks (recorded, not scheduled)
 
@@ -81,6 +99,19 @@ Job (one node, one set, the restart done by patching the StatefulSet's env and r
   rather than read in a second call.
 - A-2: `getblock` verbosity 2 includes `valueZat`; confirm on both lines (`valueSat` fallback in
   `rpc/client.go`).
+- A-3 (lightwalletd-dd + gateway, not the node; found by K1 on 2026-10-09): with the gateway in
+  `--trusted-proxy-cidr`, lightwalletd-dd's Yellowback limiter believes `x-real-ip` and the
+  *first* `x-forwarded-for` entry — and Envoy forwards a client-supplied `x-real-ip` untouched and
+  *appends* to a client-supplied `x-forwarded-for`. A client that sets `x-real-ip: <anything>`
+  per request gets a fresh bucket per request (300/300 answered against a 20-call burst in the
+  test). Fix at the gateway (strip `x-real-ip`, set the client IP from the connection:
+  Envoy Gateway `ClientTrafficPolicy.clientIPDetection` / `xForwardedFor.numTrustedHops` and a
+  header-remove on `x-real-ip`) before K2's public host, and in lightwalletd-dd read
+  `x-forwarded-for` from the right (`numTrustedHops` from the end), never the first entry.
+  `load/run.sh SPREAD_PEERS=1` uses exactly this hole to measure the node and is the regression
+  test for its closing.
+- K0b needed no node change: the entrypoint's `YCASHD_YELLOWBACK_ATTESTOR_SET` (`contrib/docker/ycashd`,
+  K0a) and the `set_*` / `yed_getinfo` RPCs were enough.
 
 ## 6. Risks
 

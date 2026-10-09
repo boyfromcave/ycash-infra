@@ -40,6 +40,11 @@ spec:
             - { name: YCASHD_LISTEN, value: {{ ternary "1" "0" .Values.ycashd.p2p.listen | quote }} }
             - { name: YCASHD_EXTRA_ARGS, value: {{ .Values.ycashd.extraArgs | quote }} }
             - { name: YCASHD_CONF_EXTRA, value: {{ .Values.ycashd.confExtra | quote }} }
+            {{- if and .Values.regtest.enabled .Values.regtest.armYellowback }}
+            # written by the arming Job (templates/kind/arm.yaml); absent until then
+            - name: YCASHD_YELLOWBACK_ATTESTOR_SET
+              valueFrom: { configMapKeyRef: { name: {{ include "yc.fullname" . }}-yellowback-set, key: setid, optional: true } }
+            {{- end }}
             - name: YCASHD_RPC_USER
               valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
             - name: YCASHD_RPC_PASSWORD

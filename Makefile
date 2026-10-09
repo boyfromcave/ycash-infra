@@ -56,7 +56,7 @@ kind-up: kind-create kind-load ## cluster + gateway + cert-manager + the chart (
 kind-down: ## delete the cluster
 	kind delete cluster --name $(CLUSTER)
 
-kind-smoke: ## GetLightdInfo, GetYellowbackInfo, GetVaultInfo through the gateway
+kind-smoke: ## GetLightdInfo, GetYellowbackInfo, GetVaultInfo, GetChainInfo, ListSets through the gateway
 	scripts/smoke.sh https://localhost:443
 
 kind-load-test: ## ghz: the node RPC ceiling per method (plan K1)

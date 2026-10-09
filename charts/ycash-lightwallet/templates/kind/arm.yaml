@@ -1,0 +1,122 @@
+{{- if and .Values.regtest.enabled .Values.regtest.armYellowback }}
+{{- $fn := include "yc.fullname" . }}
+{{- $cli := printf "ycash-cli -conf=/dev/null -regtest -rpcconnect=%s -rpcport=%d -rpcuser=$YCASHD_RPC_USER -rpcpassword=$YCASHD_RPC_PASSWORD" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) }}
+{{- $set := .Values.regtest.attestorSet }}
+# Arm YED on regtest, the devnet's `up` recipe (ycash6/doc/yellowback-devnet.md section 2) as a Job:
+#   1. `set` (init container, the node image): after the bootstrap Job, `set_create` the YED attestor
+#      set from the node's wallet, `generate 1` so it exists, `set_getinfo` to confirm, and make one
+#      attestor key (`getnewaddress` + `dumpprivkey`) for a later attestor persona.
+#   2. `roll` (kubectl): record the set id in the ConfigMap the StatefulSet reads (its
+#      YCASHD_YELLOWBACK_ATTESTOR_SET env, optional until this writes it) and the attestor key in a
+#      Secret, restart the node, wait until `yed_getinfo` answers, then roll lightwalletd (it probes
+#      yed_getinfo once, at startup).
+# Idempotent: a recorded set is reused, an armed node is left alone.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fn }}-arm-yellowback
+  labels: {{- include "yc.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fn }}-arm-yellowback
+  labels: {{- include "yc.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps, secrets]
+    verbs: [get, create, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [statefulsets, deployments]
+    verbs: [get, list, watch, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fn }}-arm-yellowback
+  labels: {{- include "yc.labels" . | nindent 4 }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $fn }}-arm-yellowback }
+subjects: [{ kind: ServiceAccount, name: {{ $fn }}-arm-yellowback }]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fn }}-arm-yellowback
+  labels: {{- include "yc.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      serviceAccountName: {{ $fn }}-arm-yellowback
+      restartPolicy: OnFailure
+      securityContext: { runAsUser: 2001, runAsNonRoot: true }
+      volumes:
+        - { name: work, emptyDir: {} }
+        - name: recorded
+          configMap: { name: {{ $fn }}-yellowback-set, optional: true }
+      initContainers:
+        - name: set
+          image: {{ include "yc.image" .Values.images.ycashd }}
+          env:
+            - name: YCASHD_RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
+            - name: YCASHD_RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: recorded, mountPath: /recorded, readOnly: true }
+          command: [sh, -ec]
+          args:
+            - |
+              CLI="{{ $cli }}"
+              until $CLI getblockcount >/dev/null 2>&1; do sleep 2; done
+              # after the bootstrap Job: the chain is past coinbase maturity, the wallet has mature coins
+              until [ "$($CLI getblockcount)" -ge {{ .Values.regtest.bootstrapBlocks }} ]; do sleep 2; done
+              if $CLI yed_getinfo >/dev/null 2>&1; then
+                echo "armed: yed_getinfo answers"; echo "ARMED=1" > /work/set.env; exit 0
+              fi
+              if [ -s /recorded/setid ]; then
+                SETID=$(cat /recorded/setid); echo "set $SETID recorded earlier, reusing it"
+              else
+                SETID=$($CLI set_create '{{ printf "{\"seats\":%d,\"unlockthreshold\":1,\"cancelthreshold\":1,\"slashthreshold\":1,\"open\":true,\"maturity\":1,\"bondmin\":%d,\"bondlockmin\":%d,\"livenesswindow\":%d}" (int $set.seats) (int $set.bondMin) (int $set.bondLockMin) (int $set.livenessWindow) }}' | jq -r .setid)
+                $CLI generate 1 >/dev/null
+                until $CLI set_getinfo "$SETID" >/dev/null 2>&1; do sleep 2; done
+                echo "attestor set $SETID exists"
+              fi
+              ADDR=$($CLI getnewaddress); WIF=$($CLI dumpprivkey "$ADDR")
+              printf 'ARMED=0\nSETID=%s\nATTESTOR_ADDRESS=%s\nATTESTOR_WIF=%s\n' "$SETID" "$ADDR" "$WIF" > /work/set.env
+      containers:
+        - name: roll
+          image: {{ include "yc.image" .Values.images.kubectl }}
+          imagePullPolicy: {{ .Values.images.kubectl.pullPolicy }}
+          env:
+            - { name: NS, value: {{ .Release.Namespace | quote }} }
+            - { name: RPC_URL, value: {{ printf "http://%s:%d/" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) | quote }} }
+            - name: YCASHD_RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
+            - name: YCASHD_RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
+          volumeMounts:
+            - { name: work, mountPath: /work, readOnly: true }
+          command: [sh, -ec]
+          args:
+            - |
+              . /work/set.env
+              K="kubectl -n $NS"
+              rpc() { curl -sf -u "$YCASHD_RPC_USER:$YCASHD_RPC_PASSWORD" -H 'content-type: text/plain' --data "{\"jsonrpc\":\"1.0\",\"id\":\"arm\",\"method\":\"$1\",\"params\":[]}" "$RPC_URL"; }
+              if [ "$ARMED" = 1 ] && $K get configmap {{ $fn }}-yellowback-set >/dev/null 2>&1; then echo "already armed, nothing to do"; exit 0; fi
+              $K create configmap {{ $fn }}-yellowback-set --from-literal=setid="$SETID" --dry-run=client -o yaml | $K apply -f -
+              $K create secret generic {{ $fn }}-yellowback-attestor --from-literal=setid="$SETID" \
+                --from-literal=address="$ATTESTOR_ADDRESS" --from-literal=wif="$ATTESTOR_WIF" --dry-run=client -o yaml | $K apply -f -
+              echo "restarting the node with -yellowbackattestorset=$SETID"
+              $K rollout restart statefulset/{{ $fn }}-ycashd
+              $K rollout status statefulset/{{ $fn }}-ycashd --timeout=15m
+              until rpc yed_getinfo | jq -e '.result.rpcversion' >/dev/null 2>&1; do sleep 3; done
+              rpc yed_getinfo | jq '.result | {rpcversion, upgrade, attest}'
+              echo "rolling lightwalletd so it probes yed_getinfo again"
+              $K rollout restart deployment/{{ $fn }}-lightwalletd
+              $K rollout status deployment/{{ $fn }}-lightwalletd --timeout=10m
+{{- end }}
