@@ -1,0 +1,13 @@
+{{- if .Values.monitoring.serviceMonitor }}
+{{- $fn := include "yc.fullname" . }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $fn }}
+  labels: {{- include "yc.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }} }
+  endpoints:
+    - { port: http, path: /metrics, interval: 15s }
+{{- end }}

@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "yc.fullname" . }}-ycashd
+  labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ycashd
+spec:
+  serviceName: {{ include "yc.fullname" . }}-ycashd-headless
+  replicas: {{ .Values.ycashd.replicas }}
+  podManagementPolicy: Parallel
+  updateStrategy: { type: RollingUpdate }
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: ycashd
+  template:
+    metadata:
+      labels: {{- include "yc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: ycashd
+    spec:
+      securityContext: { fsGroup: 2001, runAsUser: 2001, runAsNonRoot: true }
+      terminationGracePeriodSeconds: 120
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: ycashd }
+      containers:
+        - name: ycashd
+          image: {{ include "yc.image" .Values.images.ycashd }}
+          imagePullPolicy: {{ .Values.images.ycashd.pullPolicy }}
+          env:
+            - { name: YCASHD_NETWORK, value: {{ .Values.ycashd.network | quote }} }
+            - { name: YCASHD_RPC_PORT, value: {{ .Values.ycashd.rpc.port | quote }} }
+            - { name: YCASHD_RPC_THREADS, value: {{ .Values.ycashd.rpc.threads | quote }} }
+            - { name: YCASHD_RPC_WORKQUEUE, value: {{ .Values.ycashd.rpc.workqueue | quote }} }
+            - { name: YCASHD_LISTEN, value: {{ ternary "1" "0" .Values.ycashd.p2p.listen | quote }} }
+            - { name: YCASHD_EXTRA_ARGS, value: {{ .Values.ycashd.extraArgs | quote }} }
+            - { name: YCASHD_CONF_EXTRA, value: {{ .Values.ycashd.confExtra | quote }} }
+            - name: YCASHD_RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
+            - name: YCASHD_RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
+          ports:
+            - { name: rpc, containerPort: {{ .Values.ycashd.rpc.port }} }
+            - { name: p2p, containerPort: {{ .Values.ycashd.p2p.port }} }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/ycash }
+            - { name: scripts, mountPath: /opt/ycash, readOnly: true }
+          startupProbe:
+            exec: { command: [sh, /opt/ycash/live.sh] }
+            periodSeconds: 10
+            failureThreshold: 360     # an hour for a cold start / reindex
+          readinessProbe:
+            exec: { command: [sh, /opt/ycash/ready.sh] }
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            exec: { command: [sh, /opt/ycash/live.sh] }
+            periodSeconds: 30
+            failureThreshold: 5
+          lifecycle:
+            preStop: { exec: { command: [sh, -c, "ycash-cli -datadir=/var/lib/ycash stop; sleep 20"] } }
+          resources: {{- toYaml .Values.ycashd.resources | nindent 12 }}
+      volumes:
+        - name: scripts
+          configMap: { name: {{ include "yc.fullname" . }}-ycashd-scripts, defaultMode: 0555 }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.ycashd.storage.className }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ .Values.ycashd.storage.size }} } }

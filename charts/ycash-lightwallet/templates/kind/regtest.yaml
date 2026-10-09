@@ -1,0 +1,69 @@
+{{- if .Values.regtest.enabled }}
+{{- $fn := include "yc.fullname" . }}
+{{- $cli := printf "ycash-cli -datadir=/var/lib/ycash -rpcconnect=%s -rpcport=%d -rpcuser=$YCASHD_RPC_USER -rpcpassword=$YCASHD_RPC_PASSWORD" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) }}
+# The chain on kind: mine past coinbase maturity once, then keep one block every few seconds.
+# Both run ycash-cli from the node image against the RPC Service; no wallet state of their own.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fn }}-bootstrap
+  labels: {{- include "yc.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      securityContext: { runAsUser: 2001, runAsNonRoot: true }
+      containers:
+        - name: bootstrap
+          image: {{ include "yc.image" .Values.images.ycashd }}
+          env:
+            - name: YCASHD_RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
+            - name: YCASHD_RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
+          command: [sh, -ec]
+          args:
+            - |
+              CLI="{{ $cli }}"
+              until $CLI getblockcount >/dev/null 2>&1; do sleep 2; done
+              have=$($CLI getblockcount)
+              want={{ .Values.regtest.bootstrapBlocks }}
+              if [ "$have" -lt "$want" ]; then $CLI generate $((want - have)) >/dev/null; fi
+              $CLI getblockchaininfo | jq '{blocks, upgrades}'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-miner
+  labels: {{- include "yc.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: miner }
+  template:
+    metadata:
+      labels: {{- include "yc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: miner
+    spec:
+      securityContext: { runAsUser: 2001, runAsNonRoot: true }
+      containers:
+        - name: miner
+          image: {{ include "yc.image" .Values.images.ycashd }}
+          env:
+            - name: YCASHD_RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
+            - name: YCASHD_RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
+          command: [sh, -c]
+          args: ["while true; do {{ $cli }} generate 1 >/dev/null 2>&1 || true; sleep {{ .Values.regtest.minerIntervalSeconds }}; done"]
+---
+# The node's RPC on the host (kind/kind.yaml maps it to 18832) for ycash-cli and the devnet tools.
+apiVersion: v1
+kind: Service
+metadata: { name: {{ $fn }}-ycashd-rpc-nodeport }
+spec:
+  type: NodePort
+  selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: ycashd }
+  ports: [{ name: rpc, port: {{ .Values.ycashd.rpc.port }}, targetPort: rpc, nodePort: {{ .Values.regtest.rpcNodePort }} }]
+{{- end }}

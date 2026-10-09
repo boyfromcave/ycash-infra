@@ -1,0 +1,41 @@
+# The RPC pool: round-robin across the ready nodes. lightwalletd and yindex connect here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yc.fullname" . }}-ycashd
+  labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ycashd
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: ycashd
+  ports:
+    - { name: rpc, port: {{ .Values.ycashd.rpc.port }}, targetPort: rpc }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yc.fullname" . }}-ycashd-headless
+  labels: {{- include "yc.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: ycashd
+  ports:
+    - { name: rpc, port: {{ .Values.ycashd.rpc.port }}, targetPort: rpc }
+    - { name: p2p, port: {{ .Values.ycashd.p2p.port }}, targetPort: p2p }
+{{- if .Values.ycashd.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "yc.fullname" . }}-ycashd
+spec:
+  minAvailable: {{ .Values.ycashd.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: ycashd }
+{{- end }}

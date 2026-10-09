@@ -1,0 +1,81 @@
+{{- if .Values.gateway.enabled }}
+{{- $fn := include "yc.fullname" . }}
+{{- if and (eq .Values.gateway.tls.mode "certmanager") (not .Values.gateway.tls.issuer) }}
+# kind: a self-signed issuer and certificate for the host (clients use -insecure / a pinned cert).
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata: { name: {{ $fn }}-selfsigned }
+spec: { selfSigned: {} }
+---
+{{- end }}
+{{- if eq .Values.gateway.tls.mode "certmanager" }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: { name: {{ $fn }}-tls }
+spec:
+  secretName: {{ $fn }}-tls
+  dnsNames: [{{ .Values.gateway.host | quote }}]
+  {{- if eq .Values.gateway.host "localhost" }}
+  ipAddresses: ["127.0.0.1"]
+  {{- end }}
+  issuerRef:
+    {{- if .Values.gateway.tls.issuer }}
+    kind: ClusterIssuer
+    name: {{ .Values.gateway.tls.issuer }}
+    {{- else }}
+    kind: Issuer
+    name: {{ $fn }}-selfsigned
+    {{- end }}
+---
+{{- end }}
+# Envoy proxy settings: the Service type/annotations (NLB on EKS, NodePort on kind).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata: { name: {{ $fn }}-proxy }
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: {{ .Values.gateway.service.type }}
+        {{- with .Values.gateway.service.annotations }}
+        annotations: {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- if eq .Values.gateway.service.type "NodePort" }}
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+                - { name: https-443, port: 443, nodePort: {{ .Values.gateway.service.nodePorts.https }} }
+                {{- if .Values.gateway.plaintextGrpc }}
+                - { name: grpc-9067, port: 9067, nodePort: {{ .Values.gateway.service.nodePorts.grpc }} }
+                {{- end }}
+        {{- end }}
+      envoyDeployment:
+        replicas: 2
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata: { name: {{ $fn }} }
+spec:
+  gatewayClassName: {{ .Values.gateway.className }}
+  infrastructure:
+    parametersRef: { group: gateway.envoyproxy.io, kind: EnvoyProxy, name: {{ $fn }}-proxy }
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: {{ .Values.gateway.host | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - { kind: Secret, name: {{ if eq .Values.gateway.tls.mode "existing" }}{{ .Values.gateway.tls.secretName }}{{ else }}{{ $fn }}-tls{{ end }} }
+      allowedRoutes: { namespaces: { from: Same } }
+    {{- if .Values.gateway.plaintextGrpc }}
+    - name: grpc
+      protocol: HTTP
+      port: 9067
+      allowedRoutes: { namespaces: { from: Same } }
+    {{- end }}
+{{- end }}

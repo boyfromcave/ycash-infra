@@ -1,0 +1,37 @@
+# One laptop: regtest, the vault upgrade active from height 1, the miner in-cluster, NodePorts
+# mapped by kind/kind.yaml, a self-signed certificate.
+ycashd:
+  replicas: 1
+  network: regtest
+  extraArgs: "-nuparams=6d5b7a31:1"
+  rpc: { port: 18832, user: ycash, password: ycash-regtest, threads: 8, workqueue: 32 }
+  p2p: { listen: false, port: 18833 }
+  storage: { size: 5Gi }
+  resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 3Gi } }
+  podDisruptionBudget: { enabled: false }
+lightwalletd:
+  replicas: 2
+  cache: { sizeLimit: 512Mi }
+  resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { memory: 1Gi } }
+  autoscaling: { enabled: true, min: 2, max: 4, cpuUtilization: 70 }
+  podDisruptionBudget: { enabled: false }
+yindex:
+  replicas: 1
+  postgres: { storage: { size: 2Gi }, resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { memory: 512Mi } } }
+redis:
+  maxmemory: 128mb
+  resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 192Mi } }
+web:
+  enabled: false              # true once `make image-web` has a bundle
+gateway:
+  host: localhost
+  tls: { mode: certmanager, issuer: "" }
+  plaintextGrpc: true
+  service: { type: NodePort }
+  rateLimit: { enabled: true, perIpPerSecond: 500, sendPerIpPerMinute: 600 }
+regtest:
+  enabled: true
+  activationHeight: 1
+  bootstrapBlocks: 200
+  minerIntervalSeconds: 5
+monitoring: { serviceMonitor: false }

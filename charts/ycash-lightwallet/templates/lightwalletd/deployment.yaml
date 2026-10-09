@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "yc.fullname" . }}-lightwalletd
+  labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: lightwalletd
+spec:
+  {{- if not .Values.lightwalletd.autoscaling.enabled }}
+  replicas: {{ .Values.lightwalletd.replicas }}
+  {{- end }}
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: lightwalletd }
+  template:
+    metadata:
+      labels: {{- include "yc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: lightwalletd
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9068"
+    spec:
+      securityContext: { runAsUser: 2002, runAsNonRoot: true, fsGroup: 2002 }
+      initContainers:
+        - name: wait-for-node
+          image: {{ include "yc.image" .Values.images.ycashd }}
+          command: [sh, -c, "until nc -z {{ include "yc.rpcHost" . }} {{ .Values.ycashd.rpc.port }}; do sleep 2; done"]
+      containers:
+        - name: lightwalletd
+          image: {{ include "yc.image" .Values.images.lightwalletd }}
+          imagePullPolicy: {{ .Values.images.lightwalletd.pullPolicy }}
+          env:
+            - { name: YCASHD_RPC_HOST, value: {{ include "yc.rpcHost" . | quote }} }
+            - { name: YCASHD_RPC_PORT, value: {{ .Values.ycashd.rpc.port | quote }} }
+            - name: YCASHD_RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
+            - name: YCASHD_RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
+            # TLS terminates at the gateway; inside the cluster the server speaks plaintext h2c.
+            - { name: LWD_INSECURE, value: "1" }
+            - { name: LWD_YELLOWBACK, value: {{ ternary "1" "0" .Values.lightwalletd.yellowback | quote }} }
+            - { name: LWD_YELLOWBACK_MAX_INFLIGHT, value: {{ .Values.lightwalletd.maxInflight | quote }} }
+            - { name: LWD_TRUSTED_PROXY_CIDRS, value: {{ .Values.lightwalletd.trustedProxyCidrs | quote }} }
+            - { name: LWD_LOG_LEVEL, value: {{ .Values.lightwalletd.logLevel | quote }} }
+            - { name: LWD_EXTRA_ARGS, value: {{ .Values.lightwalletd.extraArgs | quote }} }
+          ports:
+            - { name: grpc, containerPort: 9067 }
+            - { name: http, containerPort: 9068 }
+          volumeMounts:
+            - { name: cache, mountPath: /var/lib/lightwalletd }
+          # The HTTP status endpoint answers once the cache has caught up with the node's tip.
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: grpc }
+            periodSeconds: 30
+          resources: {{- toYaml .Values.lightwalletd.resources | nindent 12 }}
+      volumes:
+        - name: cache
+          emptyDir:
+            {{- with .Values.lightwalletd.cache.medium }}
+            medium: {{ . }}
+            {{- end }}
+            sizeLimit: {{ .Values.lightwalletd.cache.sizeLimit }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yc.fullname" . }}-lightwalletd
+  labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: lightwalletd
+spec:
+  selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: lightwalletd }
+  ports:
+    - { name: grpc, port: 9067, targetPort: grpc, appProtocol: kubernetes.io/h2c }
+    - { name: http, port: 9068, targetPort: http }
+{{- if .Values.lightwalletd.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "yc.fullname" . }}-lightwalletd
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ include "yc.fullname" . }}-lightwalletd }
+  minReplicas: {{ .Values.lightwalletd.autoscaling.min }}
+  maxReplicas: {{ .Values.lightwalletd.autoscaling.max }}
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: {{ .Values.lightwalletd.autoscaling.cpuUtilization }} } }
+  behavior:
+    scaleDown: { stabilizationWindowSeconds: 300 }
+{{- end }}
+{{- if .Values.lightwalletd.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "yc.fullname" . }}-lightwalletd
+spec:
+  minAvailable: {{ .Values.lightwalletd.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: lightwalletd }
+{{- end }}

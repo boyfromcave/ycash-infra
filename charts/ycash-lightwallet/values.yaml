@@ -1,0 +1,111 @@
+# Defaults. values-kind.yaml and values-eks.yaml override; a template never branches on "which
+# cloud", only on these values (AGENTS.md rule 2).
+nameOverride: ""
+
+images:
+  ycashd:       { repository: ycash/ycashd,       tag: local, pullPolicy: IfNotPresent }
+  lightwalletd: { repository: ycash/lightwalletd, tag: local, pullPolicy: IfNotPresent }
+  yindex:       { repository: ycash/yindex,       tag: local, pullPolicy: IfNotPresent }
+  web:          { repository: ycash/web,          tag: local, pullPolicy: IfNotPresent }
+  redis:        { repository: redis,              tag: 7.4-alpine, pullPolicy: IfNotPresent }
+  postgres:     { repository: postgres,           tag: 17-alpine, pullPolicy: IfNotPresent }
+
+# ---- the node pool ---------------------------------------------------------------------------
+ycashd:
+  replicas: 2
+  network: mainnet            # mainnet | testnet | regtest
+  extraArgs: ""               # appended verbatim (regtest: "-nuparams=6d5b7a31:1 -yellowbackattestorset=<setid>")
+  confExtra: ""               # extra ycash.conf lines
+  rpc:
+    port: 8832                # 18832 for testnet/regtest
+    threads: 16
+    workqueue: 64
+    # Either inline (kind only) or an existing Secret with keys rpcuser/rpcpassword (EKS: External Secrets).
+    existingSecret: ""
+    user: ycash
+    password: ""
+  p2p:
+    listen: true
+    port: 8833
+  storage:
+    className: ""             # "" = cluster default (kind: standard / local-path)
+    size: 20Gi
+  resources:
+    requests: { cpu: 500m, memory: 2Gi }
+    limits:   { memory: 6Gi }
+  # readiness: synced (verificationprogress > 0.9999) and within readinessLagBlocks of the best known tip
+  readinessLagBlocks: 1
+  podDisruptionBudget: { enabled: true, minAvailable: 1 }
+
+# ---- lightwalletd-dd -------------------------------------------------------------------------
+lightwalletd:
+  replicas: 2
+  yellowback: true
+  maxInflight: 16             # --yellowback-max-inflight: yed_* node calls in flight per replica
+  logLevel: 4
+  extraArgs: ""
+  cache: { medium: "", sizeLimit: 2Gi }   # emptyDir per replica; medium "Memory" keeps it in RAM
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits:   { memory: 2Gi }
+  autoscaling: { enabled: false, min: 2, max: 50, cpuUtilization: 60 }
+  podDisruptionBudget: { enabled: true, minAvailable: 1 }
+  trustedProxyCidrs: "10.0.0.0/8"
+
+# ---- yindex: the address index (plan K3) -----------------------------------------------------
+yindex:
+  enabled: true
+  replicas: 2
+  # which CompactTxStreamer methods the gateway routes here instead of lightwalletd; drop one
+  # from the list to fall back to lightwalletd's node-proxied implementation for that method.
+  routes: [GetAddressUtxos, GetAddressUtxosStream, GetTaddressTxids, GetTaddressBalance, GetTaddressBalanceStream]
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits:   { memory: 1Gi }
+  postgres:
+    enabled: true             # in-cluster StatefulSet; false = externalUrl (RDS on EKS)
+    externalUrl: ""
+    storage: { className: "", size: 20Gi }
+    resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 2Gi } }
+
+# ---- Redis: tip-hash-keyed cache of yed_* reads (plan K3) ------------------------------------
+redis:
+  enabled: true
+  maxmemory: 512mb
+  resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 768Mi } }
+
+# ---- the web wallet bundle (yew/web) ---------------------------------------------------------
+web:
+  enabled: false
+  replicas: 2
+
+# ---- Envoy Gateway ----------------------------------------------------------------------------
+gateway:
+  enabled: true
+  className: eg               # the GatewayClass installed by the Envoy Gateway helm chart
+  host: lite.example.org
+  tls:
+    mode: certmanager         # certmanager | existing | none
+    issuer: ""                # ClusterIssuer name (certmanager mode); "" on kind = a self-signed one this chart creates
+    secretName: ""            # existing mode
+  plaintextGrpc: true         # a second listener on 9067 without TLS (kind/ghz); off on EKS
+  service:
+    type: LoadBalancer        # kind: NodePort with the ports kind/kind.yaml maps
+    nodePorts: { https: 30443, grpc: 30067 }
+    annotations: {}
+  rateLimit:
+    enabled: true
+    perIpPerSecond: 50
+    sendPerIpPerMinute: 30
+
+# ---- kind-only: the chain itself -------------------------------------------------------------
+regtest:
+  enabled: false              # bootstrap Job (mine past maturity) + miner Deployment + RPC NodePort
+  activationHeight: 1
+  bootstrapBlocks: 200
+  minerIntervalSeconds: 5
+  rpcNodePort: 30832
+
+# ---- observability -----------------------------------------------------------------------------
+monitoring:
+  serviceMonitor: false       # kube-prometheus-stack CRDs present

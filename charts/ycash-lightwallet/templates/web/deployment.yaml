@@ -1,0 +1,31 @@
+{{- if .Values.web.enabled }}
+{{- $fn := include "yc.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-web
+  labels: {{- include "yc.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: web }
+  template:
+    metadata:
+      labels: {{- include "yc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      containers:
+        - name: web
+          image: {{ include "yc.image" .Values.images.web }}
+          imagePullPolicy: {{ .Values.images.web.pullPolicy }}
+          ports: [{ name: http, containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /, port: http } }
+          resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { memory: 128Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: {{ $fn }}-web }
+spec:
+  selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: web }
+  ports: [{ name: http, port: 8080 }]
+{{- end }}

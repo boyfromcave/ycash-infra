@@ -1,0 +1,143 @@
+{{- if .Values.yindex.enabled }}
+{{- $fn := include "yc.fullname" . }}
+{{- $pgUrl := printf "postgres://yindex:yindex@%s-postgres:5432/yindex?sslmode=disable" $fn }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-yindex
+  labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: yindex
+spec:
+  replicas: {{ .Values.yindex.replicas }}
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: yindex }
+  template:
+    metadata:
+      labels: {{- include "yc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: yindex
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: "9071" }
+    spec:
+      securityContext: { runAsUser: 2003, runAsNonRoot: true }
+      containers:
+        - name: yindex
+          image: {{ include "yc.image" .Values.images.yindex }}
+          imagePullPolicy: {{ .Values.images.yindex.pullPolicy }}
+          args: [serve]
+          env:
+            - { name: YINDEX_RPC_URL, value: "http://{{ include "yc.rpcHost" . }}:{{ .Values.ycashd.rpc.port }}" }
+            - name: YINDEX_RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
+            - name: YINDEX_RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
+            {{- if .Values.yindex.postgres.enabled }}
+            - { name: YINDEX_POSTGRES_URL, value: {{ $pgUrl | quote }} }
+            {{- else }}
+            - name: YINDEX_POSTGRES_URL
+              valueFrom: { secretKeyRef: { name: {{ .Values.yindex.postgres.existingSecret }}, key: url } }
+            {{- end }}
+            - { name: YINDEX_GRPC_ADDR, value: ":9070" }
+            - { name: YINDEX_HTTP_ADDR, value: ":9071" }
+          ports:
+            - { name: grpc, containerPort: 9070 }
+            - { name: http, containerPort: 9071 }
+          readinessProbe: { httpGet: { path: /ready, port: http }, periodSeconds: 5 }
+          livenessProbe: { httpGet: { path: /live, port: http }, periodSeconds: 30 }
+          resources: {{- toYaml .Values.yindex.resources | nindent 12 }}
+---
+# One ingester (leader) writes; the serving replicas above only read. A Deployment of one
+# with Recreate so two ingesters never run at once.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-yindex-ingest
+  labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: yindex-ingest
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: yindex-ingest }
+  template:
+    metadata:
+      labels: {{- include "yc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: yindex-ingest
+    spec:
+      securityContext: { runAsUser: 2003, runAsNonRoot: true }
+      containers:
+        - name: ingest
+          image: {{ include "yc.image" .Values.images.yindex }}
+          args: [ingest]
+          env:
+            - { name: YINDEX_RPC_URL, value: "http://{{ include "yc.rpcHost" . }}:{{ .Values.ycashd.rpc.port }}" }
+            - name: YINDEX_RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
+            - name: YINDEX_RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
+            {{- if .Values.yindex.postgres.enabled }}
+            - { name: YINDEX_POSTGRES_URL, value: {{ $pgUrl | quote }} }
+            {{- else }}
+            - name: YINDEX_POSTGRES_URL
+              valueFrom: { secretKeyRef: { name: {{ .Values.yindex.postgres.existingSecret }}, key: url } }
+            {{- end }}
+            - { name: YINDEX_HTTP_ADDR, value: ":9071" }
+          ports: [{ name: http, containerPort: 9071 }]
+          livenessProbe: { httpGet: { path: /live, port: http }, periodSeconds: 30 }
+          resources: {{- toYaml .Values.yindex.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-yindex
+  labels: {{- include "yc.labels" . | nindent 4 }}
+spec:
+  selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: yindex }
+  ports:
+    - { name: grpc, port: 9070, targetPort: grpc, appProtocol: kubernetes.io/h2c }
+    - { name: http, port: 9071, targetPort: http }
+{{- if .Values.yindex.postgres.enabled }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fn }}-postgres
+  labels: {{- include "yc.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ $fn }}-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: postgres }
+  template:
+    metadata:
+      labels: {{- include "yc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: {{ include "yc.image" .Values.images.postgres }}
+          env:
+            - { name: POSTGRES_USER, value: yindex }
+            - { name: POSTGRES_PASSWORD, value: yindex }   # in-cluster only; EKS uses RDS (postgres.enabled=false)
+            - { name: POSTGRES_DB, value: yindex }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ name: pg, containerPort: 5432 }]
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+          readinessProbe: { exec: { command: [pg_isready, -U, yindex] }, periodSeconds: 5 }
+          resources: {{- toYaml .Values.yindex.postgres.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.yindex.postgres.storage.className }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ .Values.yindex.postgres.storage.size }} } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: {{ $fn }}-postgres }
+spec:
+  clusterIP: None
+  selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: postgres }
+  ports: [{ name: pg, port: 5432 }]
+{{- end }}
+{{- end }}

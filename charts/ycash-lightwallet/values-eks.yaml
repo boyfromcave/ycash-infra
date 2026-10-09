@@ -1,0 +1,51 @@
+# AWS EKS. Differs from kind only in storage, load balancer, DNS/TLS, secrets and sizes.
+# Requires in the cluster: Envoy Gateway, cert-manager with a ClusterIssuer, External Secrets
+# Operator with a ClusterSecretStore "aws-secrets-manager" (infra/eks creates the IRSA role),
+# the AWS Load Balancer Controller, the EBS CSI driver (gp3 StorageClass), kube-prometheus-stack.
+images:
+  ycashd:       { repository: <account>.dkr.ecr.<region>.amazonaws.com/ycash/ycashd,       tag: "6.22.0" }
+  lightwalletd: { repository: <account>.dkr.ecr.<region>.amazonaws.com/ycash/lightwalletd, tag: "<lwd rev>" }
+  yindex:       { repository: <account>.dkr.ecr.<region>.amazonaws.com/ycash/yindex,       tag: "<rev>" }
+  web:          { repository: <account>.dkr.ecr.<region>.amazonaws.com/ycash/web,          tag: "<rev>" }
+ycashd:
+  replicas: 3
+  network: mainnet
+  rpc: { port: 8832, existingSecret: ycashd-rpc, threads: 32, workqueue: 128 }
+  storage: { className: gp3, size: 50Gi }
+  resources: { requests: { cpu: "2", memory: 4Gi }, limits: { memory: 8Gi } }
+lightwalletd:
+  replicas: 3
+  cache: { medium: Memory, sizeLimit: 1Gi }
+  autoscaling: { enabled: true, min: 3, max: 50, cpuUtilization: 60 }
+  resources: { requests: { cpu: 500m, memory: 512Mi }, limits: { memory: 2Gi } }
+yindex:
+  replicas: 3
+  postgres:
+    enabled: false
+    externalUrl: ""           # RDS Postgres; put the URL in a Secret and reference it (see templates/yindex)
+    existingSecret: yindex-postgres
+redis:
+  maxmemory: 2gb
+  resources: { requests: { cpu: 500m, memory: 2Gi }, limits: { memory: 2560Mi } }
+web:
+  enabled: true
+  replicas: 2
+gateway:
+  host: lite.example.org      # --set gateway.host=...
+  tls: { mode: certmanager, issuer: letsencrypt-prod }
+  plaintextGrpc: false
+  service:
+    type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: external
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+      external-dns.alpha.kubernetes.io/hostname: lite.example.org
+  rateLimit: { enabled: true, perIpPerSecond: 50, sendPerIpPerMinute: 30 }
+regtest: { enabled: false }
+monitoring: { serviceMonitor: true }
+externalSecrets:
+  enabled: true
+  storeRef: aws-secrets-manager
+  ycashdRpc: ycash/lite/ycashd-rpc       # Secrets Manager name holding {rpcuser, rpcpassword}
+  yindexPostgres: ycash/lite/yindex-postgres  # {url}

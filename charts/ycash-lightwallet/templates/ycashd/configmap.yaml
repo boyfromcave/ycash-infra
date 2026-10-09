@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yc.fullname" . }}-ycashd-scripts
+  labels: {{- include "yc.labels" . | nindent 4 }}
+data:
+  # Ready = RPC answers, initial download finished, and this node's height is within
+  # readinessLagBlocks of the best height any peer reports. A node behind the tip leaves the
+  # Service's endpoints until it catches up, so lightwalletd never ingests from a lagging node.
+  ready.sh: |
+    #!/bin/sh
+    set -eu
+    CLI="ycash-cli -datadir=/var/lib/ycash"
+    info=$($CLI getblockchaininfo) || exit 1
+    headers=$(echo "$info" | jq -r .headers); blocks=$(echo "$info" | jq -r .blocks)
+    ibd=$(echo "$info" | jq -r '.initial_block_download // false')
+    [ "$ibd" = "true" ] && { echo "initial block download"; exit 1; }
+    lag=$((headers - blocks))
+    [ "$lag" -le {{ .Values.ycashd.readinessLagBlocks }} ] || { echo "lag $lag"; exit 1; }
+    echo "ready at $blocks"
+  live.sh: |
+    #!/bin/sh
+    ycash-cli -datadir=/var/lib/ycash getblockcount >/dev/null

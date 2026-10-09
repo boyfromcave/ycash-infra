@@ -1,0 +1,7 @@
+.env
+*.tfstate
+*.tfstate.backup
+.terraform/
+infra/eks/*.tfvars
+yindex/bin/
+load/results/

@@ -1,0 +1,95 @@
+{{- if .Values.gateway.enabled }}
+{{- $fn := include "yc.fullname" . }}
+{{- $listeners := list "https" }}{{ if .Values.gateway.plaintextGrpc }}{{ $listeners = append $listeners "grpc" }}{{ end }}
+# gRPC routing by method. yindex takes the address methods of CompactTxStreamer; everything
+# else goes to lightwalletd-dd. GRPCRoute carries native gRPC; the gRPC-web filter below turns
+# the browser's application/grpc-web requests into the same thing before routing.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata: { name: {{ $fn }}-grpc }
+spec:
+  parentRefs:
+    {{- range $listeners }}
+    - { name: {{ $fn }}, sectionName: {{ . }} }
+    {{- end }}
+  hostnames: [{{ .Values.gateway.host | quote }}]
+  rules:
+    {{- if .Values.yindex.enabled }}
+    - matches:
+        {{- range .Values.yindex.routes }}
+        - method: { service: cash.z.wallet.sdk.rpc.CompactTxStreamer, method: {{ . }} }
+        {{- end }}
+      backendRefs: [{ name: {{ $fn }}-yindex, port: 9070 }]
+    {{- end }}
+    - matches:
+        - method: { service: cash.z.wallet.sdk.rpc.CompactTxStreamer }
+        - method: { service: cash.z.wallet.sdk.rpc.YellowbackStreamer }
+      backendRefs: [{ name: {{ $fn }}-lightwalletd, port: 9067 }]
+---
+# The static web bundle on "/" (the same origin as the API, so the CSP's connect-src is 'self').
+{{- if .Values.web.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: { name: {{ $fn }}-web }
+spec:
+  parentRefs: [{ name: {{ $fn }}, sectionName: https }]
+  hostnames: [{{ .Values.gateway.host | quote }}]
+  rules:
+    - matches: [{ path: { type: PathPrefix, value: / } }]
+      backendRefs: [{ name: {{ $fn }}-web, port: 8080 }]
+---
+{{- end }}
+# gRPC-web transcoding (browser) + CORS on the HTTPS listener; h2c upstream.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata: { name: {{ $fn }}-client }
+spec:
+  targetRef: { group: gateway.networking.k8s.io, kind: Gateway, name: {{ $fn }} }
+  http2: {}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata: { name: {{ $fn }}-backend }
+spec:
+  targetRef: { group: gateway.networking.k8s.io, kind: GRPCRoute, name: {{ $fn }}-grpc }
+  loadBalancer: { type: LeastRequest }
+  timeout:
+    http: { requestTimeout: 120s }     # GetBlockRange streams
+  {{- if .Values.gateway.rateLimit.enabled }}
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - limit: { requests: {{ .Values.gateway.rateLimit.perIpPerSecond }}, unit: Second }
+        - clientSelectors:
+            - headers: [{ name: ":path", type: Exact, value: /cash.z.wallet.sdk.rpc.CompactTxStreamer/SendTransaction }]
+          limit: { requests: {{ .Values.gateway.rateLimit.sendPerIpPerMinute }}, unit: Minute }
+  {{- end }}
+---
+# gRPC-web: an EnvoyPatchPolicy adding the grpc_web + cors HTTP filters to the HTTPS listener
+# (Envoy Gateway's native gRPC-web support is tracked at envoyproxy/gateway; until it lands, the
+# patch is the one cloud-agnostic way). Enabled by EG's `enableEnvoyPatchPolicy` (kind-up.sh).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata: { name: {{ $fn }}-grpcweb }
+spec:
+  targetRef: { group: gateway.networking.k8s.io, kind: Gateway, name: {{ $fn }} }
+  type: JSONPatch
+  jsonPatches:
+    - type: type.googleapis.com/envoy.config.listener.v3.Listener
+      name: {{ .Release.Namespace }}/{{ $fn }}/https
+      operation:
+        op: add
+        path: /default_filter_chain/filters/0/typed_config/http_filters/0
+        value:
+          name: envoy.filters.http.grpc_web
+          typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_web.v3.GrpcWeb }
+    - type: type.googleapis.com/envoy.config.listener.v3.Listener
+      name: {{ .Release.Namespace }}/{{ $fn }}/https
+      operation:
+        op: add
+        path: /default_filter_chain/filters/0/typed_config/http_filters/0
+        value:
+          name: envoy.filters.http.cors
+          typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors }
+{{- end }}

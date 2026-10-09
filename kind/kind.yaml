@@ -1,0 +1,20 @@
+# kind create cluster --name ycash --config kind/kind.yaml
+# 443 → the Envoy Gateway (TLS, gRPC + gRPC-web + the web bundle); 9067 → the same, plaintext
+# gRPC for grpcurl/ghz without a certificate; 18832 → the regtest node's RPC for ycash-cli.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ycash
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - { containerPort: 30443, hostPort: 443,   protocol: TCP }
+      - { containerPort: 30067, hostPort: 9067,  protocol: TCP }
+      - { containerPort: 30832, hostPort: 18832, protocol: TCP }
+  - role: worker
+  - role: worker
