@@ -17,7 +17,7 @@ CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
 
-.PHONY: help docker-noauth images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web kind-create kind-load kind-up kind-down kind-smoke kind-load-test eks-deploy lint template
+.PHONY: help docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web kind-create kind-load kind-up kind-down kind-smoke kind-load-test eks-deploy lint template
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -52,6 +52,9 @@ kind-load: ## push the local images into the cluster
 
 kind-up: kind-create kind-load ## cluster + gateway + cert-manager + the chart (values-kind.yaml)
 	scripts/kind-up.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
+
+kind-reset-chain: ## wipe the regtest chain (node + Postgres volumes, attestor set, Jobs) and redeploy
+	scripts/kind-reset-chain.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
 
 kind-down: ## delete the cluster
 	kind delete cluster --name $(CLUSTER)
