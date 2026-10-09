@@ -51,9 +51,9 @@ make kind-load     # ghz against the gateway: the node's RPC ceiling per method 
 make kind-down
 ```
 
-The kind overlay runs one regtest `ycashd` with Overwinter, Sapling and the vault upgrade active
-from height 1 (`-nuparams=5ba81b19:1 -nuparams=76b809bb:1 -nuparams=6d5b7a31:1`; without Sapling
-the chain has no tree state and no shielded wallet can sync against it), a bootstrap Job that mines the chain past coinbase maturity, and a
+The kind overlay runs one regtest `ycashd` with every upgrade through Canopy plus the vault
+upgrade active from height 1 (the seven `-nuparams` the devnet uses; the light clients' regtest
+parameters assume exactly that chain), a bootstrap Job that mines the chain past coinbase maturity, and a
 miner Deployment that keeps mining one block every few seconds, and (`regtest.armYellowback`)
 the arming Job: the devnet's `up` recipe for one node — `set_create` the YED attestor set from
 the node's wallet, mine it, record its id in ConfigMap `ycash-yellowback-set` (the StatefulSet's
