@@ -38,7 +38,15 @@ spec:
             - { name: YCASHD_RPC_THREADS, value: {{ .Values.ycashd.rpc.threads | quote }} }
             - { name: YCASHD_RPC_WORKQUEUE, value: {{ .Values.ycashd.rpc.workqueue | quote }} }
             - { name: YCASHD_LISTEN, value: {{ ternary "1" "0" .Values.ycashd.p2p.listen | quote }} }
-            - { name: YCASHD_EXTRA_ARGS, value: {{ .Values.ycashd.extraArgs | quote }} }
+            {{- /* K0c: the regtest node is also the one quoting pool. The arming Job records a payout
+                   address of the node's wallet in the set ConfigMap; once it is there (a live cluster:
+                   `lookup` sees nothing under `helm template`), the node starts with
+                   -yellowbackpayoutaddress so the blocks the miner generates carry its quote tag. */}}
+            {{- $payout := "" }}
+            {{- if and .Values.regtest.enabled .Values.regtest.armYellowback }}
+            {{- $payout = dig "data" "payoutaddress" "" (lookup "v1" "ConfigMap" .Release.Namespace (printf "%s-yellowback-set" (include "yc.fullname" .))) }}
+            {{- end }}
+            - { name: YCASHD_EXTRA_ARGS, value: {{ ternary (printf "%s -yellowbackpayoutaddress=%s" .Values.ycashd.extraArgs $payout) .Values.ycashd.extraArgs (ne $payout "") | quote }} }
             - { name: YCASHD_CONF_EXTRA, value: {{ .Values.ycashd.confExtra | quote }} }
             {{- if and .Values.regtest.enabled .Values.regtest.armYellowback }}
             # written by the arming Job (templates/kind/arm.yaml); absent until then

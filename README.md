@@ -62,8 +62,26 @@ the node's wallet, mine it, record its id in ConfigMap `ycash-yellowback-set` (t
 `YCASHD_YELLOWBACK_ATTESTOR_SET`) and one attestor key in Secret `ycash-yellowback-attestor`,
 restart the node, wait for `yed_getinfo`, roll lightwalletd (it probes `yed_getinfo` at startup).
 After it, `GetYellowbackInfo` reports `upgrade.status: active` and `attest.status: UNARMED`
-(no attestors are registered; a persona can use the recorded key). The Job is idempotent, and
-`kubectl -n ycash logs job/ycash-arm-yellowback --all-containers` shows what it did.
+(no attestors are registered yet). The Job is idempotent, and
+`kubectl -n ycash logs -l app.kubernetes.io/component=arm-yellowback --all-containers` shows what it did.
+
+### YED for real: attestors, prices, pool quotes (K0c)
+
+```bash
+make kind-personas-up      # the node as the quoting pool (one helm upgrade), yellowback-quote, 3 attestors, attest/subscribe agents, the price walk
+make kind-personas-status  # attest ARMED? the price, the mint gate, a $100 estimate
+make kind-personas-down    # stop the agents; the chain stays ARMED
+```
+
+`scripts/kind-personas.py` runs the devnet's own agents from the workspace (`ycash6/contrib/yellowback`:
+the Rust `yellowback-attest`, built with `cargo build --locked --release` in its crate, and the Python
+`yellowback-quote` under the workspace venv) against the node's host port 18832; the chart's miner is
+the heartbeat and every block it mines carries the node's quote tag. State, configs, logs and the
+attestation bus: `~/.local/state/ycash-infra/personas`. After it `yed_getinfo` is `ARMED` with a
+price and `mint_availability` lists classes A, B, C; the web wallet mints, sends and redeems YED
+(`yew/web/scripts/test-web-smoke.sh --kind --mint https://localhost/`). The arming sequence, RPC by
+RPC: plan §1.2. A `helm upgrade` from a chart without K0c's payout lookup restarts the node without
+its pool flag; `make kind-personas-up` again puts it back (it is resumable).
 
 ### The demo kit (`make demo`)
 
@@ -99,7 +117,7 @@ Settings source field. The tester's guide, screen by screen: [docs/try-it.md](do
   chart; the bootstrap and arming Jobs rebuild everything in a few minutes.
 - **`YellowbackStreamer` is "unknown service"**: the node only registers `yed_*` once an
   attestor set exists and lightwalletd probes for it only at startup; check
-  `job/ycash-arm-yellowback` finished and roll `deployment/ycash-lightwalletd` if it started before
+  the arming Job (`-l app.kubernetes.io/component=arm-yellowback`) finished and roll `deployment/ycash-lightwalletd` if it started before
   the node was armed.
 - **`kind load docker-image` fails with `ctr: content digest ... not found`** for a multi-arch
   image pulled with `--platform` (the kubectl image): the kind nodes pull from Docker Hub
@@ -141,7 +159,7 @@ images/faucet/        the regtest faucet: faucet.py (JSON-RPC, the page, /params
 yindex/               Go: the address index (ingester, Postgres store, gRPC server for the three address methods)
 charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml
 kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host)
-scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), wait-for.sh
+scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), kind-personas.py (K0c), wait-for.sh
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons (helm_release)
 docs/eks-runbook.md   EKS: empty account → smoke green, cost, rollback, open decisions

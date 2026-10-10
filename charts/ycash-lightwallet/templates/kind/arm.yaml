@@ -5,12 +5,16 @@
 # Arm YED on regtest, the devnet's `up` recipe (ycash6/doc/yellowback-devnet.md section 2) as a Job:
 #   1. `set` (init container, the node image): after the bootstrap Job, `set_create` the YED attestor
 #      set from the node's wallet, `generate 1` so it exists, `set_getinfo` to confirm, and make one
-#      attestor key (`getnewaddress` + `dumpprivkey`) for a later attestor persona.
-#   2. `roll` (kubectl): record the set id in the ConfigMap the StatefulSet reads (its
-#      YCASHD_YELLOWBACK_ATTESTOR_SET env, optional until this writes it) and the attestor key in a
-#      Secret, restart the node, wait until `yed_getinfo` answers, then roll lightwalletd (it probes
-#      yed_getinfo once, at startup).
-# Idempotent: a recorded set is reused, an armed node is left alone.
+#      attestor key (`getnewaddress` + `dumpprivkey`) for a later attestor persona, plus (K0c) a
+#      payout address of the node's wallet: the node is also the one quoting pool.
+#   2. `roll` (kubectl): record the set id and the payout address in the ConfigMap the StatefulSet
+#      reads (YCASHD_YELLOWBACK_ATTESTOR_SET env, optional until this writes it; the payout address
+#      through `lookup` at render time, so the NEXT `helm upgrade` -- kind-up.sh runs one -- starts
+#      the node with -yellowbackpayoutaddress) and the attestor key in a Secret, restart the node,
+#      wait until `yed_getinfo` answers, then roll lightwalletd (it probes yed_getinfo once, at startup).
+# Idempotent: a recorded set is reused, an armed node is left alone (only a missing payout address is
+# added to the ConfigMap). The Job's name carries a revision: a Job is immutable, so a changed script
+# is a new Job (bump r<N>) and the completed old one is deleted by the upgrade.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -44,8 +48,9 @@ subjects: [{ kind: ServiceAccount, name: {{ $fn }}-arm-yellowback }]
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ $fn }}-arm-yellowback
+  name: {{ $fn }}-arm-yellowback-r2   # r<N>: bump when the scripts below change (a Job's template is immutable)
   labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: arm-yellowback
 spec:
   backoffLimit: 20
   template:
@@ -75,8 +80,9 @@ spec:
               until $CLI getblockcount >/dev/null 2>&1; do sleep 2; done
               # after the bootstrap Job: the chain is past coinbase maturity, the wallet has mature coins
               until [ "$($CLI getblockcount)" -ge {{ .Values.regtest.bootstrapBlocks }} ]; do sleep 2; done
+              if [ -s /recorded/payoutaddress ]; then PAYOUT=$(cat /recorded/payoutaddress); else PAYOUT=$($CLI getnewaddress); fi
               if $CLI yed_getinfo >/dev/null 2>&1; then
-                echo "armed: yed_getinfo answers"; echo "ARMED=1" > /work/set.env; exit 0
+                echo "armed: yed_getinfo answers"; printf 'ARMED=1\nSETID=%s\nPAYOUT_ADDRESS=%s\n' "$($CLI yed_getinfo | jq -r .upgrade.attestorSetId)" "$PAYOUT" > /work/set.env; exit 0
               fi
               if [ -s /recorded/setid ]; then
                 SETID=$(cat /recorded/setid); echo "set $SETID recorded earlier, reusing it"
@@ -87,7 +93,7 @@ spec:
                 echo "attestor set $SETID exists"
               fi
               ADDR=$($CLI getnewaddress); WIF=$($CLI dumpprivkey "$ADDR")
-              printf 'ARMED=0\nSETID=%s\nATTESTOR_ADDRESS=%s\nATTESTOR_WIF=%s\n' "$SETID" "$ADDR" "$WIF" > /work/set.env
+              printf 'ARMED=0\nSETID=%s\nPAYOUT_ADDRESS=%s\nATTESTOR_ADDRESS=%s\nATTESTOR_WIF=%s\n' "$SETID" "$PAYOUT" "$ADDR" "$WIF" > /work/set.env
       containers:
         - name: roll
           image: {{ include "yc.image" .Values.images.kubectl }}
@@ -107,8 +113,9 @@ spec:
               . /work/set.env
               K="kubectl -n $NS"
               rpc() { curl -sf -u "$YCASHD_RPC_USER:$YCASHD_RPC_PASSWORD" -H 'content-type: text/plain' --data "{\"jsonrpc\":\"1.0\",\"id\":\"arm\",\"method\":\"$1\",\"params\":[]}" "$RPC_URL"; }
-              if [ "$ARMED" = 1 ] && $K get configmap {{ $fn }}-yellowback-set >/dev/null 2>&1; then echo "already armed, nothing to do"; exit 0; fi
-              $K create configmap {{ $fn }}-yellowback-set --from-literal=setid="$SETID" --dry-run=client -o yaml | $K apply -f -
+              if [ "$ARMED" = 1 ] && [ -n "$($K get configmap {{ $fn }}-yellowback-set -o jsonpath='{.data.payoutaddress}' 2>/dev/null)" ]; then echo "already armed, nothing to do"; exit 0; fi
+              $K create configmap {{ $fn }}-yellowback-set --from-literal=setid="$SETID" --from-literal=payoutaddress="$PAYOUT_ADDRESS" --dry-run=client -o yaml | $K apply -f -
+              if [ "$ARMED" = 1 ]; then echo "recorded payout address $PAYOUT_ADDRESS; the next helm upgrade starts the node with -yellowbackpayoutaddress"; exit 0; fi
               $K create secret generic {{ $fn }}-yellowback-attestor --from-literal=setid="$SETID" \
                 --from-literal=address="$ATTESTOR_ADDRESS" --from-literal=wif="$ATTESTOR_WIF" --dry-run=client -o yaml | $K apply -f -
               echo "restarting the node with -yellowbackattestorset=$SETID"

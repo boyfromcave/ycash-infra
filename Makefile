@@ -18,7 +18,7 @@ CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
 
-.PHONY: help docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template kind-parity
+.PHONY: help docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template kind-parity kind-personas-up kind-personas-down kind-personas-status
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -72,6 +72,19 @@ kind-down: ## delete the cluster
 
 kind-smoke: ## GetLightdInfo, GetYellowbackInfo, GetVaultInfo, GetChainInfo, ListSets through the gateway
 	scripts/smoke.sh https://localhost:443
+
+# ---- the Yellowback personas (plan K0c): host-run, the devnet's own agents against the kind node
+PYTHON      ?= $(WORKSPACE)/.venv/bin/python
+PERSONAS    := WORKSPACE=$(WORKSPACE) YCASH6=$(YCASH6) NAMESPACE=$(NAMESPACE) RELEASE=$(RELEASE) CONTEXT=$(CONTEXT) $(PYTHON) scripts/kind-personas.py
+
+kind-personas-up: ## arm YED for real: the node as the quoting pool, 3 registered attestors, attest/quote agents, the price walk (PRICE=50)
+	$(PERSONAS) up --price $(or $(PRICE),50)
+
+kind-personas-down: ## stop the agents (the chain stays ARMED; minting halts once the attestations go stale)
+	$(PERSONAS) down
+
+kind-personas-status: ## the agents, attest status, the price, a mint estimate
+	$(PERSONAS) status
 
 kind-parity: ## yindex vs lightwalletd's node-proxied answers for every address the chain touched (plan K3)
 	scripts/parity.sh localhost:443
