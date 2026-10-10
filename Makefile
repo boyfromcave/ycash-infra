@@ -17,7 +17,7 @@ CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
 
-.PHONY: help docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web kind-create kind-load kind-up kind-down kind-smoke kind-load-test eks-deploy lint template
+.PHONY: help docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web kind-create kind-load kind-up kind-down kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -65,9 +65,55 @@ kind-smoke: ## GetLightdInfo, GetYellowbackInfo, GetVaultInfo, GetChainInfo, Lis
 kind-load-test: ## ghz: the node RPC ceiling per method (plan K1)
 	load/run.sh localhost:443
 
-eks-deploy: ## helm upgrade --install with values-eks.yaml on CONTEXT (DOMAIN=...)
-	helm upgrade --install $(RELEASE) $(CHART) --kube-context $(CONTEXT) -n $(NAMESPACE) --create-namespace \
-	  -f $(CHART)/values-eks.yaml --set gateway.host=$(DOMAIN)
+# ---- EKS (docs/eks-runbook.md). TF_DIR holds the terraform state; terraform output feeds the rest.
+TF_DIR      ?= infra/eks
+TF          ?= terraform -chdir=$(TF_DIR)
+EKS_CONTEXT ?= $(shell $(TF) output -raw cluster_name 2>/dev/null)
+ECR         ?= $(shell $(TF) output -raw ecr_registry 2>/dev/null)
+EKS_DOMAIN  ?= $(shell $(TF) output -raw domain 2>/dev/null || echo $(DOMAIN))
+WEB_REV     ?= $(shell git -C $(YEW) rev-parse --short HEAD 2>/dev/null || echo dev)
+
+eks-up: ## terraform apply (VPC, EKS, IRSA, ECR, RDS, secrets, add-ons) and write the kubeconfig context; needs infra/eks/terraform.tfvars
+	$(TF) init
+	$(TF) apply
+	$$($(TF) output -raw kubeconfig_command)
+
+eks-push: ## tag the four local images with their revs and push them to ECR (make images first)
+	scripts/eks-push.sh "$(ECR)" "$(REGISTRY)" ycashd:$(YCASHD_REV) lightwalletd:$(LWD_REV) yindex:$(YINDEX_REV) web:$(WEB_REV)
+
+eks-deploy: ## helm upgrade --install with values-eks.yaml: ECR images at their revs, the host from terraform (or DOMAIN=)
+	helm upgrade --install $(RELEASE) $(CHART) --kube-context $(EKS_CONTEXT) -n $(NAMESPACE) --create-namespace \
+	  -f $(CHART)/values-eks.yaml --set gateway.host=$(EKS_DOMAIN) \
+	  --set images.ycashd.repository=$(ECR)/ycash/ycashd --set images.ycashd.tag=$(YCASHD_REV) \
+	  --set images.lightwalletd.repository=$(ECR)/ycash/lightwalletd --set images.lightwalletd.tag=$(LWD_REV) \
+	  --set images.yindex.repository=$(ECR)/ycash/yindex --set images.yindex.tag=$(YINDEX_REV) \
+	  --set images.web.repository=$(ECR)/ycash/web --set images.web.tag=$(WEB_REV) \
+	  --wait --timeout 20m
+
+eks-smoke: ## the smoke test against the public host (TLS from Let's Encrypt; ADDR= a funded t-address)
+	ADDR="$(ADDR)" scripts/smoke.sh https://$(EKS_DOMAIN):443
+
+eks-down: ## helm uninstall (releases the NLB and the record) then terraform destroy (RDS and the secrets go too)
+	-helm uninstall $(RELEASE) --kube-context $(EKS_CONTEXT) -n $(NAMESPACE) --wait
+	$(TF) destroy
+
+eks-validate: ## offline: terraform fmt/validate + helm template (values-eks.yaml) through kubeconform with the CRD schemas
+	terraform -chdir=$(TF_DIR) fmt -check -recursive
+	terraform -chdir=$(TF_DIR) init -backend=false -input=false >/dev/null
+	terraform -chdir=$(TF_DIR) validate
+	helm lint $(TF_DIR)/charts/cluster-config --set hostedZoneId=Z0
+	helm lint $(CHART) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET)
+	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
+	# the catalog's external-secrets.io/v1 ClusterSecretStore schema does not compile in kubeconform 0.8 (ExternalSecret v1 does): skipped
+	helm template cc $(TF_DIR)/charts/cluster-config --set hostedZoneId=Z0 | kubeconform -strict -summary -skip ClusterSecretStore $(KUBECONFORM_SCHEMAS)
+
+EKS_LINT_SET := --set gateway.host=lite.example.org \
+  --set images.ycashd.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/ycashd \
+  --set images.lightwalletd.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/lightwalletd --set images.lightwalletd.tag=rev \
+  --set images.yindex.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/yindex --set images.yindex.tag=rev \
+  --set images.web.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/web --set images.web.tag=rev
+# CRD schemas (Gateway API, Envoy Gateway, cert-manager, External Secrets, Prometheus Operator) from datree's catalog
+KUBECONFORM_SCHEMAS := -schema-location default -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
 docker-noauth: ## print an `export DOCKER_CONFIG=...` that bypasses Docker Desktop's hanging keychain helper
 	@d=$${TMPDIR:-/tmp}/docker-noauth; mkdir -p $$d; python3 -c "import json,sys; c=json.load(open('$(HOME)/.docker/config.json')); c.pop('credsStore',None); c['auths']={}; json.dump(c,open('$$d/config.json','w'))"; \
@@ -75,8 +121,8 @@ docker-noauth: ## print an `export DOCKER_CONFIG=...` that bypasses Docker Deskt
 
 lint: ## helm lint + kubeconform + go vet
 	helm lint $(CHART) -f $(CHART)/values-kind.yaml
-	helm lint $(CHART) -f $(CHART)/values-eks.yaml
-	helm template $(RELEASE) $(CHART) -f $(CHART)/values-kind.yaml | kubeconform -strict -ignore-missing-schemas -summary
+	helm lint $(CHART) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET)
+	helm template $(RELEASE) $(CHART) -f $(CHART)/values-kind.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
 	cd yindex && go vet ./...
 
 template: ## render the kind values to stdout

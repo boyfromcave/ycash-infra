@@ -46,7 +46,11 @@ spec:
     kubernetes:
       envoyService:
         type: {{ .Values.gateway.service.type }}
-        {{- with .Values.gateway.service.annotations }}
+        {{- $ann := .Values.gateway.service.annotations }}
+        {{- if .Values.gateway.service.externalDns }}
+        {{- $ann = merge (dict "external-dns.alpha.kubernetes.io/hostname" .Values.gateway.host) $ann }}
+        {{- end }}
+        {{- with $ann }}
         annotations: {{- toYaml . | nindent 10 }}
         {{- end }}
         {{- if eq .Values.gateway.service.type "NodePort" }}

@@ -1,12 +1,14 @@
 # AWS EKS. Differs from kind only in storage, load balancer, DNS/TLS, secrets and sizes.
-# Requires in the cluster: Envoy Gateway, cert-manager with a ClusterIssuer, External Secrets
-# Operator with a ClusterSecretStore "aws-secrets-manager" (infra/eks creates the IRSA role),
-# the AWS Load Balancer Controller, the EBS CSI driver (gp3 StorageClass), kube-prometheus-stack.
+# Requires in the cluster (infra/eks installs all of it, addons.tf): Envoy Gateway, cert-manager
+# with ClusterIssuer letsencrypt-prod, External Secrets Operator with ClusterSecretStore
+# aws-secrets-manager, the AWS Load Balancer Controller, external-dns, the EBS CSI driver (gp3
+# StorageClass), metrics-server (the HPA), kube-prometheus-stack (the ServiceMonitor CRD).
+# Deploy with `make eks-deploy`, which sets the four image repositories (ECR), tags and the host.
 images:
-  ycashd:       { repository: <account>.dkr.ecr.<region>.amazonaws.com/ycash/ycashd,       tag: "6.22.0" }
-  lightwalletd: { repository: <account>.dkr.ecr.<region>.amazonaws.com/ycash/lightwalletd, tag: "<lwd rev>" }
-  yindex:       { repository: <account>.dkr.ecr.<region>.amazonaws.com/ycash/yindex,       tag: "<rev>" }
-  web:          { repository: <account>.dkr.ecr.<region>.amazonaws.com/ycash/web,          tag: "<rev>" }
+  ycashd:       { repository: "", tag: "6.22.0", pullPolicy: IfNotPresent }   # --set images.ycashd.repository=<ecr>/ycash/ycashd
+  lightwalletd: { repository: "", tag: "", pullPolicy: IfNotPresent }         # --set images.lightwalletd.tag=<lwd rev>
+  yindex:       { repository: "", tag: "", pullPolicy: IfNotPresent }         # --set images.yindex.tag=<rev>
+  web:          { repository: "", tag: "", pullPolicy: IfNotPresent }
 ycashd:
   replicas: 3
   network: mainnet
@@ -18,34 +20,36 @@ lightwalletd:
   cache: { medium: Memory, sizeLimit: 1Gi }
   autoscaling: { enabled: true, min: 3, max: 50, cpuUtilization: 60 }
   resources: { requests: { cpu: 500m, memory: 512Mi }, limits: { memory: 2Gi } }
+  trustedProxyCidrs: "10.40.0.0/16"   # the VPC (infra/eks main.tf): Envoy's pod IPs
 yindex:
   replicas: 3
   postgres:
-    enabled: false
-    externalUrl: ""           # RDS Postgres; put the URL in a Secret and reference it (see templates/yindex)
+    enabled: false            # RDS (infra/eks rds.tf); the url arrives via ExternalSecret yindex-postgres {url}
     existingSecret: yindex-postgres
 redis:
   maxmemory: 2gb
   resources: { requests: { cpu: 500m, memory: 2Gi }, limits: { memory: 2560Mi } }
 web:
-  enabled: true
+  enabled: false              # true once the web bundle is in ECR (make image-web + eks-push)
   replicas: 2
 gateway:
-  host: lite.example.org      # --set gateway.host=...
+  host: lite.example.org      # --set gateway.host=... (make eks-deploy DOMAIN=...)
   tls: { mode: certmanager, issuer: letsencrypt-prod }
-  plaintextGrpc: false
+  plaintextGrpc: false        # TLS only on the public host
+  plaintextGrpcCors: false
   service:
     type: LoadBalancer
+    externalDns: true         # external-dns.alpha.kubernetes.io/hostname: <gateway.host>
     annotations:
       service.beta.kubernetes.io/aws-load-balancer-type: external
       service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
       service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
-      external-dns.alpha.kubernetes.io/hostname: lite.example.org
+  clientIp: { stripForwardedHeaders: true, numTrustedHops: 0 }
   rateLimit: { enabled: true, perIpPerSecond: 50, sendPerIpPerMinute: 30 }
-regtest: { enabled: false }
+regtest: { enabled: false, armYellowback: false }
 monitoring: { serviceMonitor: true }
 externalSecrets:
   enabled: true
   storeRef: aws-secrets-manager
-  ycashdRpc: ycash/lite/ycashd-rpc       # Secrets Manager name holding {rpcuser, rpcpassword}
+  ycashdRpc: ycash/lite/ycashd-rpc            # Secrets Manager name holding {rpcuser, rpcpassword} (infra/eks secrets.tf)
   yindexPostgres: ycash/lite/yindex-postgres  # {url}

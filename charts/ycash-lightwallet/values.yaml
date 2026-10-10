@@ -98,6 +98,10 @@ gateway:
     type: LoadBalancer        # kind: NodePort with the ports kind/kind.yaml maps
     nodePorts: { https: 30443, grpc: 30067 }
     annotations: {}
+    externalDns: false        # annotate the Envoy Service with external-dns.alpha.kubernetes.io/hostname: <gateway.host>
+  clientIp:
+    stripForwardedHeaders: false   # EKS: drop client-supplied x-real-ip / x-forwarded-for at the edge (A-3)
+    numTrustedHops: 0              # proxies in front of Envoy (0: the NLB is TCP passthrough, the peer is the client)
   rateLimit:
     enabled: true
     perIpPerSecond: 50

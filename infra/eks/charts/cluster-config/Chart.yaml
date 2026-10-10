@@ -1,0 +1,5 @@
+apiVersion: v2
+name: cluster-config
+description: ClusterIssuer letsencrypt-prod (ACME DNS-01 via Route53) and ClusterSecretStore aws-secrets-manager for the ycash-lightwallet chart on EKS
+type: application
+version: 0.1.0

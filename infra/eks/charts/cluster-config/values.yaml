@@ -1,0 +1,5 @@
+acmeEmail: ops@example.org
+region: us-east-1
+hostedZoneId: ""
+issuerName: letsencrypt-prod
+storeName: aws-secrets-manager

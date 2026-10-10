@@ -1,0 +1,22 @@
+# ACME DNS-01 via Route53 with cert-manager's IRSA role (infra/eks main.tf cert_manager_irsa).
+# DNS-01, not HTTP-01: the gateway serves gRPC on 443 only and has no port-80 listener for a
+# solver to answer on, the certificate can be issued before the NLB exists, and the zone is
+# already written by external-dns with the same kind of role. (HTTP-01 would need an HTTP
+# listener on the Gateway plus cert-manager's experimental Gateway API solver.)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ .Values.issuerName }}
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: {{ .Values.acmeEmail | quote }}
+    privateKeySecretRef:
+      name: {{ .Values.issuerName }}-account
+    solvers:
+      - dns01:
+          route53:
+            region: {{ .Values.region }}
+            {{- with .Values.hostedZoneId }}
+            hostedZoneID: {{ . }}
+            {{- end }}

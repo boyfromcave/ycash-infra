@@ -1,0 +1,8 @@
+# cp terraform.tfvars.example terraform.tfvars (gitignored) and fill in the three required values.
+region         = "us-east-1"
+name           = "ycash-lite"
+domain         = "lite.example.org"           # must be inside the hosted zone below
+hosted_zone_id = "Z0123456789ABCDEFGHIJ"       # aws route53 list-hosted-zones
+acme_email     = "ops@example.org"
+# node_desired = 3           # m6i.xlarge
+# rds_multi_az = false       # true doubles the RDS line of the cost estimate

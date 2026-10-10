@@ -46,6 +46,18 @@ metadata: { name: {{ $fn }}-client }
 spec:
   targetRef: { group: gateway.networking.k8s.io, kind: Gateway, name: {{ $fn }} }
   http2: {}
+  {{- if .Values.gateway.clientIp.stripForwardedHeaders }}
+  # The client IP is the connection's (an NLB in ip target mode preserves it): client-supplied
+  # x-real-ip / x-forwarded-for are dropped before Envoy appends the real address, so
+  # lightwalletd-dd's per-peer limiter (--trusted-proxy-cidr) cannot be spread by a header
+  # (plan §5 A-3). Off on kind, where load/run.sh SPREAD_PEERS=1 uses exactly that to measure
+  # the node instead of the bucket.
+  clientIPDetection:
+    xForwardedFor: { numTrustedHops: {{ .Values.gateway.clientIp.numTrustedHops }} }
+  headers:
+    earlyRequestHeaders:
+      remove: [x-real-ip, x-forwarded-for, x-envoy-external-address]
+  {{- end }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: BackendTrafficPolicy

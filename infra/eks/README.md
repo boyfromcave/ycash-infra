@@ -1,15 +1,20 @@
 # infra/eks
 
+One `terraform apply` from an empty account to a cluster the chart deploys onto: VPC, EKS
+(3 × m6i.xlarge), IRSA roles, ECR, the gp3 StorageClass, RDS Postgres for yindex (`rds.tf`),
+the two Secrets Manager secrets the chart's ExternalSecrets read (`secrets.tf`, generated, never
+typed) and the add-ons as `helm_release` resources (`addons.tf`: Envoy Gateway, cert-manager +
+ClusterIssuer `letsencrypt-prod` by Route53 DNS-01, aws-load-balancer-controller,
+external-secrets + ClusterSecretStore `aws-secrets-manager`, external-dns, metrics-server,
+kube-prometheus-stack; the two cluster-scoped objects are the local chart `charts/cluster-config`).
+
 ```bash
-terraform init && terraform apply -var hosted_zone_arns='["arn:aws:route53:::hostedzone/Z..."]'
-$(terraform output -raw kubeconfig_command)
-# add-ons the chart expects (each one helm install; the IRSA role ARNs are in `terraform output irsa_roles`):
-#   envoy-gateway (oci://docker.io/envoyproxy/gateway-helm), cert-manager (+ a ClusterIssuer letsencrypt-prod),
-#   aws-load-balancer-controller, external-secrets (+ ClusterSecretStore aws-secrets-manager), external-dns,
-#   kube-prometheus-stack
-# secrets in AWS Secrets Manager: ycash/lite/ycashd-rpc {rpcuser,rpcpassword}, ycash/lite/yindex-postgres {url}
-# images: docker tag + push to the ECR repositories in `terraform output ecr_repositories`
-make -C ../.. eks-deploy CONTEXT=<ctx> DOMAIN=lite.example.org
+cp terraform.tfvars.example terraform.tfvars      # region, name, domain, hosted_zone_id, acme_email
+make -C ../.. eks-up                              # terraform init + apply + kubeconfig
+make -C ../.. eks-push eks-deploy eks-smoke       # ECR, the chart, the public host
+make -C ../.. eks-validate                        # offline: fmt, validate, helm template | kubeconform
 ```
-The RDS Postgres for yindex is intentionally not in this module yet (K2); on first promotion
-`yindex.postgres.enabled=true` runs it in-cluster on gp3.
+
+The order, the verification at each step, the cost estimate and the rollback table are in
+[docs/eks-runbook.md](../../docs/eks-runbook.md). Not applied yet (2026-10-09): the workspace
+has no AWS credentials; everything here validates offline.
