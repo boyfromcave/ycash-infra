@@ -41,6 +41,11 @@ if k -n "$NS" get secret "$RELEASE-tls-mkcert" >/dev/null 2>&1; then
   SET+=(--set gateway.tls.mode=existing --set "gateway.tls.secretName=$RELEASE-tls-mkcert")
 fi
 echo "== the chart"
+# One-shot Jobs are immutable once run: a completed bootstrap/arming Job whose rendered spec changed
+# makes the upgrade fail (the arming Job is idempotent; re-running it is harmless).
+for j in $(k -n "$NS" get jobs -l app.kubernetes.io/instance="$RELEASE" -o jsonpath='{range .items[?(@.status.succeeded==1)]}{.metadata.name}{" "}{end}' 2>/dev/null); do
+  k -n "$NS" delete job "$j" --ignore-not-found >/dev/null
+done
 helm upgrade --install "$RELEASE" charts/ycash-lightwallet --kube-context "$CTX" -n "$NS" --create-namespace \
   -f charts/ycash-lightwallet/values-kind.yaml ${SET[@]+"${SET[@]}"} --wait --timeout 15m
 echo "== waiting for the node, the bootstrap job and lightwalletd"
