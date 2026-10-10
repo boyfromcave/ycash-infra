@@ -86,7 +86,7 @@ The nodes sync the Ycash chain from the P2P network (`p2p.listen: true`, port 88
 VPC; they are not reachable inbound from the internet and do not need to be). lightwalletd and
 yindex become ready behind them; the HPA (3–50) needs metrics-server. `lightwalletd.trustedProxyCidrs`
 is the VPC CIDR so the limiter trusts Envoy's forwarded address — and the gateway drops a
-client-supplied `x-real-ip` / `x-forwarded-for` at the edge (`gateway.clientIp.stripForwardedHeaders`,
+client-supplied `x-real-ip` / `x-forwarded-for` at the edge (`gateway.trustForwardedHeaders: false`,
 plan §5 A-3), which kind leaves open for `load/run.sh`.
 
 ## 4. DNS and TLS
