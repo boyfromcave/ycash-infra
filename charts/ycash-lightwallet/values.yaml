@@ -102,6 +102,11 @@ gateway:
     enabled: true
     perIpPerSecond: 50
     sendPerIpPerMinute: 30
+  # false: the gateway drops a client-supplied x-real-ip / x-forwarded-for before Envoy writes
+  # its own from the connection (plan §5 A-3), so lightwalletd-dd's --trusted-proxy-cidr limiter
+  # keys on the real peer. true only when another proxy that sets them stands in front of the
+  # gateway (an L7 load balancer / CDN) — an NLB does not.
+  trustForwardedHeaders: false
 
 # ---- kind-only: the chain itself -------------------------------------------------------------
 regtest:

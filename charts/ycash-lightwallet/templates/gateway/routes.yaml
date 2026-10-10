@@ -39,13 +39,24 @@ spec:
       backendRefs: [{ name: {{ $fn }}-web, port: 8080 }]
 ---
 {{- end }}
-# gRPC-web transcoding (browser) + CORS on the HTTPS listener; h2c upstream.
+# h2c from the client (gRPC) and the client-IP headers lightwalletd-dd's per-peer limiter reads.
+# Envoy forwards a client-supplied x-real-ip untouched and *appends* the peer to a
+# client-supplied x-forwarded-for, so a client naming a fresh x-real-ip per request got a fresh
+# Yellowback bucket per request (plan §5 A-3). Unless the gateway sits behind another trusted
+# proxy (gateway.trustForwardedHeaders), both headers are dropped before Envoy's own header
+# handling (earlyRequestHeaders = early_header_mutation, ahead of the XFF append), so the only
+# x-forwarded-for lightwalletd sees is the one Envoy writes from the connection's peer address.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: ClientTrafficPolicy
 metadata: { name: {{ $fn }}-client }
 spec:
   targetRef: { group: gateway.networking.k8s.io, kind: Gateway, name: {{ $fn }} }
   http2: {}
+  {{- if not .Values.gateway.trustForwardedHeaders }}
+  headers:
+    earlyRequestHeaders:
+      remove: [x-real-ip, x-forwarded-for]
+  {{- end }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: BackendTrafficPolicy
