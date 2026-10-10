@@ -27,7 +27,11 @@ redis:
   maxmemory: 128mb
   resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 192Mi } }
 web:
-  enabled: false              # true once `make image-web` has a bundle
+  enabled: true               # `make image-web YEW=…` + `make kind-load` first (K4)
+  replicas: 1
+  # The yew/web kind smoke (`scripts/test-web-smoke.sh --kind https://localhost/`) fetches the
+  # proving files from its loopback helper instead of download.z.cash: let the CSP allow it.
+  env: { CSP_CONNECT_SRC_EXTRA: "http://127.0.0.1:8766" }
 gateway:
   host: localhost
   tls: { mode: certmanager, issuer: "" }

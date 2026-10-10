@@ -80,6 +80,9 @@ redis:
 web:
   enabled: false
   replicas: 2
+  # Environment of the nginx container (images/web): CSP_CONNECT_SRC_EXTRA widens the CSP's
+  # connect-src (dev only; see values-kind.yaml).
+  env: {}
 
 # ---- Envoy Gateway ----------------------------------------------------------------------------
 gateway:

@@ -19,6 +19,12 @@ spec:
           image: {{ include "yc.image" .Values.images.web }}
           imagePullPolicy: {{ .Values.images.web.pullPolicy }}
           ports: [{ name: http, containerPort: 8080 }]
+          {{- with .Values.web.env }}
+          env:
+            {{- range $k, $v := . }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+          {{- end }}
           readinessProbe: { httpGet: { path: /, port: http } }
           resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { memory: 128Mi } }
 ---

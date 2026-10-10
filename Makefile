@@ -39,9 +39,9 @@ image-lightwalletd: ## lightwalletd-dd from its own Dockerfile
 image-yindex: ## the address index
 	docker build --platform $(PLATFORM) -f images/yindex/Dockerfile -t $(REGISTRY)/yindex:$(YINDEX_REV) -t $(REGISTRY)/yindex:local .
 
-image-web: ## the yew/web static bundle behind nginx (needs yew/web built: `npm run build` there)
-	@test -d $(YEW)/web/dist || { echo "yew/web/dist missing: build the web wallet first (cd $(YEW)/web && npm run build)"; exit 1; }
-	docker build --platform $(PLATFORM) -f images/web/Dockerfile -t $(REGISTRY)/web:local $(YEW)/web
+image-web: ## the yew/web static bundle behind nginx (needs yew/web built: scripts/build-core-wasm.sh + `npm run build` there; YEW=… for a worktree)
+	@test -d $(YEW)/web/dist || { echo "yew/web/dist missing: build the web wallet first (cd $(YEW)/web && scripts/build-core-wasm.sh && npm run build)"; exit 1; }
+	docker buildx build --load --platform $(PLATFORM) --build-context dist=$(YEW)/web/dist -t $(REGISTRY)/web:$(WEB_REV) -t $(REGISTRY)/web:local images/web
 
 kind-create: ## the kind cluster from kind/kind.yaml
 	kind get clusters | grep -qx $(CLUSTER) || kind create cluster --name $(CLUSTER) --config kind/kind.yaml
