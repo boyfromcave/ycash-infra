@@ -17,7 +17,7 @@ CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
 
-.PHONY: help docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web kind-create kind-load kind-up kind-down kind-smoke kind-load-test eks-deploy lint template
+.PHONY: help docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web kind-create kind-load kind-up kind-down kind-smoke kind-parity kind-load-test eks-deploy lint template
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -61,6 +61,9 @@ kind-down: ## delete the cluster
 
 kind-smoke: ## GetLightdInfo, GetYellowbackInfo, GetVaultInfo, GetChainInfo, ListSets through the gateway
 	scripts/smoke.sh https://localhost:443
+
+kind-parity: ## yindex vs lightwalletd's node-proxied answers for every address the chain touched (plan K3)
+	scripts/parity.sh localhost:443
 
 kind-load-test: ## ghz: the node RPC ceiling per method (plan K1)
 	load/run.sh localhost:443
