@@ -114,6 +114,6 @@ type collect struct {
 }
 
 func (c *collect) Send(r *walletrpc.GetAddressUtxosReply) error { return c.f(r) }
-func (c *collect) Context() context.Context                    { return c.ctx }
+func (c *collect) Context() context.Context                     { return c.ctx }
 
 var _ = errors.New

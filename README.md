@@ -47,6 +47,7 @@ Prerequisites: Docker Desktop, `kind`, `kubectl`, `helm` (`brew install kind kub
 make images        # ycashd (from ../../ycash6), lightwalletd-dd (from ../../lightwalletd-dd), yindex, web
 make kind-up       # cluster + Envoy Gateway + cert-manager + the chart with values-kind.yaml
 make kind-smoke    # GetLightdInfo / GetYellowbackInfo / GetVaultInfo / GetChainInfo / ListSets through the gateway over TLS
+make kind-parity   # yindex vs lightwalletd's node-proxied answers for every address the chain touched (plan K3)
 make kind-load     # ghz against the gateway: the node's RPC ceiling per method (plan K1)
 make kind-down
 ```
@@ -118,7 +119,7 @@ images/yindex/        Dockerfile for yindex
 yindex/               Go: the address index (ingester, Postgres store, gRPC server for the three address methods)
 charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml
 kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host)
-scripts/              kind-up.sh, smoke.sh, wait-for.sh
+scripts/              kind-up.sh, smoke.sh, parity.sh (K3), wait-for.sh
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons (helm_release)
 docs/eks-runbook.md   EKS: empty account → smoke green, cost, rollback, open decisions

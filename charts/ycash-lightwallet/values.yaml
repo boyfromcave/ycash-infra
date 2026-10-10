@@ -99,13 +99,15 @@ gateway:
     nodePorts: { https: 30443, grpc: 30067 }
     annotations: {}
     externalDns: false        # annotate the Envoy Service with external-dns.alpha.kubernetes.io/hostname: <gateway.host>
-  clientIp:
-    stripForwardedHeaders: false   # EKS: drop client-supplied x-real-ip / x-forwarded-for at the edge (A-3)
-    numTrustedHops: 0              # proxies in front of Envoy (0: the NLB is TCP passthrough, the peer is the client)
   rateLimit:
     enabled: true
     perIpPerSecond: 50
     sendPerIpPerMinute: 30
+  # false: the gateway drops a client-supplied x-real-ip / x-forwarded-for before Envoy writes
+  # its own from the connection (plan §5 A-3), so lightwalletd-dd's --trusted-proxy-cidr limiter
+  # keys on the real peer. true only when another proxy that sets them stands in front of the
+  # gateway (an L7 load balancer / CDN) — an NLB does not.
+  trustForwardedHeaders: false
 
 # ---- kind-only: the chain itself -------------------------------------------------------------
 regtest:

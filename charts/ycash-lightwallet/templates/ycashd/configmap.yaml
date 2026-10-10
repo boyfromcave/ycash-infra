@@ -7,15 +7,22 @@ data:
   # Ready = RPC answers, initial download finished, and this node's height is within
   # readinessLagBlocks of the best height any peer reports. A node behind the tip leaves the
   # Service's endpoints until it catches up, so lightwalletd never ingests from a lagging node.
+  # The best height is the highest chain tip that is not invalid (getchaintips), not
+  # getblockchaininfo's `headers`: that counts an invalidated branch, so after a reorg that
+  # leaves a longer invalid branch (invalidateblock on kind, a rejected block anywhere) every
+  # node reported "lag N" and left the Service until the active chain outgrew the dead branch —
+  # and on kind nothing could mine it there, because the miner reaches the node through the
+  # Service (found by the K3 reorg test, 2026-10-10).
   ready.sh: |
     #!/bin/sh
     set -eu
     CLI="ycash-cli -datadir=/var/lib/ycash"
     info=$($CLI getblockchaininfo) || exit 1
-    headers=$(echo "$info" | jq -r .headers); blocks=$(echo "$info" | jq -r .blocks)
+    blocks=$(echo "$info" | jq -r .blocks)
     ibd=$(echo "$info" | jq -r '.initial_block_download // false')
     [ "$ibd" = "true" ] && { echo "initial block download"; exit 1; }
-    lag=$((headers - blocks))
+    best=$($CLI getchaintips | jq -r '[.[] | select(.status != "invalid") | .height] | max // 0')
+    lag=$((best - blocks))
     [ "$lag" -le {{ .Values.ycashd.readinessLagBlocks }} ] || { echo "lag $lag"; exit 1; }
     echo "ready at $blocks"
   live.sh: |
