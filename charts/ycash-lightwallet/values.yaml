@@ -11,6 +11,8 @@ images:
   postgres:     { repository: postgres,           tag: 17-alpine, pullPolicy: IfNotPresent }
   # kind only (regtest.armYellowback): kubectl + curl + jq for the arming Job; v1.37.1 on 2026-10-09
   kubectl:      { repository: bitnami/kubectl,    tag: latest, pullPolicy: IfNotPresent }
+  # kind only (regtest.faucet): images/faucet, `make image-faucet`
+  faucet:       { repository: ycash/faucet,       tag: local, pullPolicy: IfNotPresent }
 
 # ---- the node pool ---------------------------------------------------------------------------
 ycashd:
@@ -128,7 +130,20 @@ regtest:
     bondMin: 10               # YEC
     bondLockMin: 200          # blocks
     livenessWindow: 1000      # blocks
+  # The faucet (images/faucet, templates/kind/faucet.yaml): fund-helper's logic as a Deployment
+  # behind the gateway at /faucet/ (the page, /send, /mine, /address, the Sapling proving files at
+  # /faucet/params/ from a PVC filled once). REGTEST ONLY — it spends the node's wallet.
+  faucet:
+    enabled: false
+    rateSeconds: 5            # one acting request (send/mine/reorg) per this many seconds, all callers
+    params: { size: 100Mi, storageClassName: "", url: "https://download.z.cash/downloads/" }
 
 # ---- observability -----------------------------------------------------------------------------
 monitoring:
-  serviceMonitor: false       # kube-prometheus-stack CRDs present
+  serviceMonitor: false       # kube-prometheus-stack CRDs present: scrape lightwalletd (gRPC + cache), yindex (tip/lag), the faucet (node probe)
+  dashboards: false           # the provisioned Grafana dashboard (templates/observability/dashboard.yaml) as a ConfigMap the Grafana sidecar picks up
+  grafana:
+    route: false              # kind demo: HTTPRoute /grafana/ on the gateway → the kube-prometheus-stack Grafana (plus the ReferenceGrant in its namespace)
+    namespace: monitoring
+    service: kube-prometheus-stack-grafana
+    port: 80

@@ -1,0 +1,321 @@
+{
+ "title": "Ycash light-wallet backend (kind demo)",
+ "uid": "ycash-lightwallet",
+ "tags": [
+  "ycash"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "version": 1,
+ "refresh": "10s",
+ "time": {
+  "from": "now-30m",
+  "to": "now"
+ },
+ "templating": {
+  "list": [
+   {
+    "name": "DS",
+    "type": "datasource",
+    "query": "prometheus",
+    "label": "Prometheus",
+    "current": {},
+    "hide": 0
+   }
+  ]
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "timeseries",
+   "title": "lightwalletd gRPC rate (req/s by method)",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (grpc_method) (rate(grpc_server_handled_total[1m]))",
+     "legendFormat": "{{grpc_method}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "type": "timeseries",
+   "title": "lightwalletd gRPC errors (non-OK/s by method)",
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (grpc_method, grpc_code) (rate(grpc_server_handled_total{grpc_code!=\"OK\"}[1m]))",
+     "legendFormat": "{{grpc_method}} {{grpc_code}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "type": "timeseries",
+   "title": "lightwalletd gRPC latency p50 / p95 (unary)",
+   "gridPos": {
+    "x": 0,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(grpc_server_handling_seconds_bucket{grpc_type=\"unary\"}[1m])))",
+     "legendFormat": "p50",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(grpc_server_handling_seconds_bucket{grpc_type=\"unary\"}[1m])))",
+     "legendFormat": "p95",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "type": "timeseries",
+   "title": "yed_* cache (lightwalletd): hits vs misses per second",
+   "gridPos": {
+    "x": 12,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (result) (rate(lightwalletd_yellowback_cache_requests_total[1m]))",
+     "legendFormat": "{{result}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "type": "timeseries",
+   "title": "yindex lag (node tip \u2212 index tip, blocks)",
+   "gridPos": {
+    "x": 0,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "max(yindex_lag_blocks)",
+     "legendFormat": "lag",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "type": "timeseries",
+   "title": "chain tip: node (faucet probe) and yindex",
+   "gridPos": {
+    "x": 12,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "max(faucet_node_height)",
+     "legendFormat": "node",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "max(yindex_tip_height)",
+     "legendFormat": "yindex",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "type": "timeseries",
+   "title": "node RPC probe latency (getblockcount, faucet)",
+   "gridPos": {
+    "x": 0,
+    "y": 24,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "max(faucet_node_rpc_seconds)",
+     "legendFormat": "getblockcount",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "type": "timeseries",
+   "title": "node mempool size / faucet acts",
+   "gridPos": {
+    "x": 12,
+    "y": 24,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${DS}"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "max(faucet_node_mempool_size)",
+     "legendFormat": "mempool txs",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "sum(increase(faucet_requests_total{kind=\"acts\"}[5m]))",
+     "legendFormat": "faucet acts (5m)",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    },
+    {
+     "refId": "C",
+     "expr": "sum(increase(faucet_requests_total{kind=\"limited\"}[5m]))",
+     "legendFormat": "rate-limited (5m)",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${DS}"
+     }
+    }
+   ]
+  }
+ ]
+}

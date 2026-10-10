@@ -1,0 +1,14 @@
+{{- if .Values.monitoring.dashboards }}
+# The Grafana dashboard of the kind demo (plan §2 Demo), provisioned through kube-prometheus-stack's
+# sidecar (label grafana_dashboard, searchNamespace ALL in scripts/kind-up.sh): lightwalletd gRPC
+# rate/errors/latency and the yed_* cache, yindex lag and tips, the node RPC probe and mempool.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yc.fullname" . }}-dashboard
+  labels: {{- include "yc.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  ycash-lightwallet.json: |-
+{{ .Files.Get "dashboards/ycash-lightwallet.json" | indent 4 }}
+{{- end }}

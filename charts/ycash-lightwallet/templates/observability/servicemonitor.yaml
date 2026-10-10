@@ -1,5 +1,8 @@
 {{- if .Values.monitoring.serviceMonitor }}
 {{- $fn := include "yc.fullname" . }}
+# The Services with a /metrics on their `http` port: lightwalletd-dd (grpc_server_* + the yed_*
+# cache counter), yindex (the tip and the lag, stdlib text format), the faucet (the node probe).
+# The web Service's `http` is nginx and is left out.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -8,6 +11,33 @@ metadata:
 spec:
   selector:
     matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }} }
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: In, values: [lightwalletd, yindex, faucet] }
   endpoints:
     - { port: http, path: /metrics, interval: 15s }
+{{- end }}
+{{- if .Values.monitoring.grafana.route }}
+{{- $fn := include "yc.fullname" . }}
+---
+# The kind demo: Grafana (kube-prometheus-stack, another namespace) at /grafana/ on the gateway.
+# Grafana must be told its sub-path (scripts/kind-up.sh sets grafana.ini server.root_url and
+# serve_from_sub_path). The ReferenceGrant in Grafana's namespace lets this route reach it.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: { name: {{ $fn }}-grafana }
+spec:
+  parentRefs: [{ name: {{ $fn }}, sectionName: https }]
+  hostnames: [{{ .Values.gateway.host | quote }}]
+  rules:
+    - matches: [{ path: { type: PathPrefix, value: /grafana } }]
+      backendRefs: [{ name: {{ .Values.monitoring.grafana.service }}, namespace: {{ .Values.monitoring.grafana.namespace }}, port: {{ .Values.monitoring.grafana.port }} }]
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ $fn }}-grafana
+  namespace: {{ .Values.monitoring.grafana.namespace }}
+spec:
+  from: [{ group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: {{ .Release.Namespace }} }]
+  to: [{ group: "", kind: Service, name: {{ .Values.monitoring.grafana.service }} }]
 {{- end }}

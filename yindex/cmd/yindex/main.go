@@ -46,10 +46,28 @@ func main() {
 	node := rpc.New(env("YINDEX_RPC_URL", "http://localhost:18832"), os.Getenv("YINDEX_RPC_USER"), os.Getenv("YINDEX_RPC_PASSWORD"))
 
 	ready := func(context.Context) error { return st.Ping(ctx) }
+	// /metrics (Prometheus text format, no client library): the index tip, the node tip and the lag
+	// between them, for the kind demo's Grafana dashboard (plan §2 Demo). A failed read is left
+	// out rather than reported as 0.
+	metrics := func(c context.Context, w http.ResponseWriter) {
+		c, cancel := context.WithTimeout(c, 3*time.Second)
+		defer cancel()
+		tip, _, errT := st.Tip(c)
+		node, errN := node.BlockCount(c)
+		if errT == nil {
+			fmt.Fprintf(w, "# TYPE yindex_tip_height gauge\nyindex_tip_height %d\n", tip)
+		}
+		if errN == nil {
+			fmt.Fprintf(w, "# TYPE yindex_node_height gauge\nyindex_node_height %d\n", node)
+		}
+		if errT == nil && errN == nil {
+			fmt.Fprintf(w, "# TYPE yindex_lag_blocks gauge\nyindex_lag_blocks %d\n", node-tip)
+		}
+	}
 	switch os.Args[1] {
 	case "ingest":
 		g := &ingest.Ingester{RPC: node, Store: st, Poll: 2 * time.Second}
-		go health(env("YINDEX_HTTP_ADDR", ":9071"), ready)
+		go health(env("YINDEX_HTTP_ADDR", ":9071"), ready, metrics)
 		log.Fatal(g.Run(ctx))
 	case "serve":
 		lis, err := net.Listen("tcp", env("YINDEX_GRPC_ADDR", ":9070"))
@@ -62,7 +80,7 @@ func main() {
 			return h, err
 		}})
 		reflection.Register(gs)
-		go health(env("YINDEX_HTTP_ADDR", ":9071"), ready)
+		go health(env("YINDEX_HTTP_ADDR", ":9071"), ready, metrics)
 		go func() { <-ctx.Done(); gs.GracefulStop() }()
 		log.Printf("yindex serve on %s", lis.Addr())
 		log.Fatal(gs.Serve(lis))
@@ -72,8 +90,12 @@ func main() {
 	}
 }
 
-func health(addr string, ready func(context.Context) error) {
+func health(addr string, ready func(context.Context) error, metrics func(context.Context, http.ResponseWriter)) {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		metrics(r.Context(), w)
+	})
 	mux.HandleFunc("/live", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		if err := ready(r.Context()); err != nil {

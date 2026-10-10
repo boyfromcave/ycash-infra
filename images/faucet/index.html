@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ycash regtest faucet</title>
+<style>
+  :root { color-scheme: light dark; --warn: #b45309; --warnbg: #fef3c7; --line: #8884; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 0 auto; padding: 1rem 16px 3rem; }
+  .banner { background: var(--warnbg); color: var(--warn); border: 1px solid var(--warn); border-radius: .5rem; padding: .5rem .75rem; font-weight: 600; }
+  @media (prefers-color-scheme: dark) { .banner { background: #451a03; color: #fcd34d; } }
+  .card { border: 1px solid var(--line); border-radius: .75rem; padding: 1rem; margin: 1rem 0; }
+  h1 { font-size: 1.4rem; margin: .5rem 0; } h2 { font-size: 1.05rem; margin: 0 0 .5rem; }
+  input[type=text] { width: 100%; box-sizing: border-box; font: inherit; font-family: ui-monospace, monospace; font-size: .9rem; padding: .5rem; border: 1px solid var(--line); border-radius: .5rem; }
+  button { font: inherit; padding: .5rem .9rem; border-radius: .5rem; border: 1px solid var(--line); background: #2563eb; color: #fff; cursor: pointer; margin: .5rem .5rem 0 0; }
+  button.secondary { background: transparent; color: inherit; }
+  button[disabled] { opacity: .5; cursor: wait; }
+  code, .addr { font-family: ui-monospace, monospace; font-size: .9rem; word-break: break-all; }
+  .out { margin-top: .5rem; min-height: 1.5rem; } .ok { color: #15803d; } .err { color: #b91c1c; }
+  .small { font-size: .85rem; opacity: .8; } dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: 0; }
+  dt { opacity: .7; } dd { margin: 0; }
+</style>
+</head>
+<body>
+<div class="banner">REGTEST ONLY — this faucet pays from the in-cluster miner's wallet on a throw-away chain. The coins are worth nothing. Never run it against mainnet.</div>
+<h1>Ycash regtest faucet</h1>
+<p class="small">The kind demo's sidecar (ycash-infra, plan §2 Demo). One request every <span id="rate">5</span> s. <a id="wallet" href="/">Open the wallet</a>.</p>
+
+<div class="card">
+  <h2>Send 2 YEC to your wallet</h2>
+  <p class="small">Paste an address from the wallet's Receive screen: a public one (<code>sm…</code>) is paid with a transparent transaction, a private one (<code>yregtestsapling1…</code>) with a shielded one (the first private send also shields the miner's coinbase, 10–20 s).</p>
+  <input id="addr" type="text" placeholder="sm… or yregtestsapling1…" spellcheck="false" autocomplete="off">
+  <button id="send">Send 2 YEC</button>
+  <button id="send05" class="secondary">Send 0.5 YEC</button>
+  <div id="sendout" class="out"></div>
+</div>
+
+<div class="card">
+  <h2>The chain</h2>
+  <dl>
+    <dt>Tip height</dt><dd id="tip">…</dd>
+    <dt>Mempool</dt><dd id="mempool">…</dd>
+    <dt>Proving files</dt><dd id="params">…</dd>
+  </dl>
+  <button id="mine">Mine 1 block</button>
+  <span class="small">The miner mines one every 5 s anyway; this is for impatience.</span>
+  <div id="mineout" class="out"></div>
+</div>
+
+<div class="card">
+  <h2>Node address (send YEC back here)</h2>
+  <p class="small">A public address of the node's wallet, for the wallet's Send screen. Private sends can go to one of your own private addresses instead.</p>
+  <div class="addr" id="nodeaddr">…</div>
+  <button id="copy" class="secondary">Copy</button>
+  <div id="copyout" class="out"></div>
+</div>
+
+<div class="card">
+  <h2>Proving files for the wallet</h2>
+  <p class="small">Private sends need the Sapling parameters (52 MB). The wallet fetches them from download.z.cash by default; this cluster also serves a verified copy at <code id="paramsurl">/faucet/params/</code> — paste that into the wallet's Settings → "Private sending files" source field, or open the wallet with <a id="walletparams" href="/">the source preset</a>.</p>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

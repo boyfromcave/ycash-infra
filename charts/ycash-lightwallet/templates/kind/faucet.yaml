@@ -1,0 +1,90 @@
+{{- if and .Values.regtest.enabled .Values.regtest.faucet.enabled }}
+{{- $fn := include "yc.fullname" . }}
+{{- $f := .Values.regtest.faucet }}
+# The regtest faucet (images/faucet, plan §2 Demo): yew/web/scripts/fund-helper.py's logic as a
+# Deployment speaking JSON-RPC to the RPC Service, behind the gateway at /faucet/* on the same
+# origin as the wallet (no CORS). It also serves the Sapling proving files from a PVC the init
+# container fills once (download.z.cash, SHA-256 checked). REGTEST ONLY: it spends the node's
+# wallet — the template renders only with regtest.enabled.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fn }}-faucet-params
+  labels: {{- include "yc.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with $f.params.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources: { requests: { storage: {{ $f.params.size }} } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-faucet
+  labels: {{- include "yc.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }    # the params PVC is RWO
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: faucet }
+  template:
+    metadata:
+      labels: {{- include "yc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: faucet
+    spec:
+      securityContext: { runAsUser: 2004, runAsNonRoot: true, fsGroup: 2004 }
+      volumes:
+        - name: params
+          persistentVolumeClaim: { claimName: {{ $fn }}-faucet-params }
+      initContainers:
+        - name: fetch-params
+          image: {{ include "yc.image" .Values.images.faucet }}
+          imagePullPolicy: {{ .Values.images.faucet.pullPolicy }}
+          command: [python3, -I, /app/fetch-params.py]
+          env:
+            - { name: PARAMS_DIR, value: /params }
+            - { name: PARAMS_URL, value: {{ $f.params.url | quote }} }
+          volumeMounts: [{ name: params, mountPath: /params }]
+      containers:
+        - name: faucet
+          image: {{ include "yc.image" .Values.images.faucet }}
+          imagePullPolicy: {{ .Values.images.faucet.pullPolicy }}
+          env:
+            - { name: RPC_URL, value: {{ printf "http://%s:%d/" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) | quote }} }
+            - name: RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
+            - name: RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
+            - { name: PARAMS_DIR, value: /params }
+            - { name: RATE_SECONDS, value: {{ $f.rateSeconds | quote }} }
+            - { name: WALLET_URL, value: "/" }
+          ports: [{ name: http, containerPort: 8080 }]
+          volumeMounts: [{ name: params, mountPath: /params, readOnly: true }]
+          readinessProbe: { httpGet: { path: /faucet/info, port: http }, periodSeconds: 10, timeoutSeconds: 5 }
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-faucet
+  labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: faucet
+spec:
+  selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: faucet }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+---
+{{- if .Values.gateway.enabled }}
+# /faucet/* on the https listener: the longer prefix wins over the web bundle's "/".
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: { name: {{ $fn }}-faucet }
+spec:
+  parentRefs: [{ name: {{ $fn }}, sectionName: https }]
+  hostnames: [{{ .Values.gateway.host | quote }}]
+  rules:
+    - matches: [{ path: { type: PathPrefix, value: /faucet } }]
+      backendRefs: [{ name: {{ $fn }}-faucet, port: 8080 }]
+      timeouts: { request: 600s }    # a private funding shields coinbase first and waits for a block
+{{- end }}
+{{- end }}

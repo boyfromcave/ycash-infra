@@ -44,7 +44,8 @@ Prerequisites: Docker Desktop, `kind`, `kubectl`, `helm` (`brew install kind kub
 (depends are cached in a Docker build-cache mount afterwards).
 
 ```bash
-make images        # ycashd (from ../../ycash6), lightwalletd-dd (from ../../lightwalletd-dd), yindex, web
+make images        # ycashd (from ../../ycash6), lightwalletd-dd (from ../../lightwalletd-dd), yindex, web, faucet
+make demo          # the demo kit: cluster, images, mkcert certificate, Grafana, the chart; prints the URLs (docs/try-it.md)
 make kind-up       # cluster + Envoy Gateway + cert-manager + the chart with values-kind.yaml
 make kind-smoke    # GetLightdInfo / GetYellowbackInfo / GetVaultInfo / GetChainInfo / ListSets through the gateway over TLS
 make kind-parity   # yindex vs lightwalletd's node-proxied answers for every address the chain touched (plan K3)
@@ -63,6 +64,25 @@ restart the node, wait for `yed_getinfo`, roll lightwalletd (it probes `yed_geti
 After it, `GetYellowbackInfo` reports `upgrade.status: active` and `attest.status: UNARMED`
 (no attestors are registered; a persona can use the recorded key). The Job is idempotent, and
 `kubectl -n ycash logs job/ycash-arm-yellowback --all-containers` shows what it did.
+
+### The demo kit (`make demo`)
+
+`make demo` is the kind cluster as a thing a person tests in a browser: idempotent, it creates
+the cluster if needed, loads the images (the wallet bundle is built from the workspace's
+`wt/yew-web` tree when it exists, else `yew/`), installs a certificate for `localhost` from
+**mkcert**'s local CA as the gateway's TLS Secret (`make kind-cert`; `mkcert -install` puts
+that CA into the **system trust store**, a password prompt once; without mkcert the self-signed
+certificate stays and Chrome warns), installs kube-prometheus-stack (`MONITORING=1`, the
+default for `demo`) with Grafana at `/grafana/` on the gateway and the chart's dashboard
+(lightwalletd gRPC rate/latency and the `yed_*` cache, yindex lag, the node RPC probe), and
+applies the chart with the **faucet** on: `regtest.faucet.enabled` (regtest only) runs
+`images/faucet` — `yew/web/scripts/fund-helper.py`'s logic as a Deployment speaking JSON-RPC to
+the RPC Service — behind the gateway at `https://localhost/faucet/` (same origin as the wallet):
+a page (paste an address → Send 2 YEC, public or private by prefix; Mine 1 block; the node's
+address; the tip), the helper's routes (`/send`, `/fund`, `/fund_t`, `/address`, `/mine`,
+`/reorg`), one acting request per 5 s, and the Sapling proving files at `/faucet/params/`
+from a PVC an init container fills once (download.z.cash, SHA-256 checked) for the wallet's
+Settings source field. The tester's guide, screen by screen: [docs/try-it.md](docs/try-it.md).
 
 ### Troubleshooting
 
@@ -116,12 +136,15 @@ second endpoint until the owner says otherwise.
 ```
 images/ycashd/        Dockerfile (from the ycash6 source tree) + Dockerfile.release (from a release tarball) + entrypoint
 images/yindex/        Dockerfile for yindex
+images/web/           Dockerfile + nginx.conf for the yew/web bundle (K4)
+images/faucet/        the regtest faucet: faucet.py (JSON-RPC, the page, /params/), fetch-params.py (the init container)
 yindex/               Go: the address index (ingester, Postgres store, gRPC server for the three address methods)
 charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml
 kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host)
-scripts/              kind-up.sh, smoke.sh, parity.sh (K3), wait-for.sh
+scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), wait-for.sh
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons (helm_release)
 docs/eks-runbook.md   EKS: empty account → smoke green, cost, rollback, open decisions
+docs/try-it.md        the tester's guide to the demo kit (the wallet's screens, the walk, troubleshooting)
 docs/plans/           ycash-infra-plan.md (phases K0–K4, decisions, status)
 ```

@@ -89,6 +89,7 @@ kind: Service
 metadata:
   name: {{ $fn }}-yindex
   labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: yindex
 spec:
   selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: yindex }
   ports:

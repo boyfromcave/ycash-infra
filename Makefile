@@ -3,7 +3,8 @@ WORKSPACE   ?= $(abspath ../..)
 YCASH6      ?= $(WORKSPACE)/ycash6
 YCASH_DD    ?= $(WORKSPACE)/ycash-dd
 LWD         ?= $(WORKSPACE)/lightwalletd-dd
-YEW         ?= $(WORKSPACE)/yew
+# the wallet tree: the workspace's wt/yew-web worktree when it exists (the web shell's branch), else yew/
+YEW         ?= $(if $(wildcard $(WORKSPACE)/wt/yew-web/web),$(WORKSPACE)/wt/yew-web,$(WORKSPACE)/yew)
 CLUSTER     ?= ycash
 NAMESPACE   ?= ycash
 RELEASE     ?= ycash
@@ -17,12 +18,12 @@ CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
 
-.PHONY: help docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web kind-create kind-load kind-up kind-down kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template kind-parity
+.PHONY: help docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template kind-parity
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
 
-images: image-ycashd image-lightwalletd image-yindex image-web ## build every image from the workspace trees
+images: image-ycashd image-lightwalletd image-yindex image-web image-faucet ## build every image from the workspace trees
 
 image-ycashd: ## ycashd from ../../ycash6's own contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
 	docker build --platform $(PLATFORM) -f $(YCASH6)/contrib/docker/ycashd/Dockerfile --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
@@ -43,15 +44,25 @@ image-web: ## the yew/web static bundle behind nginx (needs yew/web built: scrip
 	@test -d $(YEW)/web/dist || { echo "yew/web/dist missing: build the web wallet first (cd $(YEW)/web && scripts/build-core-wasm.sh && npm run build)"; exit 1; }
 	docker buildx build --load --platform $(PLATFORM) --build-context dist=$(YEW)/web/dist -t $(REGISTRY)/web:$(WEB_REV) -t $(REGISTRY)/web:local images/web
 
+image-faucet: ## the regtest faucet (images/faucet: python:3.12-alpine + the standard library)
+	docker build --platform $(PLATFORM) -t $(REGISTRY)/faucet:$(YINDEX_REV) -t $(REGISTRY)/faucet:local images/faucet
+
 kind-create: ## the kind cluster from kind/kind.yaml
 	kind get clusters | grep -qx $(CLUSTER) || kind create cluster --name $(CLUSTER) --config kind/kind.yaml
 
 kind-load: ## push the local images into the cluster
 	kind load docker-image --name $(CLUSTER) $(REGISTRY)/ycashd:local $(REGISTRY)/lightwalletd:local $(REGISTRY)/yindex:local
 	-kind load docker-image --name $(CLUSTER) $(REGISTRY)/web:local
+	-kind load docker-image --name $(CLUSTER) $(REGISTRY)/faucet:local
 
 kind-up: kind-create kind-load ## cluster + gateway + cert-manager + the chart (values-kind.yaml)
 	scripts/kind-up.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
+
+kind-cert: ## a browser-trusted certificate for https://localhost from mkcert's local CA as the gateway's TLS Secret (mkcert -install touches the system trust store)
+	scripts/kind-cert.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
+
+demo: ## idempotent: cluster, images, the mkcert certificate, kube-prometheus-stack, the chart; prints the wallet, faucet and Grafana URLs (docs/try-it.md)
+	MONITORING=$${MONITORING:-1} scripts/demo.sh $(CLUSTER) $(NAMESPACE) $(RELEASE) "$(YEW)"
 
 kind-reset-chain: ## wipe the regtest chain (node + Postgres volumes, attestor set, Jobs) and redeploy
 	scripts/kind-reset-chain.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
