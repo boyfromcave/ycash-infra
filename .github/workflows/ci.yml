@@ -10,9 +10,20 @@ jobs:
         with: { go-version: "1.24" }
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
       - run: helm lint charts/ycash-lightwallet -f charts/ycash-lightwallet/values-kind.yaml
-      - run: helm lint charts/ycash-lightwallet -f charts/ycash-lightwallet/values-eks.yaml --set ycashd.rpc.password=x
-      - run: helm template t charts/ycash-lightwallet -f charts/ycash-lightwallet/values-kind.yaml | kubeconform -strict -ignore-missing-schemas -summary
+      - run: helm template t charts/ycash-lightwallet -f charts/ycash-lightwallet/values-kind.yaml | kubeconform -strict -summary -schema-location default -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
       - run: cd yindex && go vet ./... && go test ./... && go build ./...
+  eks:
+    # offline: terraform fmt/validate for infra/eks and the chart's EKS values through kubeconform with the CRD schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.8" }
+      - uses: azure/setup-helm@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.24" }
+      - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
+      - run: make eks-validate
   yindex-image:
     runs-on: ubuntu-latest
     steps:

@@ -90,14 +90,23 @@ After it, `GetYellowbackInfo` reports `upgrade.status: active` and `attest.statu
 ## Promotion to AWS (EKS)
 
 ```bash
-cd infra/eks && terraform init && terraform apply          # the cluster, one managed node group, IRSA
-make eks-deploy CONTEXT=<kubectl context> DOMAIN=lite.example.org
+cp infra/eks/terraform.tfvars.example infra/eks/terraform.tfvars   # region, domain, hosted zone, ACME email
+make eks-up            # terraform: VPC, EKS, IRSA, ECR, RDS, Secrets Manager, the add-ons (one apply)
+make eks-push          # the four images to ECR at their revs
+make eks-deploy        # the chart with values-eks.yaml; external-dns writes the record, cert-manager issues
+make eks-smoke         # scripts/smoke.sh against https://<domain>
+make eks-down          # helm uninstall + terraform destroy
 ```
+
+Step by step, with the cost estimate and the rollback table: [docs/eks-runbook.md](docs/eks-runbook.md).
+`make eks-validate` (CI job `eks`) checks all of it offline: `terraform validate` and the EKS
+render through kubeconform with the CRD schemas.
 
 `values-eks.yaml` differs from kind in: `gp3` storage class and real PVC sizes; mainnet or testnet
 node flags; the Envoy Gateway behind an NLB with a Route53 record and a cert-manager
-Let's Encrypt issuer; `rpcuser`/`rpcpassword` from AWS Secrets Manager through External Secrets;
-HPA 3–50 on `lightwalletd-dd`; a Redis replica; kube-prometheus-stack required. The public
+Let's Encrypt issuer; `rpcuser`/`rpcpassword` and the RDS url from AWS Secrets Manager through External Secrets;
+HPA 3–50 on `lightwalletd-dd`; the plaintext listener off; client-supplied forwarding headers
+dropped at the edge (plan §5 A-3); kube-prometheus-stack required. The public
 `lite.ycash.xyz` endpoint stays where it is (owner decision I-8, 2026-10-08); this chart is for a
 second endpoint until the owner says otherwise.
 
@@ -111,6 +120,7 @@ charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml,
 kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host)
 scripts/              kind-up.sh, smoke.sh, wait-for.sh
 load/                 ghz scenarios (plan K1)
-infra/eks/            Terraform: VPC, EKS, node group, IRSA, External Secrets
-docs/plans/           ycash-infra-plan.md (phases K0–K3, decisions, status)
+infra/eks/            Terraform: VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons (helm_release)
+docs/eks-runbook.md   EKS: empty account → smoke green, cost, rollback, open decisions
+docs/plans/           ycash-infra-plan.md (phases K0–K4, decisions, status)
 ```
