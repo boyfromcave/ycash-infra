@@ -121,7 +121,10 @@ regtest:
   rpcNodePort: 30832
   # Arm YED (the devnet `up` recipe as a Job, templates/kind/arm.yaml): create the YED attestor set
   # on chain, restart the node with -yellowbackattestorset=<setid>, roll lightwalletd. The set id
-  # lands in ConfigMap <release>-yellowback-set, one attestor key in Secret <release>-yellowback-attestor.
+  # lands in ConfigMap <release>-yellowback-set (with a payout address of the node's wallet: the
+  # StatefulSet renders -yellowbackpayoutaddress from it, K0c, so the node is the quoting pool), one
+  # attestor key in Secret <release>-yellowback-attestor. Attestors, quotes and prices: `make
+  # kind-personas-up` (scripts/kind-personas.py, host-run).
   armYellowback: false
   attestorSet:                # the regtest YED constants (ycash6/src/yellowback/params.cpp, the devnet's set_create)
     seats: 15

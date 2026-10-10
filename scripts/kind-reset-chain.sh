@@ -6,7 +6,8 @@ set -euo pipefail
 CLUSTER=${1:-ycash}; NS=${2:-ycash}; RELEASE=${3:-ycash}; CTX="kind-$CLUSTER"
 k() { kubectl --context "$CTX" -n "$NS" "$@"; }
 k delete job -l app.kubernetes.io/instance="$RELEASE" --ignore-not-found
-k delete job "$RELEASE-bootstrap" "$RELEASE-arm-yellowback" --ignore-not-found
+k delete job "$RELEASE-bootstrap" --ignore-not-found
+k delete job -l app.kubernetes.io/component=arm-yellowback --ignore-not-found
 k scale statefulset "$RELEASE-ycashd" "$RELEASE-postgres" --replicas=0
 k scale deployment "$RELEASE-lightwalletd" "$RELEASE-yindex" "$RELEASE-yindex-ingest" "$RELEASE-miner" --replicas=0
 k wait --for=delete pod -l app.kubernetes.io/component=ycashd --timeout=180s || true
@@ -20,6 +21,9 @@ k scale deployment "$RELEASE-lightwalletd" --replicas=2
 k scale deployment "$RELEASE-yindex" "$RELEASE-yindex-ingest" "$RELEASE-miner" --replicas=1
 k rollout status statefulset/"$RELEASE-ycashd" --timeout=10m
 k wait --for=condition=complete job/"$RELEASE-bootstrap" --timeout=10m
-k wait --for=condition=complete job/"$RELEASE-arm-yellowback" --timeout=15m
+k wait --for=condition=complete job -l app.kubernetes.io/component=arm-yellowback --timeout=15m
+# the arming Job recorded the node's payout address: this upgrade renders -yellowbackpayoutaddress (K0c)
+helm upgrade "$RELEASE" charts/ycash-lightwallet --kube-context "$CTX" -n "$NS" -f charts/ycash-lightwallet/values-kind.yaml --wait --timeout 15m
+k rollout status statefulset/"$RELEASE-ycashd" --timeout=10m
 k rollout status deployment/"$RELEASE-lightwalletd" --timeout=10m
 echo "chain reset; try: make kind-smoke"

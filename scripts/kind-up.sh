@@ -26,4 +26,14 @@ echo "== waiting for the node, the bootstrap job and lightwalletd"
 k -n "$NS" rollout status statefulset/"$RELEASE"-ycashd --timeout=10m
 k -n "$NS" wait --for=condition=complete job/"$RELEASE"-bootstrap --timeout=10m
 k -n "$NS" rollout status deployment/"$RELEASE"-lightwalletd --timeout=10m
-echo "== up. Try: make kind-smoke"
+# K0c: the arming Job (regtest.armYellowback) records the node's payout address in the set ConfigMap;
+# the chart renders -yellowbackpayoutaddress from it through `lookup`, so one more upgrade starts the
+# node as the quoting pool (a no-op on a cluster that already has it).
+if ARM=$(k -n "$NS" get job -l app.kubernetes.io/component=arm-yellowback -o name 2>/dev/null) && [ -n "$ARM" ]; then
+  echo "== waiting for the arming Job, then the upgrade that makes the node the quoting pool"
+  k -n "$NS" wait --for=condition=complete "$ARM" --timeout=20m
+  helm upgrade --install "$RELEASE" charts/ycash-lightwallet --kube-context "$CTX" -n "$NS" \
+    -f charts/ycash-lightwallet/values-kind.yaml --wait --timeout 15m
+  k -n "$NS" rollout status statefulset/"$RELEASE"-ycashd --timeout=10m
+fi
+echo "== up. Try: make kind-smoke; make kind-personas-up (attestors, prices: YED mintable)"
