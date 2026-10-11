@@ -41,7 +41,7 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WORKSPACE = os.environ.get("WORKSPACE") or os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+WORKSPACE = os.environ.get("WORKSPACE") or os.path.abspath(os.path.join(HERE, "..", ".."))
 YCASH6 = os.environ.get("YCASH6") or os.path.join(WORKSPACE, "ycash6")
 QUOTE_AGENT = os.path.join(YCASH6, "contrib", "yellowback", "yellowback-quote")
 ATTEST_CRATE = os.path.join(YCASH6, "contrib", "yellowback", "attest")

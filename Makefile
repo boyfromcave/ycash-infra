@@ -1,5 +1,5 @@
 # ycash-infra: build images from the workspace trees, run the chart on kind, promote to EKS.
-WORKSPACE   ?= $(abspath ../..)
+WORKSPACE   ?= $(abspath ..)
 YCASH6      ?= $(WORKSPACE)/ycash6
 YCASH_DD    ?= $(WORKSPACE)/ycash-dd
 LWD         ?= $(WORKSPACE)/lightwalletd-dd
@@ -25,10 +25,10 @@ help: ## list targets
 
 images: image-ycashd image-lightwalletd image-yindex image-web image-faucet ## build every image from the workspace trees
 
-image-ycashd: ## ycashd from ../../ycash6's own contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
+image-ycashd: ## ycashd from ../ycash6's own contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
 	docker build --platform $(PLATFORM) -f $(YCASH6)/contrib/docker/ycashd/Dockerfile --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
 
-image-ycashd-legacy: ## the v4.5.0 line (../../ycash-dd), same Dockerfile shape, tagged ycashd-legacy
+image-ycashd-legacy: ## the v4.5.0 line (../ycash-dd), same Dockerfile shape, tagged ycashd-legacy
 	docker build --platform $(PLATFORM) -f $(YCASH_DD)/contrib/docker/ycashd/Dockerfile --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd-legacy:local $(YCASH_DD)
 
 proto-sync: ## refresh yindex/walletrpc from lightwalletd-dd (generated code, never edited here)

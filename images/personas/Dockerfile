@@ -15,7 +15,7 @@
 # step needs the node's wallet (RPC) and nothing else; a Job's immutability means the driver is a
 # Deployment that exits into `sleep infinity` once armed, or a revisioned Job as arm.yaml.
 # Build context: the workspace root (rule 5: images are built from the workspace trees, never copies).
-#   docker build -f ycash-infra/images/personas/Dockerfile -t ycash/personas:local ../..
+#   docker build -f ycash-infra/images/personas/Dockerfile -t ycash/personas:local ..
 FROM rust:1.91-bookworm AS attest
 WORKDIR /src
 COPY ycash6/contrib/yellowback/attest /src

@@ -2,7 +2,7 @@
 
 This repository deploys the Ycash light-wallet backend (node pool, `lightwalletd-dd`, `yindex`,
 Redis, Envoy Gateway, the `yew/web` bundle) on Kubernetes. It is a component of the
-yellowback-workspace (`../../AGENTS.md`), on `upgrade/vault` like the other clients.
+yellowback-workspace (`../AGENTS.md`), on `upgrade/vault` like the other clients.
 
 ## Rules
 
@@ -20,7 +20,7 @@ yellowback-workspace (`../../AGENTS.md`), on `upgrade/vault` like the other clie
    transaction for a user. `rpcuser`/`rpcpassword` are the only secrets and they are the
    node's.
 5. **Images are built from the workspace trees at their pinned commits** (`images/*/Dockerfile`
-   read `../../ycash6`, `../../lightwalletd-dd`); the Makefile records the commit in the tag.
+   read `../ycash6`, `../lightwalletd-dd`); the Makefile records the commit in the tag.
    Never copy node or lightwalletd source into this repo.
 6. **Naming:** Yellowback is the thing, YED is the unit (workspace rule 6). No `DigiDollar`.
 7. **Secrets never in git.** `values-eks.yaml` references External Secrets; `values-kind.yaml`

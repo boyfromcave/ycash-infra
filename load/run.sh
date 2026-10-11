@@ -10,7 +10,7 @@ set -euo pipefail
 # request, which the gateway forwards and lightwalletd believes from a trusted proxy: one bucket
 # per request, so the node sees every call). Restore the rate limit afterwards.
 HOSTPORT=${1:-localhost:443}; N=${N:-2000}; C=${C:-50}
-PROTO=${PROTO_DIR:-../../lightwalletd-dd/walletrpc}
+PROTO=${PROTO_DIR:-../lightwalletd-dd/walletrpc}
 # the regtest coinbase address on kind unless ADDR= is given
 ADDR=${ADDR:-$(kubectl --context kind-ycash -n ycash exec ycash-ycashd-0 -- ycash-cli -datadir=/var/lib/ycash listunspent 1 9999999 2>/dev/null | jq -r ".[0].address // empty")}
 mkdir -p load/results

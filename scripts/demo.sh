@@ -9,7 +9,7 @@
 #   5. the chart (scripts/kind-up.sh: add-ons + helm upgrade with the demo values), the waits
 #   6. the URLs and the three rules
 set -euo pipefail
-CLUSTER=${1:-ycash}; NS=${2:-ycash}; RELEASE=${3:-ycash}; YEW=${4:-../../yew}
+CLUSTER=${1:-ycash}; NS=${2:-ycash}; RELEASE=${3:-ycash}; YEW=${4:-../yew}
 CTX="kind-$CLUSTER"; REGISTRY=${REGISTRY:-ycash}
 cd "$(dirname "$0")/.."
 k() { kubectl --context "$CTX" -n "$NS" "$@"; }

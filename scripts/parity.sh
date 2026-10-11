@@ -18,7 +18,7 @@ set -euo pipefail
 GW=${1:-localhost:443}
 CTX=${CONTEXT:-kind-ycash}; NS=${NAMESPACE:-ycash}; RELEASE=${RELEASE:-ycash}
 RETRIES=${RETRIES:-3}
-PROTO=${PROTO_DIR:-$(cd "$(dirname "$0")/.." && pwd)/../../lightwalletd-dd/walletrpc}
+PROTO=${PROTO_DIR:-$(cd "$(dirname "$0")/.." && pwd)/../lightwalletd-dd/walletrpc}
 RPC_USER=${RPC_USER:-ycash}; RPC_PASSWORD=${RPC_PASSWORD:-ycash-regtest}
 RPC_LPORT=${RPC_LPORT:-28832}; LWD_LPORT=${LWD_LPORT:-29067}
 case "$GW" in *:9067) GWFLAGS=-plaintext ;; *) GWFLAGS=-insecure ;; esac

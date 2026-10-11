@@ -63,7 +63,7 @@ terraform -chdir=infra/eks output                   # ecr_registry, rds_endpoint
 ## 2. Images to ECR (`make eks-push`)
 
 ```bash
-make images            # ycashd (../../ycash6), lightwalletd (../../lightwalletd-dd), yindex, web (needs yew/web/dist)
+make images            # ycashd (../ycash6), lightwalletd (../lightwalletd-dd), yindex, web (needs yew/web/dist)
 make eks-push          # docker login to ECR, tag <rev>, push; a rev already there is skipped (immutable tags)
 ```
 

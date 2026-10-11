@@ -4,7 +4,7 @@
 set -euo pipefail
 URL=${1:-https://localhost:443}
 HOSTPORT=${URL#https://}; HOSTPORT=${HOSTPORT#http://}
-PROTO=${PROTO_DIR:-../../lightwalletd-dd/walletrpc}
+PROTO=${PROTO_DIR:-../lightwalletd-dd/walletrpc}
 G="grpcurl -insecure -import-path $PROTO -proto service.proto -proto yellowback.proto"
 H=$HOSTPORT
 echo "-- GetLightdInfo";       $G $H cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo

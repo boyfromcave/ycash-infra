@@ -44,7 +44,7 @@ Prerequisites: Docker Desktop, `kind`, `kubectl`, `helm` (`brew install kind kub
 (depends are cached in a Docker build-cache mount afterwards).
 
 ```bash
-make images        # ycashd (from ../../ycash6), lightwalletd-dd (from ../../lightwalletd-dd), yindex, web, faucet
+make images        # ycashd (from ../ycash6), lightwalletd-dd (from ../lightwalletd-dd), yindex, web, faucet
 make demo          # the demo kit: cluster, images, mkcert certificate, Grafana, the chart; prints the URLs (docs/try-it.md)
 make kind-up       # cluster + Envoy Gateway + cert-manager + the chart with values-kind.yaml
 make kind-smoke    # GetLightdInfo / GetYellowbackInfo / GetVaultInfo / GetChainInfo / ListSets through the gateway over TLS
