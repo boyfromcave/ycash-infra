@@ -1,8 +1,26 @@
 # ycash-infra: build images from the workspace trees, run the chart on kind, promote to EKS.
 WORKSPACE   ?= $(abspath ..)
+# The node line the images are built from (AGENTS.md rule 5). quantum (default): the post-quantum line,
+# branch upgrade/quantum-vaults, rpcversion 8 -- the workspace's integration worktrees wt/q6, wt/q-dd and
+# wt/lightwalletd-dd-qv (the main trees stay on upgrade/vault). vault: the main trees, upgrade/vault,
+# rpcversion 6 (then --set ycashd.rpcVersion=6). The chart's ycashd.rpcVersion must match the line.
+LINE        ?= quantum
+ifeq ($(LINE),quantum)
+LINE_BRANCH := upgrade/quantum-vaults
+YCASH6      ?= $(WORKSPACE)/wt/q6
+YCASH_DD    ?= $(WORKSPACE)/wt/q-dd
+LWD         ?= $(WORKSPACE)/wt/lightwalletd-dd-qv
+else ifeq ($(LINE),vault)
+LINE_BRANCH := upgrade/vault
 YCASH6      ?= $(WORKSPACE)/ycash6
 YCASH_DD    ?= $(WORKSPACE)/ycash-dd
 LWD         ?= $(WORKSPACE)/lightwalletd-dd
+else
+$(error LINE=$(LINE): quantum or vault)
+endif
+# the node image's Dockerfile (contrib/docker/ycashd/, K0a); it COPYs its entrypoint from the build context
+YCASHD_DOCKERFILE ?= $(YCASH6)/contrib/docker/ycashd/Dockerfile
+YCASHD_LEGACY_DOCKERFILE ?= $(YCASH_DD)/contrib/docker/ycashd/Dockerfile
 # the wallet tree: the workspace's wt/yew-web worktree when it exists (the web shell's branch), else yew/
 YEW         ?= $(if $(wildcard $(WORKSPACE)/wt/yew-web/web),$(WORKSPACE)/wt/yew-web,$(WORKSPACE)/yew)
 CLUSTER     ?= ycash
@@ -18,23 +36,32 @@ CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
 
-.PHONY: help docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template kind-parity kind-personas-up kind-personas-down kind-personas-status
+.PHONY: help line docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template kind-parity kind-personas-up kind-personas-down kind-personas-status
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
 
 images: image-ycashd image-lightwalletd image-yindex image-web image-faucet ## build every image from the workspace trees
 
-image-ycashd: ## ycashd from ../ycash6's own contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
-	docker build --platform $(PLATFORM) -f $(YCASH6)/contrib/docker/ycashd/Dockerfile --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
+line: ## the node line the images build from: each tree, its branch and commit (LINE=quantum|vault)
+	@for t in $(YCASH6) $(YCASH_DD) $(LWD); do \
+	  b=$$(git -C $$t rev-parse --abbrev-ref HEAD 2>/dev/null || echo missing); \
+	  printf '  %-14s %-24s %s\n' "$$(basename $$t)" "$$b" "$$(git -C $$t rev-parse --short HEAD 2>/dev/null)"; \
+	  case "$$b" in $(LINE_BRANCH)|q/*|up/*) ;; *) echo "  $$t is not on $(LINE_BRANCH) (LINE=$(LINE))"; exit 1;; esac; \
+	done
 
-image-ycashd-legacy: ## the v4.5.0 line (../ycash-dd), same Dockerfile shape, tagged ycashd-legacy
-	docker build --platform $(PLATFORM) -f $(YCASH_DD)/contrib/docker/ycashd/Dockerfile --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd-legacy:local $(YCASH_DD)
+image-ycashd: line ## ycashd from the LINE's ycash6 tree and its contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
+	@test -f $(YCASHD_DOCKERFILE) || { echo "$(YCASHD_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not on $(LINE_BRANCH) in $(YCASH6) yet"; exit 1; }
+	docker build --platform $(PLATFORM) -f $(YCASHD_DOCKERFILE) --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
+
+image-ycashd-legacy: line ## the LINE's v4.5.0 tree (ycash-dd), same Dockerfile shape, tagged ycashd-legacy
+	@test -f $(YCASHD_LEGACY_DOCKERFILE) || { echo "$(YCASHD_LEGACY_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not on $(LINE_BRANCH) in $(YCASH_DD) yet"; exit 1; }
+	docker build --platform $(PLATFORM) -f $(YCASHD_LEGACY_DOCKERFILE) --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd-legacy:local $(YCASH_DD)
 
 proto-sync: ## refresh yindex/walletrpc from lightwalletd-dd (generated code, never edited here)
 	cp $(LWD)/walletrpc/{service.pb.go,service_grpc.pb.go,compact_formats.pb.go,service.proto,compact_formats.proto} yindex/walletrpc/
 
-image-lightwalletd: ## lightwalletd-dd from its own Dockerfile
+image-lightwalletd: line ## the LINE's lightwalletd-dd tree from its own Dockerfile; it speaks exactly the line's rpcversion
 	docker build --platform $(PLATFORM) --build-arg LWD_VERSION=$(LWD_REV) -t $(REGISTRY)/lightwalletd:$(LWD_REV) -t $(REGISTRY)/lightwalletd:local $(LWD)
 
 image-yindex: ## the address index
@@ -135,7 +162,7 @@ eks-validate: ## offline: terraform fmt/validate + helm template (values-eks.yam
 	helm template cc $(TF_DIR)/charts/cluster-config --set hostedZoneId=Z0 | kubeconform -strict -summary -skip ClusterSecretStore $(KUBECONFORM_SCHEMAS)
 
 EKS_LINT_SET := --set gateway.host=lite.example.org \
-  --set images.ycashd.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/ycashd \
+  --set images.ycashd.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/ycashd --set images.ycashd.tag=rev \
   --set images.lightwalletd.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/lightwalletd --set images.lightwalletd.tag=rev \
   --set images.yindex.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/yindex --set images.yindex.tag=rev \
   --set images.web.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/web --set images.web.tag=rev
