@@ -10,7 +10,25 @@ swap storage class, load balancer, DNS and secrets and nothing else.
 
 Design and decisions: [docs/plans/ycash-infra-plan.md](docs/plans/ycash-infra-plan.md)
 (ideation record: workspace `docs/ideation/yellowback-web-wallet-and-k8s-plan.md`, branch
-`ideation/web-wallet`). Working rules: [AGENTS.md](AGENTS.md).
+`ideation/web-wallet`). Working rules: [AGENTS.md](AGENTS.md). Part of
+[Ycash vaults and Yellowback](https://github.com/boyfromcave/yellowback).
+
+## Node line: `upgrade/vault`, not yet post-quantum
+
+The `ycashd` image is built from the workspace's `ycash6` tree as checked out, which is
+`upgrade/vault` (`make images`; `YCASH6=` points elsewhere). Those nodes answer `yed_getinfo` with
+`rpcversion` 6. **The post-quantum line (`upgrade/quantum-vaults`, `rpcversion` 8) is not
+supported yet**, and three things stand in the way:
+
+- **`yindex` indexes P2PKH only.** It takes `s…` addresses and maps YED `ye…`/`yt…`/`yr…`
+  addresses to them; post-quantum addresses (`sq…`, PQ `yb…` owners) and the new mainnet YED
+  prefix `yb…` are refused, and `TX_PQPKH` outputs are not indexed. The node side of that index
+  is still open too.
+- **The regtest arming Job** creates the YED attestor set with `maturity 1`; the post-quantum
+  line's regtest floor is 2.
+- **No smoke test** has run this chart against post-quantum nodes.
+
+Until then, try the post-quantum line on the node repositories' devnet.
 
 ## What runs, and what is shared
 
