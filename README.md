@@ -48,12 +48,18 @@ the five address methods in `yindex.routes`.
 ## Quick start (kind)
 
 Prerequisites: Docker Desktop, `kind`, `kubectl`, `helm` (`brew install kind kubectl helm`),
-`grpcurl` for the smoke test. The node image is built from the workspace's `ycash6` tree
-(`upgrade/vault`); the first build is a full `zcutil/build.sh` and takes 1–2 h on a laptop
-(depends are cached in a Docker build-cache mount afterwards).
+`grpcurl` for the smoke test. The node and lightwalletd-dd images are built from the node line
+`LINE` names: `quantum` (the default) is the post-quantum line, `upgrade/quantum-vaults`, rpcversion
+8, from the workspace's integration worktrees `wt/q6`, `wt/q-dd` and `wt/lightwalletd-dd-qv`;
+`LINE=vault` is `upgrade/vault` (rpcversion 6) from the main trees, deployed with
+`--set ycashd.rpcVersion=6`. `make line` prints and checks the trees. lightwalletd-dd matches the
+node's `yed_getinfo.rpcversion` exactly, and the chart's arming Job refuses a node whose rpcversion
+is not `ycashd.rpcVersion`, so both images must come from one line. The node image needs
+`contrib/docker/ycashd/` (K0a) in the node tree; the first build is a full `zcutil/build.sh` and
+takes 1–2 h on a laptop (depends are cached in a Docker build-cache mount afterwards).
 
 ```bash
-make images        # ycashd (from ../ycash6), lightwalletd-dd (from ../lightwalletd-dd), yindex, web, faucet
+make images        # ycashd + lightwalletd-dd (from the LINE's trees), yindex, web, faucet
 make demo          # the demo kit: cluster, images, mkcert certificate, Grafana, the chart; prints the URLs (docs/try-it.md)
 make kind-up       # cluster + Envoy Gateway + cert-manager + the chart with values-kind.yaml
 make kind-smoke    # GetLightdInfo / GetYellowbackInfo / GetVaultInfo / GetChainInfo / ListSets through the gateway over TLS
@@ -64,12 +70,15 @@ make kind-down
 
 The kind overlay runs one regtest `ycashd` with every upgrade through Canopy plus the vault
 upgrade active from height 1 (the seven `-nuparams` the devnet uses; the light clients' regtest
-parameters assume exactly that chain), a bootstrap Job that mines the chain past coinbase maturity, and a
+parameters assume exactly that chain) and Falcon admitted from it (`-pqfalcon=1`, as on mainnet), a bootstrap Job that mines the chain past coinbase maturity, and a
 miner Deployment that keeps mining one block every few seconds, and (`regtest.armYellowback`)
 the arming Job: the devnet's `up` recipe for one node — `set_create` the YED attestor set from
-the node's wallet, mine it, record its id in ConfigMap `ycash-yellowback-set` (the StatefulSet's
+the node's wallet (OPEN, 15 seats, maturity = the YED module's `BOND_MATURITY`: 8 on regtest,
+16,128 on mainnet/testnet — the post-quantum line refuses a set below 2 / 16,128, D-Q-31, and the
+module adopts only that value; `regtest.attestorSet.maturity` overrides and the render fails on
+either mistake), mine it, record its id in ConfigMap `ycash-yellowback-set` (the StatefulSet's
 `YCASHD_YELLOWBACK_ATTESTOR_SET`) and one attestor key in Secret `ycash-yellowback-attestor`,
-restart the node, wait for `yed_getinfo`, roll lightwalletd (it probes `yed_getinfo` at startup).
+restart the node, wait for `yed_getinfo` and check its `rpcversion` against `ycashd.rpcVersion`, roll lightwalletd (it probes `yed_getinfo` at startup).
 After it, `GetYellowbackInfo` reports `upgrade.status: active` and `attest.status: UNARMED`
 (no attestors are registered yet). The Job is idempotent, and
 `kubectl -n ycash logs -l app.kubernetes.io/component=arm-yellowback --all-containers` shows what it did.

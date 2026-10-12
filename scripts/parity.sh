@@ -67,8 +67,32 @@ compare() { # what address fn
   return 1
 }
 
+# A post-quantum address (53 characters: sq…/tq…/rq…, a TX_PQPKH output, D-Q-20) is refused by
+# lightwalletd-dd's own taddr methods (rpcversion 7+), so yindex is compared with the node's address
+# index directly (getaddressbalance / getaddressutxos / getaddresstxids, -insightexplorer): the
+# balance, and the UTXO and txid counts (the txid range bounded to the tip as above).
+pq_compare() { # address
+  local a=$1 try nb nu nt yb yu yt
+  for try in $(seq 1 "$RETRIES"); do
+    nb=$(rpc getaddressbalance "[{\"addresses\":[\"$a\"]}]" | jq -c '.balance | tostring')
+    nu=$(rpc getaddressutxos "[{\"addresses\":[\"$a\"]}]" | jq 'length')
+    nt=$(rpc getaddresstxids "[{\"addresses\":[\"$a\"],\"start\":1,\"end\":$TIP}]" | jq 'length')
+    yb=$(balance yx "$a"); yu=$(utxos yx "$a" | grep -c . || true); yt=$(txids yx "$a" | grep -c . || true)
+    [ "$nb" == "$yb" ] && [ "$nu" == "$yu" ] && [ "$nt" == "$yt" ] && { echo "$yu $yt"; return 0; }
+    sleep 3
+  done
+  echo "MISMATCH pq $a: node balance=$nb utxos=$nu txids=$nt, yindex balance=$yb utxos=$yu txids=$yt" >&2
+  return 1
+}
+
 bad=0; rows=0; txs=0
 for a in $ADDRS; do
+  if [ "${#a}" -eq 53 ]; then
+    r=$(pq_compare "$a") || { bad=$((bad+1)); r="0 0"; }
+    rows=$((rows+${r% *})); txs=$((txs+${r#* }))
+    printf '  %s  utxos=%s  txids=%s  (vs the node)\n' "$a" "${r% *}" "${r#* }"
+    continue
+  fi
   u=$(compare utxos "$a" utxos) || { bad=$((bad+1)); u=0; }
   b=$(compare balance "$a" balance) || bad=$((bad+1))
   t=$(compare txids "$a" txids) || { bad=$((bad+1)); t=0; }
