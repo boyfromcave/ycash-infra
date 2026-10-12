@@ -5,7 +5,9 @@
 # StorageClass), metrics-server (the HPA), kube-prometheus-stack (the ServiceMonitor CRD).
 # Deploy with `make eks-deploy`, which sets the four image repositories (ECR), tags and the host.
 images:
-  ycashd:       { repository: "", tag: "6.22.0", pullPolicy: IfNotPresent }   # --set images.ycashd.repository=<ecr>/ycash/ycashd
+  # make eks-deploy sets the tag to the node tree's commit: 6.22.0 is the version of BOTH upgrade/vault and
+  # upgrade/quantum-vaults, so a version tag alone does not say which line (and rpcversion) it is
+  ycashd:       { repository: "", tag: "", pullPolicy: IfNotPresent }   # --set images.ycashd.repository=<ecr>/ycash/ycashd
   lightwalletd: { repository: "", tag: "", pullPolicy: IfNotPresent }         # --set images.lightwalletd.tag=<lwd rev>
   yindex:       { repository: "", tag: "", pullPolicy: IfNotPresent }         # --set images.yindex.tag=<rev>
   web:          { repository: "", tag: "", pullPolicy: IfNotPresent }

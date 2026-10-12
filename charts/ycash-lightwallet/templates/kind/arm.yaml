@@ -48,7 +48,7 @@ subjects: [{ kind: ServiceAccount, name: {{ $fn }}-arm-yellowback }]
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ $fn }}-arm-yellowback-r2   # r<N>: bump when the scripts below change (a Job's template is immutable)
+  name: {{ $fn }}-arm-yellowback-r3   # r<N>: bump when the scripts below change (a Job's template is immutable)
   labels: {{- include "yc.labels" . | nindent 4 }}
     app.kubernetes.io/component: arm-yellowback
 spec:
@@ -87,7 +87,7 @@ spec:
               if [ -s /recorded/setid ]; then
                 SETID=$(cat /recorded/setid); echo "set $SETID recorded earlier, reusing it"
               else
-                SETID=$($CLI set_create '{{ printf "{\"seats\":%d,\"unlockthreshold\":1,\"cancelthreshold\":1,\"slashthreshold\":1,\"open\":true,\"maturity\":1,\"bondmin\":%d,\"bondlockmin\":%d,\"livenesswindow\":%d}" (int $set.seats) (int $set.bondMin) (int $set.bondLockMin) (int $set.livenessWindow) }}' | jq -r .setid)
+                SETID=$($CLI set_create '{{ printf "{\"seats\":%d,\"unlockthreshold\":1,\"cancelthreshold\":1,\"slashthreshold\":1,\"open\":true,\"maturity\":%d,\"bondmin\":%d,\"bondlockmin\":%d,\"livenesswindow\":%d}" (int $set.seats) (int (include "yc.attestorSetMaturity" .)) (int $set.bondMin) (int $set.bondLockMin) (int $set.livenessWindow) }}' | jq -r .setid)
                 $CLI generate 1 >/dev/null
                 until $CLI set_getinfo "$SETID" >/dev/null 2>&1; do sleep 2; done
                 echo "attestor set $SETID exists"
@@ -123,6 +123,10 @@ spec:
               $K rollout status statefulset/{{ $fn }}-ycashd --timeout=15m
               until rpc yed_getinfo | jq -e '.result.rpcversion' >/dev/null 2>&1; do sleep 3; done
               rpc yed_getinfo | jq '.result | {rpcversion, upgrade, attest}'
+              WANT={{ int .Values.ycashd.rpcVersion }}; GOT=$(rpc yed_getinfo | jq -r .result.rpcversion)
+              if [ "$WANT" != 0 ] && [ "$GOT" != "$WANT" ]; then
+                echo "the node answers rpcversion $GOT, the chart expects $WANT (ycashd.rpcVersion): build the images from the matching node line"; exit 1
+              fi
               echo "rolling lightwalletd so it probes yed_getinfo again"
               $K rollout restart deployment/{{ $fn }}-lightwalletd
               $K rollout status deployment/{{ $fn }}-lightwalletd --timeout=10m
