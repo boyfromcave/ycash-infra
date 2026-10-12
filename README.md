@@ -36,6 +36,15 @@ everything else to `lightwalletd-dd`. **No source change in `lightwalletd-dd`** 
 surface: clients still see exactly the four services of the proto
 (`CompactTxStreamer`, `YellowbackStreamer`, and nothing else).
 
+`yindex` takes every transparent address form the post-quantum node line renders or accepts:
+`s1…`/`sm…` P2PKH and P2SH, YED `yb…`/`yt…`/`yr…` (35 characters, mapped to the transparent
+twin), plain-YEC post-quantum `sq…`/`tq…`/`rq…` (53 characters: a `TX_PQPKH` output,
+`20 <SHA256(scheme‖pk)> 51|52 c2`, D-Q-20) and post-quantum YED `yb…`/`yt…`/`yr…` (53 characters,
+mapped to the `sq…`/`tq…`/`rq…` form of the same script). The old mainnet YED prefix `ye…` is
+refused, as the post-quantum node refuses it (D-Q-21). A post-quantum address reaches only the
+methods the gateway routes to `yindex`: `lightwalletd-dd`'s own taddr methods refuse it, so keep
+the five address methods in `yindex.routes`.
+
 ## Quick start (kind)
 
 Prerequisites: Docker Desktop, `kind`, `kubectl`, `helm` (`brew install kind kubectl helm`),
