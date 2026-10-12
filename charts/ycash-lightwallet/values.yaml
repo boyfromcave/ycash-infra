@@ -18,6 +18,12 @@ images:
 ycashd:
   replicas: 2
   network: mainnet            # mainnet | testnet | regtest
+  # The node line the image must be built from: the arming Job refuses a node whose
+  # yed_getinfo.rpcversion differs (8 = the post-quantum line, upgrade/quantum-vaults: PQ vault owners,
+  # TX_PQPKH holders, sq…/yb… addresses, the fee structure; 6 = upgrade/vault in-term). lightwalletd-dd
+  # checks the same number exactly (common.KnownRPCVersion), so build both images from the same line
+  # (Makefile LINE=quantum, the default). 0 = no check.
+  rpcVersion: 8
   extraArgs: ""               # appended verbatim (regtest: "-nuparams=6d5b7a31:1"; the attestor set comes from the arming Job)
   confExtra: ""               # extra ycash.conf lines
   rpc:
@@ -133,6 +139,11 @@ regtest:
     bondMin: 10               # YEC
     bondLockMin: 200          # blocks
     livenessWindow: 1000      # blocks
+    # The set's maturity (its bond exit delay). "" = the YED module's BOND_MATURITY for the network
+    # (regtest 8, mainnet/testnet 16,128), the only value it adopts; the post-quantum line's
+    # set_create refuses less than 2 on regtest and 16,128 on mainnet/testnet (D-Q-31), so the
+    # render fails on either mistake (templates/_helpers.tpl yc.attestorSetMaturity).
+    maturity: ""
   # The faucet (images/faucet, templates/kind/faucet.yaml): fund-helper's logic as a Deployment
   # behind the gateway at /faucet/ (the page, /send, /mine, /address, the Sapling proving files at
   # /faucet/params/ from a PVC filled once). REGTEST ONLY — it spends the node's wallet.
