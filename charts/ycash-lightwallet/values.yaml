@@ -22,7 +22,7 @@ ycashd:
   # yed_getinfo.rpcversion differs (8 = the post-quantum line, upgrade/quantum-vaults: PQ vault owners,
   # TX_PQPKH holders, sq…/yb… addresses, the fee structure; 6 = upgrade/vault in-term). lightwalletd-dd
   # checks the same number exactly (common.KnownRPCVersion), so build both images from the same line
-  # (Makefile LINE=quantum, the default). 0 = no check.
+  # (`make line` prints the trees' rpcversion). 0 = no check.
   rpcVersion: 8
   extraArgs: ""               # appended verbatim (regtest: "-nuparams=6d5b7a31:1"; the attestor set comes from the arming Job)
   confExtra: ""               # extra ycash.conf lines

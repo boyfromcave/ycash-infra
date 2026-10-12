@@ -48,18 +48,20 @@ the five address methods in `yindex.routes`.
 ## Quick start (kind)
 
 Prerequisites: Docker Desktop, `kind`, `kubectl`, `helm` (`brew install kind kubectl helm`),
-`grpcurl` for the smoke test. The node and lightwalletd-dd images are built from the node line
-`LINE` names: `quantum` (the default) is the post-quantum line, `upgrade/quantum-vaults`, rpcversion
-8, from the workspace's integration worktrees `wt/q6`, `wt/q-dd` and `wt/lightwalletd-dd-qv`;
-`LINE=vault` is `upgrade/vault` (rpcversion 6) from the main trees, deployed with
-`--set ycashd.rpcVersion=6`. `make line` prints and checks the trees. lightwalletd-dd matches the
-node's `yed_getinfo.rpcversion` exactly, and the chart's arming Job refuses a node whose rpcversion
-is not `ycashd.rpcVersion`, so both images must come from one line. The node image needs
+`grpcurl` for the smoke test. The node and lightwalletd-dd images are built from the workspace's
+main repo dirs `../ycash6`, `../ycash-dd` and `../lightwalletd-dd` (override `YCASH6=`, `YCASH_DD=`,
+`LWD=`), on the branch `BRANCH` names (default `upgrade/vault`; `LINE=quantum` is shorthand for
+`BRANCH=upgrade/quantum-vaults`, `LINE=vault` for `upgrade/vault`). `make line` checks that each
+tree's HEAD contains `BRANCH` and that ycashd and lightwalletd-dd speak one rpcversion
+(`RPC_VERSION=8` requires it), and prints it. lightwalletd-dd matches the node's
+`yed_getinfo.rpcversion` exactly, and the chart's arming Job refuses a node whose rpcversion is not
+`ycashd.rpcVersion` (default 8, the post-quantum line; `--set ycashd.rpcVersion=6` for an
+`upgrade/vault` tree from before the post-quantum merge). The node image needs
 `contrib/docker/ycashd/` (K0a) in the node tree; the first build is a full `zcutil/build.sh` and
 takes 1–2 h on a laptop (depends are cached in a Docker build-cache mount afterwards).
 
 ```bash
-make images        # ycashd + lightwalletd-dd (from the LINE's trees), yindex, web, faucet
+make images        # ycashd + lightwalletd-dd (from the BRANCH's trees), yindex, web, faucet
 make demo          # the demo kit: cluster, images, mkcert certificate, Grafana, the chart; prints the URLs (docs/try-it.md)
 make kind-up       # cluster + Envoy Gateway + cert-manager + the chart with values-kind.yaml
 make kind-smoke    # GetLightdInfo / GetYellowbackInfo / GetVaultInfo / GetChainInfo / ListSets through the gateway over TLS
