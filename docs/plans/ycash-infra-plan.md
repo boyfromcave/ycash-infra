@@ -41,8 +41,10 @@ into per-block work.
 
 ### 1.2 Ycash regtest in a cluster
 
-The vault upgrade activates on regtest with `-nuparams=6d5b7a31:<h>`; the kind values set
-`YCASHD_VAULT_HEIGHT=1`. YED on regtest additionally needs an attestor set created on chain and
+The vault upgrade activates on regtest with `-nuparams=6d5b7a31:<h>` together with Overwinter, Sapling, Ycash,
+Blossom, Heartwood and Canopy at or below `<h>` (ycashd refuses Vault without Sapling active at or below it,
+quantum spec R-A3; `values-kind.yaml` passes all seven at 1, and the images' entrypoint writes them for
+`YCASHD_VAULT_HEIGHT`). YED on regtest additionally needs an attestor set created on chain and
 the node restarted with `-yellowbackattestorset=<setid>`, which the devnet's `up` does across
 eight nodes with real attestor agents. K0 does not arm YED; K0b ports the arming recipe as a
 Job (one node, one set, the restart done by patching the StatefulSet's env and rolling it).
