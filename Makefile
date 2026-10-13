@@ -182,8 +182,9 @@ docker-noauth: ## print an `export DOCKER_CONFIG=...` that bypasses Docker Deskt
 	@d=$${TMPDIR:-/tmp}/docker-noauth; mkdir -p $$d; python3 -c "import json,sys; c=json.load(open('$(HOME)/.docker/config.json')); c.pop('credsStore',None); c['auths']={}; json.dump(c,open('$$d/config.json','w'))"; \
 	for x in cli-plugins contexts buildx; do [ -e $(HOME)/.docker/$$x ] && ln -sfn $(HOME)/.docker/$$x $$d/$$x; done; echo "export DOCKER_CONFIG=$$d"
 
-lint: ## helm lint + kubeconform + go vet
+lint: ## helm lint + image pins + kubeconform + go vet
 	helm lint $(CHART) -f $(CHART)/values-kind.yaml
+	scripts/lint-images.sh
 	helm lint $(CHART) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET)
 	helm template $(RELEASE) $(CHART) -f $(CHART)/values-kind.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
 	cd yindex && go vet ./...

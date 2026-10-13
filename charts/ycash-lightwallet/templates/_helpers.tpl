@@ -6,7 +6,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end -}}
-{{- define "yc.image" -}}{{ .repository }}:{{ .tag }}{{- end -}}
+{{- /* repository[:tag][@digest]. A digest pins the image immutably (audit 06/I-1); the tag may then be
+empty when the registry publishes no versioned tag. scripts/lint-images.sh fails a render whose image has
+neither a non-latest tag nor a digest. */ -}}
+{{- define "yc.image" -}}{{ .repository }}{{ with .tag }}:{{ . }}{{ end }}{{ with .digest }}@{{ . }}{{ end }}{{- end -}}
 {{- define "yc.rpcSecret" -}}{{ default (printf "%s-ycashd-rpc" (include "yc.fullname" .)) .Values.ycashd.rpc.existingSecret }}{{- end -}}
 {{- define "yc.rpcHost" -}}{{ include "yc.fullname" . }}-ycashd{{- end -}}
 {{- /* D-Q-31: a signer set's maturity (its bond exit delay) is at least 16,128 blocks on mainnet and
