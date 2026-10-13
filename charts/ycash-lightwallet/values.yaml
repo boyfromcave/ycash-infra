@@ -28,7 +28,7 @@ ycashd:
   # checks the same number exactly (common.KnownRPCVersion), so build both images from the same line
   # (`make line` prints the trees' rpcversion). 0 = no check.
   rpcVersion: 8
-  extraArgs: ""               # appended verbatim (regtest: "-nuparams=6d5b7a31:1"; the attestor set comes from the arming Job)
+  extraArgs: ""               # appended verbatim. Regtest: the Vault -nuparams with Overwinter..Canopy at or below it, never Vault alone (ycashd refuses to start without Sapling active at or below Vault, quantum spec R-A3), e.g. values-kind.yaml's "-nuparams=5ba81b19:1 -nuparams=76b809bb:1 -nuparams=374d694f:1 -nuparams=8e471bd6:1 -nuparams=66314da3:1 -nuparams=19bd2d2f:1 -nuparams=6d5b7a31:1"; the attestor set comes from the arming Job
   confExtra: ""               # extra ycash.conf lines
   rpc:
     port: 8832                # 18832 for testnet/regtest
