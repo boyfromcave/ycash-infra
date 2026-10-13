@@ -9,8 +9,12 @@ images:
   web:          { repository: ycash/web,          tag: local, pullPolicy: IfNotPresent }
   redis:        { repository: redis,              tag: 7.4-alpine, pullPolicy: IfNotPresent }
   postgres:     { repository: postgres,           tag: 17-alpine, pullPolicy: IfNotPresent }
-  # kind only (regtest.armYellowback): kubectl + curl + jq for the arming Job; v1.37.1 on 2026-10-09
-  kubectl:      { repository: bitnami/kubectl,    tag: latest, pullPolicy: IfNotPresent }
+  # kind only (regtest.armYellowback): kubectl + curl + jq for the arming Job. Pinned by digest (audit 06/I-1):
+  # kubectl v1.37.1, matching the kind node image's Kubernetes v1.37.0 (kind v0.33.0), pinned 2026-10-12.
+  # Bitnami publishes only `latest` for this image now (no 1.37.1 / 1.37 tag on Docker Hub), so the tag is
+  # empty and the multi-arch index digest (linux/amd64 + linux/arm64) is the reference. Bump procedure:
+  # docs/plans/ycash-infra-plan.md "Pinned third-party images".
+  kubectl:      { repository: bitnami/kubectl,    tag: "", digest: "sha256:999d5eb28f404b45f15117f2a110ff23c6164f76edac261d75d783b6e88252b7", pullPolicy: IfNotPresent }
   # kind only (regtest.faucet): images/faucet, `make image-faucet`
   faucet:       { repository: ycash/faucet,       tag: local, pullPolicy: IfNotPresent }
 

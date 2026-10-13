@@ -75,6 +75,33 @@ without the flag; `up` again re-applies it, the agents it finds alive are kept);
 agents and leaves the chain `ARMED` (minting halts once the attestations are older than
 `ATTEST_MAX_AGE`, and resumes within seconds of the next `up`).
 
+### 1.3 Pinned third-party images
+
+Every image the chart renders carries a version tag that is not `latest`, or a digest
+(`scripts/lint-images.sh`, run by `make lint` and the CI `lint` job, renders the kind and the EKS
+values and fails otherwise; audit 06/I-1). The workspace's own images (`ycash/*`) are tagged `local`
+on kind and with the tree's commit on EKS (`make eks-deploy`). The third-party ones:
+
+| Image | Pin | Where | Why this pin |
+|---|---|---|---|
+| `redis` | `7.4-alpine` | yindex cache | minor tag |
+| `postgres` | `17-alpine` | yindex store on kind (RDS on EKS) | major tag |
+| `bitnami/kubectl` | `@sha256:999d5eb28f404b45f15117f2a110ff23c6164f76edac261d75d783b6e88252b7` (kubectl v1.37.1, pinned 2026-10-12), no tag | the kind-only arming Job (`regtest.armYellowback`), which runs with write access to the namespace | Bitnami publishes only `latest` for this image (no `1.37.1`/`1.37` tag on Docker Hub), so the multi-arch index digest (linux/amd64 + linux/arm64) is the only immutable reference; kubectl v1.37 is within one minor of the kind node image (Kubernetes v1.37.0, kind v0.33.0) |
+
+**Bumping the kubectl pin** (when the kind node image moves a minor, or for a security fix):
+
+```bash
+docker pull bitnami/kubectl:latest
+docker run --rm --entrypoint kubectl bitnami/kubectl:latest version --client   # within ±1 minor of `kubectl get nodes`
+docker buildx imagetools inspect bitnami/kubectl:latest | grep -E '^Digest|Platform'   # the index digest, both platforms
+# or: docker inspect --format '{{index .RepoDigests 0}}' bitnami/kubectl:latest
+```
+
+then set `images.kubectl.digest` and the comment (version, date) in `charts/ycash-lightwallet/values.yaml`
+and run `make lint` and the arming Job on kind (`make kind-up`). If Bitnami stops updating the image, the
+follow-up is a self-built `images/arm/Dockerfile` (alpine + kubectl + curl + jq, `make image-arm`, like
+`images/faucet`).
+
 ## 2. Phases
 
 | Chunk | Content | Acceptance | Status |

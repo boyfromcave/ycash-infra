@@ -10,6 +10,8 @@ jobs:
         with: { go-version: "1.24" }
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
       - run: helm lint charts/ycash-lightwallet -f charts/ycash-lightwallet/values-kind.yaml
+      # every rendered image pinned by a non-latest tag or a digest (audit 06/I-1)
+      - run: scripts/lint-images.sh
       - run: helm template t charts/ycash-lightwallet -f charts/ycash-lightwallet/values-kind.yaml | kubeconform -strict -summary -schema-location default -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
       - run: cd yindex && go vet ./... && go test ./... && go build ./...
   eks:
