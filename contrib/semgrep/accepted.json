@@ -1,0 +1,144 @@
+{
+  "_comment": "Accepted Semgrep findings (contrib/semgrep/README.md, 'Accepting a finding'). findings: fingerprint -> {rule, path, reason, by, date}. rule_paths: [{rule (glob), paths (globs), reason, by, date}]. Every entry needs a reason a reviewer can check.",
+  "findings": {
+    "753b4fda6c27137e": {
+      "rule": "go.grpc.security.grpc-server-insecure-connection",
+      "path": "yindex/cmd/yindex/main.go",
+      "reason": "yindex serve listens in-cluster only (ClusterIP Service); TLS is terminated at the Envoy Gateway, which routes the three CompactTxStreamer methods to it (templates/gateway/routes.yaml). It serves public chain data and holds no secret.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "24a53032941896b5": {
+      "rule": "go.lang.security.audit.net.use-tls",
+      "path": "yindex/cmd/yindex/main.go",
+      "reason": "The :9071 listener is the kubelet's /live,/ready probe and Prometheus /metrics port, reached only in-cluster and never routed by the gateway; it exposes three block heights.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "270936a79235261d": {
+      "rule": "go.lang.security.audit.xss.no-fprintf-to-responsewriter",
+      "path": "yindex/cmd/yindex/main.go",
+      "reason": "Prometheus text exposition (Content-Type text/plain) of int64 heights formatted with %d: no user input reaches the response, no HTML context.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "53d8a3785bb9ee00": {
+      "rule": "go.lang.security.audit.xss.no-fprintf-to-responsewriter",
+      "path": "yindex/cmd/yindex/main.go",
+      "reason": "Prometheus text exposition (Content-Type text/plain) of int64 heights formatted with %d: no user input reaches the response, no HTML context.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "191f798a2e81be57": {
+      "rule": "go.lang.security.audit.xss.no-fprintf-to-responsewriter",
+      "path": "yindex/cmd/yindex/main.go",
+      "reason": "Prometheus text exposition (Content-Type text/plain) of int64 heights formatted with %d: no user input reaches the response, no HTML context.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "00c1dddd5b76093d": {
+      "rule": "trailofbits.generic.postgres-insecure-sslmode",
+      "path": "yindex/cmd/yindex/main.go",
+      "reason": "Local-development default only (localhost); the chart always sets YINDEX_POSTGRES_URL.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "4c2fa3862be03884": {
+      "rule": "trailofbits.generic.postgres-insecure-sslmode",
+      "path": "charts/ycash-lightwallet/templates/yindex/deployment.yaml",
+      "reason": "The index Postgres is this release's own in-cluster Service and holds only a derived index of public chain data (no user secret, AGENTS.md rule 4). Hardening lead: TLS or a NetworkPolicy limiting it to the yindex Pods.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "70e964ab151545d8": {
+      "rule": "generic.nginx.security.header-redefinition",
+      "path": "images/web/nginx.conf",
+      "reason": "Server-level add_header with no add_header in any location block (the locations use `expires` precisely so the inherited COOP/COEP/CSP headers are kept, see the file's top comment): nothing is redefined.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "a4d16b07c1babc67": {
+      "rule": "generic.nginx.security.header-redefinition",
+      "path": "images/web/nginx.conf",
+      "reason": "Server-level add_header with no add_header in any location block (the locations use `expires` precisely so the inherited COOP/COEP/CSP headers are kept, see the file's top comment): nothing is redefined.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "c82d7e6c400c09b5": {
+      "rule": "generic.nginx.security.header-redefinition",
+      "path": "images/web/nginx.conf",
+      "reason": "Server-level add_header with no add_header in any location block (the locations use `expires` precisely so the inherited COOP/COEP/CSP headers are kept, see the file's top comment): nothing is redefined.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "32670c04c18591c1": {
+      "rule": "generic.nginx.security.header-redefinition",
+      "path": "images/web/nginx.conf",
+      "reason": "Server-level add_header with no add_header in any location block (the locations use `expires` precisely so the inherited COOP/COEP/CSP headers are kept, see the file's top comment): nothing is redefined.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "e7bcb47ad071e4d1": {
+      "rule": "generic.nginx.security.header-redefinition",
+      "path": "images/web/nginx.conf",
+      "reason": "Server-level add_header with no add_header in any location block (the locations use `expires` precisely so the inherited COOP/COEP/CSP headers are kept, see the file's top comment): nothing is redefined.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "5cd09debb5302707": {
+      "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+      "path": "images/faucet/faucet.py",
+      "reason": "Regtest-only faucet: the URL is the node RPC Service / the fixed proving-parameter mirror from the chart's environment, never request input; file:// cannot be reached.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "1227f253a756b63f": {
+      "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+      "path": "images/faucet/fetch-params.py",
+      "reason": "Regtest-only faucet: the URL is the node RPC Service / the fixed proving-parameter mirror from the chart's environment, never request input; file:// cannot be reached.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "e31f868098e71d62": {
+      "rule": "terraform.aws.security.aws-secretsmanager-secret-unencrypted",
+      "path": "infra/eks/secrets.tf",
+      "reason": "Encrypted at rest with the AWS-managed aws/secretsmanager key; a customer-managed KMS key adds cost and a key policy for one rpcuser/rpcpassword pair. Revisit if the account requires CMKs.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "fea647f97292b2fd": {
+      "rule": "terraform.aws.security.aws-secretsmanager-secret-unencrypted",
+      "path": "infra/eks/secrets.tf",
+      "reason": "As above: AWS-managed aws/secretsmanager key.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "14942284812f17e2": {
+      "rule": "terraform.aws.security.aws-ec2-security-group-rule-missing-description",
+      "path": "infra/eks/rds.tf",
+      "reason": "Documentation-only finding; adding a description to an existing aws_security_group_rule forces its replacement on the next apply. Add it with the next planned change to rds.tf.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    }
+  },
+  "rule_paths": [
+    {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+      "paths": [
+        "scripts/**"
+      ],
+      "reason": "Operator scripts run by hand on a developer machine against a kind cluster (kubectl/ycash-cli with argv lists, no shell, arguments from the script's own config).",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    {
+      "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+      "paths": [
+        "scripts/**"
+      ],
+      "reason": "Operator scripts run by hand against a kind cluster; the URL is the node RPC endpoint from the script's own config, never untrusted input.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    }
+  ]
+}

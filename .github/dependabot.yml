@@ -1,0 +1,62 @@
+# Dependabot: security updates only, one grouped PR per ecosystem (SECURITY-CI.md). Version updates are
+# suppressed (open-pull-requests-limit: 0): dependencies here are pinned and move by deliberate PR (yindex's
+# Go modules, base images by digest, the providers in infra/eks/.terraform.lock.hcl, the hash-locked scanner
+# requirements, action SHAs with the shared pin list). Enable "Dependabot security updates" in Settings for
+# these to run.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/yindex"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 14  # the two-week age rule for versions; security updates are not delayed
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directories: ["/images/yindex", "/images/web", "/images/faucet", "/images/personas"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 14  # the two-week age rule for versions; security updates are not delayed
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: terraform
+    directory: "/infra/eks"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 14  # the two-week age rule for versions; security updates are not delayed
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/contrib/semgrep", "/contrib/secops"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 14  # the two-week age rule for versions; security updates are not delayed
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 14  # the two-week age rule for versions; security updates are not delayed
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]

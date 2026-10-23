@@ -1,0 +1,12 @@
+# OSV-Scanner policy (.github/workflows/secops.yml, job osv-scanner; SECURITY-CI.md). Every ignore names
+# the lockfile it is in, why it does not apply, and expires within 90 days, when it is re-checked.
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-1325"
+ignoreUntil = 2027-01-20T00:00:00Z
+reason = "python-ecdsa Minerva timing attack (CVE-2024-23342, no fixed release). In contrib/secops/checkov-requirements.txt only: checkov is a CI scanner that never signs, generates keys or does ECDH with ecdsa; signature verification is unaffected. Nothing that ships uses it."
+
+[[IgnoredVulns]]
+id = "GHSA-wj6h-64fc-37mp"
+ignoreUntil = 2027-01-20T00:00:00Z
+reason = "Alias of PYSEC-2026-1325 (python-ecdsa, CI-only checkov dependency; see above)."

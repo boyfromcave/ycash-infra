@@ -1,0 +1,29 @@
+# Checkov policy (contrib/secops/checkov.sh, .github/workflows/secops.yml job checkov; SECURITY-CI.md).
+# Checks skipped repo-wide, each with its reason. Everything else that fails stays visible in code
+# scanning (category checkov) as the hardening backlog, and a PR fails when it adds a failing check
+# that its base does not have.
+quiet: true
+skip-download: true
+framework:
+  - terraform
+  - kubernetes
+  - dockerfile
+skip-check:
+  # The chart sets no metadata.namespace: Helm installs into -n $(NAMESPACE) (Makefile), so rendered
+  # manifests always show "default".
+  - CKV_K8S_21
+  # imagePullPolicy Always contradicts the kind flow (images loaded into the nodes, never pulled) and adds
+  # nothing for immutable references; pinning is enforced by scripts/lint-images.sh instead.
+  - CKV_K8S_15
+  # Image digests: this repo's own images are tagged by source commit (Makefile, AGENTS.md rule 5) and
+  # third-party ones by version or digest; scripts/lint-images.sh (CI) and the Semgrep rule
+  # ycash-infra.k8s.latest-image-tag fail on latest or an untagged image.
+  - CKV_K8S_43
+  # "Image tag fixed": its only failures are the digest-only kubectl image (tag "" by design,
+  # values.yaml), a false positive; latest/untagged is caught by lint-images.sh as above.
+  - CKV_K8S_14
+  # Dockerfile HEALTHCHECK: Kubernetes ignores it; every Deployment/StatefulSet has its own probes.
+  - CKV_DOCKER_2
+  # Secrets as env vars: ycashd, lightwalletd-dd and yindex read rpcuser/rpcpassword from the
+  # environment; files would need a change to the node or lightwalletd images (AGENTS.md rule 1).
+  - CKV_K8S_35

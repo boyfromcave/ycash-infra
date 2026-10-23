@@ -1,13 +1,18 @@
 name: ci
 on: { push: { branches: [upgrade/vault, main] }, pull_request: {} }
+permissions: {}
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: "1.24" }
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: { go-version: "1.26" }
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
       - run: helm lint charts/ycash-lightwallet -f charts/ycash-lightwallet/values-kind.yaml
       # every rendered image pinned by a non-latest tag or a digest (audit 06/I-1)
@@ -17,17 +22,25 @@ jobs:
   eks:
     # offline: terraform fmt/validate for infra/eks and the chart's EKS values through kubeconform with the CRD schemas
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with: { terraform_version: "1.9.8" }
-      - uses: azure/setup-helm@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: "1.24" }
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: { go-version: "1.26" }
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
       - run: make eks-validate
   yindex-image:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
       - run: docker build -f images/yindex/Dockerfile -t yindex:ci .

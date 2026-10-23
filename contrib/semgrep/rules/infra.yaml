@@ -1,0 +1,90 @@
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or https://www.opensource.org/licenses/mit-license.php .
+#
+# ycash-infra rules, scanned beside the pinned semgrep-rules packs (contrib/semgrep/README.md): the
+# repository's own invariants (AGENTS.md rules 1, 4, 7; audit 06/I-1). metadata.bucket pins a rule's
+# bucket; without it the bucket follows severity/impact/confidence.
+rules:
+  - id: ycash-infra.docker.base-image-not-pinned-by-digest
+    languages: [generic]
+    paths:
+      include: ["**/Dockerfile", "**/*.Dockerfile", "**/Dockerfile.*"]
+    # A FROM naming a registry image (it has a ':' tag or a '/' path) with no @sha256: digest. A FROM
+    # naming an earlier build stage (a bare name) or scratch is not an image pull and does not match.
+    pattern-regex: '(?im)^FROM[ \t]+(--platform=\S+[ \t]+)?[^\s@]*[:/][^\s@]*([ \t]+AS[ \t]+\S+)?[ \t]*$'
+    message: >-
+      A Dockerfile base image is pulled by tag only. A tag is mutable: the image an EKS build gets can
+      change under the same name. Pin it as `name:tag@sha256:<index digest>` (audit 06/I-1); Dependabot's
+      docker ecosystem moves the digest on a security update.
+    severity: WARNING
+    metadata:
+      category: security
+      bucket: medium
+      impact: MEDIUM
+      likelihood: LOW
+      confidence: HIGH
+      cwe: ["CWE-829: Inclusion of Functionality from Untrusted Control Sphere"]
+      references: ["scripts/lint-images.sh", "docs/plans/ycash-infra-plan.md (Pinned third-party images)"]
+
+  - id: ycash-infra.k8s.latest-image-tag
+    languages: [generic]
+    paths:
+      include: ["charts/**", "kind/**", "infra/**", "**/Dockerfile", "scripts/**"]
+    pattern-either:
+      - pattern-regex: '(?im)^[^#\n]*\btag:[ \t]*["'']?latest["'']?(?![\w.-])'
+      - pattern-regex: '(?im)^[^#\n]*\bimage:[ \t]*["'']?[^\s"''#]+:latest\b'
+      - pattern-regex: '(?im)^FROM[ \t]+(--platform=\S+[ \t]+)?\S+:latest\b'
+    message: >-
+      An image is referenced as `latest`. Every image the chart renders, and every base image, is pinned
+      by a version tag or a digest (audit 06/I-1, scripts/lint-images.sh).
+    severity: ERROR
+    metadata:
+      category: security
+      bucket: high
+      impact: HIGH
+      likelihood: MEDIUM
+      confidence: HIGH
+      cwe: ["CWE-829: Inclusion of Functionality from Untrusted Control Sphere"]
+
+  - id: ycash-infra.k8s.host-namespace-or-privileged
+    languages: [generic]
+    paths:
+      include: ["charts/**"]
+    pattern-regex: '(?im)^[^#\n]*\b(hostNetwork|hostPID|hostIPC|privileged|allowPrivilegeEscalation)[ \t]*:[ \t]*true\b'
+    message: >-
+      A Pod shares a host namespace or runs privileged. Nothing in the light-wallet backend needs host
+      access: the node, lightwalletd, yindex and the web bundle all run as non-root users in their own
+      network namespace.
+    severity: ERROR
+    metadata:
+      category: security
+      bucket: high
+      impact: HIGH
+      likelihood: MEDIUM
+      confidence: HIGH
+      cwe: ["CWE-250: Execution with Unnecessary Privileges"]
+
+  - id: ycash-infra.k8s.secret-in-configmap-or-values
+    languages: [generic]
+    paths:
+      include: ["charts/**"]
+      # values-kind.yaml carries the regtest default credentials, which are not secrets (AGENTS.md rule 7).
+      exclude: ["charts/ycash-lightwallet/values-kind.yaml"]
+    pattern-either:
+      # a secret-looking key under a ConfigMap's data
+      - pattern-regex: '(?is)kind:[ \t]*ConfigMap\b.*?\n[ \t]*["'']?[a-z0-9_.-]*(password|passwd|secret|token|api[_-]?key|private[_-]?key|seed|mnemonic)[a-z0-9_.-]*["'']?[ \t]*:[ \t]*\S'
+      # an inline credential in a values file (EKS reads them through External Secrets)
+      - pattern-regex: '(?im)^[ \t]*(password|rpcpassword|token|secret|apiKey)[ \t]*:[ \t]*["'']?[^\s"''{#][^\s"''#]*'
+    message: >-
+      A credential sits in a ConfigMap or a values file. rpcuser/rpcpassword are the only secrets and they
+      live in a Secret: inline for kind only, through External Secrets on EKS (AGENTS.md rules 4 and 7).
+      ConfigMaps are readable by anything that can list them and land in Helm release history.
+    severity: ERROR
+    metadata:
+      category: security
+      bucket: high
+      impact: HIGH
+      likelihood: MEDIUM
+      confidence: MEDIUM
+      cwe: ["CWE-312: Cleartext Storage of Sensitive Information"]

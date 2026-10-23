@@ -1,0 +1,10 @@
+# Security overrides for contrib/secops/checkov-requirements.txt: transitive dependencies of checkov moved
+# to versions that fix a published advisory (OSV-Scanner, .github/workflows/secops.yml). Installed with
+# --no-deps, so checkov's own pins are not re-checked; the checkov job runs a full scan with them. Drop a
+# line once checkov itself requires the fixed version.
+#   asteval   PYSEC-2026-3807 / GHSA-9w56-46f6-3qhx
+#   certifi   PYSEC-2026-4320 / GHSA-6q48-6c7w-9gw2 (as contrib/semgrep/security-overrides.txt)
+#   gitpython GHSA-83vg-56qc-22m7
+asteval==1.0.9
+certifi==2026.10.19
+gitpython==3.2.1
