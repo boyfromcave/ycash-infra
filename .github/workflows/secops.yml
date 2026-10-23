@@ -1,0 +1,294 @@
+name: secops
+
+# Security checks beside semgrep.yml and codeql.yml (SECURITY-CI.md). The same shape in every Yellowback repo;
+# the legs are what this repository holds. Every leg reports to the run summary and, where the tool writes
+# SARIF, to GitHub code scanning (category = the tool); none opens PRs or issues.
+#
+#   zizmor         every workflow under .github/workflows and .github/dependabot.yml, default persona. Fails on any finding.
+#   gitleaks       pull_request: the PR's commits; push: the pushed commits; nightly / dispatch: full history.
+#                  Fails on a leak not in .gitleaksignore (fingerprints, each group with its reason).
+#   osv-scanner    every lockfile (yindex/go.mod + go.sum, the hash-locked Python requirements). Fails on a known
+#                  vulnerability not in osv-scanner.toml (each with a reason and an ignoreUntil <= 90 days).
+#   govulncheck    yindex, reachability-aware (stdlib of the Go toolchain included). Fails on a reachable vuln.
+#   gosec          yindex, SARIF of every finding (report only); a pull_request fails on a HIGH finding (none
+#                  open: a HIGH is new by definition; accepted ones carry `#nosec <rule> -- <reason>`).
+#   checkov        infra/eks (Terraform), the chart rendered for kind and EKS, images/*/Dockerfile
+#                  (contrib/secops/checkov.sh, policy .checkov.yaml). SARIF of every failing check; a
+#                  pull_request fails when it adds a failing check its base lacks (contrib/secops/checkov-gate.py:
+#                  Checkov without a Prisma key has no severities, so "new failure" stands in for "new HIGH").
+#   semgrep-rules  the local Semgrep rules' tests (contrib/semgrep/scan.py --test).
+#
+# Tools are pinned release binaries checked against the sha256 recorded here, or hash-locked pip installs.
+on:
+  push:
+    branches: ['upgrade/vault']
+  pull_request:
+  schedule:
+    - cron: '43 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: secops-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  OSV_SCANNER_VERSION: 2.6.0
+  OSV_SCANNER_SHA256: ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108
+  GOSEC_VERSION: 2.29.0
+  GOSEC_SHA256: 6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095
+  GOVULNCHECK_VERSION: v1.8.0  # golang.org/x/vuln, verified against the Go checksum database by go install
+  HELM_VERSION: v3.19.0
+  # Code scanning uploads need a token that can write security events: not a fork's PR.
+  CAN_UPLOAD: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+jobs:
+  zizmor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install zizmor (hash-locked)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zizmor"
+          "$RUNNER_TEMP/zizmor/bin/pip" install --quiet --disable-pip-version-check --require-hashes --no-deps \
+            -r contrib/secops/zizmor-requirements.txt
+          "$RUNNER_TEMP/zizmor/bin/zizmor" --version
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}  # online audits (impostor commits, known-vulnerable actions); read-only
+        run: |
+          rc=0
+          "$RUNNER_TEMP/zizmor/bin/zizmor" --format sarif .github > zizmor.sarif || rc=$?
+          "$RUNNER_TEMP/zizmor/bin/zizmor" --format plain .github || true
+          { echo '## zizmor'; if [ "$rc" = 0 ]; then echo 'No findings.'; else echo "Findings (exit $rc): see the log and code scanning."; fi; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        if: ${{ !cancelled() && env.CAN_UPLOAD == 'true' && hashFiles('zizmor.sarif') != '' }}
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+
+  gitleaks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # full history for the nightly scan; the PR range needs the base
+          persist-credentials: false
+      - name: Install gitleaks (sha256-checked release binary)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLo gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks version
+      - name: gitleaks
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          range=''
+          if [ "$EVENT" = pull_request ]; then
+            range="$PR_BASE..$PR_HEAD"
+          elif [ "$EVENT" = push ] && [ -n "$PUSH_BEFORE" ] && ! [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
+            range="$PUSH_BEFORE..$SHA"
+          fi
+          args=(git --no-banner --redact --report-format sarif --report-path gitleaks.sarif)
+          if [ -n "$range" ]; then args+=(--log-opts="$range"); scope="commits $range"; else scope="full history"; fi
+          rc=0
+          "$RUNNER_TEMP/gitleaks" "${args[@]}" . || rc=$?
+          { echo '## gitleaks'; echo "Scope: $scope."; if [ "$rc" = 0 ]; then echo 'No leaks.'; else echo "Leaks found (exit $rc): see code scanning; values are redacted."; fi; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        if: ${{ !cancelled() && env.CAN_UPLOAD == 'true' && hashFiles('gitleaks.sarif') != '' }}
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+  osv-scanner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install osv-scanner (sha256-checked release binary)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLo osv-scanner "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+          ./osv-scanner --version
+      - name: osv-scanner
+        run: |
+          # Every lockfile in the repository (git ls-files): yindex's go.sum (osv-scanner reads go.mod beside it)
+          # and the hash-locked Semgrep / zizmor / checkov requirements.
+          mapfile -t locks < <(git ls-files -- '*Cargo.lock' '*requirements*.txt' '*go.mod' '*package-lock.json' '*poetry.lock' '*uv.lock' '*pubspec.lock')
+          args=()
+          for l in "${locks[@]}"; do args+=(-L "$l"); done
+          rc=0
+          "$RUNNER_TEMP/osv-scanner" scan source --config osv-scanner.toml --format sarif --output osv.sarif "${args[@]}" || rc=$?
+          { echo '## OSV-Scanner'; printf 'Lockfiles: %s\n\n' "${locks[*]}"; } >> "$GITHUB_STEP_SUMMARY"
+          "$RUNNER_TEMP/osv-scanner" scan source --config osv-scanner.toml --format markdown "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$rc"
+      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        if: ${{ !cancelled() && env.CAN_UPLOAD == 'true' && hashFiles('osv.sarif') != '' }}
+        with:
+          sarif_file: osv.sarif
+          category: osv-scanner
+
+  govulncheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    defaults:
+      run:
+        working-directory: yindex
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: yindex/go.mod
+          check-latest: true  # the newest 1.26.x: govulncheck reports the toolchain's stdlib too
+          cache: false
+      - name: Install govulncheck
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+      - name: govulncheck
+        run: |
+          "$(go env GOPATH)/bin/govulncheck" -format sarif ./... > "$GITHUB_WORKSPACE/govulncheck.sarif"
+          rc=0
+          "$(go env GOPATH)/bin/govulncheck" ./... > "$RUNNER_TEMP/govulncheck.txt" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/govulncheck.txt"
+          { echo '## govulncheck (yindex)'; echo '```'; tail -n 40 "$RUNNER_TEMP/govulncheck.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        if: ${{ !cancelled() && env.CAN_UPLOAD == 'true' && hashFiles('govulncheck.sarif') != '' }}
+        with:
+          sarif_file: govulncheck.sarif
+          category: govulncheck
+
+  gosec:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: yindex/go.mod
+          check-latest: true
+          cache: false
+      - name: Install gosec (sha256-checked release binary)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLo gosec.tar.gz "https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz"
+          echo "${GOSEC_SHA256}  gosec.tar.gz" | sha256sum -c -
+          tar -xzf gosec.tar.gz gosec
+          ./gosec -version
+      - name: gosec
+        env:
+          EVENT: ${{ github.event_name }}
+        working-directory: yindex
+        run: |
+          # Every finding, for code scanning (report only); generated protobuf code is skipped.
+          "$RUNNER_TEMP/gosec" -quiet -exclude-generated -no-fail -fmt sarif -out "$GITHUB_WORKSPACE/gosec.sarif" ./...
+          "$RUNNER_TEMP/gosec" -quiet -exclude-generated -no-fail -fmt text ./... | tee "$RUNNER_TEMP/gosec.txt"
+          { echo '## gosec (yindex)'; echo '```'; tail -n 40 "$RUNNER_TEMP/gosec.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$EVENT" = pull_request ]; then
+            # The PR gate: any HIGH-severity finding (none is open, so any is new).
+            "$RUNNER_TEMP/gosec" -quiet -exclude-generated -severity high -fmt text ./...
+          fi
+      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        if: ${{ !cancelled() && env.CAN_UPLOAD == 'true' && hashFiles('gosec.sarif') != '' }}
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
+
+  checkov:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # the PR gate scans the base too
+          persist-credentials: false
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Install checkov (hash-locked)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/checkov"
+          "$RUNNER_TEMP/checkov/bin/pip" install --quiet --disable-pip-version-check --require-hashes --no-deps \
+            -r contrib/secops/checkov-requirements.txt
+          echo "$RUNNER_TEMP/checkov/bin" >> "$GITHUB_PATH"
+      - name: checkov
+        run: |
+          checkov --version
+          contrib/secops/checkov.sh "$RUNNER_TEMP/checkov-head"
+          cp "$RUNNER_TEMP/checkov-head/results_sarif.sarif" checkov.sarif
+          { echo '## Checkov'; grep -E 'scan results|Passed checks' "$RUNNER_TEMP/checkov-head/results_cli.txt" || true; } >> "$GITHUB_STEP_SUMMARY"
+      - name: checkov PR gate (no new failing check)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/base" "$PR_BASE"
+          # The base is scanned with this PR's tooling and policy, so a policy change is judged by its effect.
+          mkdir -p "$RUNNER_TEMP/base/contrib/secops"
+          cp contrib/secops/checkov.sh "$RUNNER_TEMP/base/contrib/secops/checkov.sh"
+          cp .checkov.yaml "$RUNNER_TEMP/base/.checkov.yaml"
+          "$RUNNER_TEMP/base/contrib/secops/checkov.sh" "$RUNNER_TEMP/checkov-base"
+          rc=0
+          python3 contrib/secops/checkov-gate.py "$RUNNER_TEMP/checkov-base/results_json.json" \
+            "$RUNNER_TEMP/checkov-head/results_json.json" > "$RUNNER_TEMP/gate.md" || rc=$?
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/gate.md"
+          exit "$rc"
+      - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        if: ${{ !cancelled() && env.CAN_UPLOAD == 'true' && hashFiles('checkov.sarif') != '' }}
+        with:
+          sarif_file: checkov.sarif
+          category: checkov
+
+  semgrep-rules:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Local Semgrep rule tests
+        env:
+          SEMGREP_RULES_CACHE: ${{ runner.temp }}/semgrep-rules
+        run: python3 contrib/semgrep/scan.py --test --install

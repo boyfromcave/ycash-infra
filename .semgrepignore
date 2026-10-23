@@ -1,0 +1,11 @@
+# Paths Semgrep never scans (contrib/semgrep/README.md). Semgrep scans git-tracked files only; this file
+# replaces its built-in ignore list, so the usual build and vendor directories are named here too.
+# Generated protobuf/gRPC code, copied unchanged from lightwalletd-dd (`make proto-sync`, never edited here).
+yindex/walletrpc/*.pb.go
+# The scanner's own rules, test inputs and ledgers.
+contrib/semgrep/
+# Build output, caches and Terraform state/plugins.
+.terraform/
+node_modules/
+dist/
+*.min.js

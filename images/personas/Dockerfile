@@ -16,12 +16,12 @@
 # Deployment that exits into `sleep infinity` once armed, or a revisioned Job as arm.yaml.
 # Build context: the workspace root (rule 5: images are built from the workspace trees, never copies).
 #   docker build -f ycash-infra/images/personas/Dockerfile -t ycash/personas:local ..
-FROM rust:1.91-bookworm AS attest
+FROM rust:1.91-bookworm@sha256:c1e5f19e773b7878c3f7a805dd00a495e747acbdc76fb2337a4ebf0418896b33 AS attest
 WORKDIR /src
 COPY ycash6/contrib/yellowback/attest /src
 RUN cargo build --locked --release
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
 RUN apt-get update && apt-get install -y --no-install-recommends curl jq && rm -rf /var/lib/apt/lists/*
 COPY --from=attest /src/target/release/yellowback-attest /usr/local/bin/
 COPY ycash6/contrib/yellowback/yellowback-quote ycash6/contrib/yellowback/yellowback_price.py /opt/yellowback/
@@ -29,4 +29,6 @@ COPY ycash-infra/scripts/kind-personas.py /opt/yellowback/personas.py
 ENV YCASH6=/opt/ycash6 YELLOWBACK_ATTEST_BIN=/usr/local/bin/yellowback-attest YCASH_PERSONAS_DIR=/shared
 # personas.py expects $YCASH6/contrib/yellowback/yellowback-quote: mirror the path
 RUN mkdir -p /opt/ycash6/contrib/yellowback && ln -s /opt/yellowback/yellowback-quote /opt/yellowback/yellowback_price.py /opt/ycash6/contrib/yellowback/
+RUN useradd -u 2005 -m personas
+USER personas
 ENTRYPOINT ["python3", "/opt/yellowback/personas.py"]

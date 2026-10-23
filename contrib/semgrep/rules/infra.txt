@@ -1,0 +1,33 @@
+# Test file for infra.yaml (semgrep --test): annotated lines must match, the rest must not.
+# ruleid: ycash-infra.docker.base-image-not-pinned-by-digest
+FROM golang:1.26-alpine AS builder
+# ok: ycash-infra.docker.base-image-not-pinned-by-digest
+FROM golang:1.26-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS builder
+# ok: ycash-infra.docker.base-image-not-pinned-by-digest
+FROM builder
+# ruleid: ycash-infra.docker.base-image-not-pinned-by-digest
+FROM --platform=linux/amd64 alpine:3.22
+images:
+  # ruleid: ycash-infra.k8s.latest-image-tag
+  redis: { repository: redis, tag: latest }
+  # ok: ycash-infra.k8s.latest-image-tag
+  postgres: { repository: postgres, tag: 17-alpine }
+spec:
+  containers:
+    # ruleid: ycash-infra.k8s.latest-image-tag
+    - image: nginx:latest
+  # ruleid: ycash-infra.k8s.host-namespace-or-privileged
+  hostNetwork: true
+  # ok: ycash-infra.k8s.host-namespace-or-privileged
+  hostNetwork: false
+  securityContext:
+    # ruleid: ycash-infra.k8s.host-namespace-or-privileged
+    privileged: true
+    # ok: ycash-infra.k8s.host-namespace-or-privileged
+    allowPrivilegeEscalation: false
+ycashd:
+  rpc:
+    # ok: ycash-infra.k8s.secret-in-configmap-or-values
+    password: ""
+    # ruleid: ycash-infra.k8s.secret-in-configmap-or-values
+    password: hunter2

@@ -1,0 +1,25 @@
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or https://www.opensource.org/licenses/mit-license.php .
+#
+# ycash-infra Go rules for yindex (AGENTS.md rule 1); tests in infra-go.go (contrib/semgrep/scan.py --test).
+rules:
+  - id: ycash-infra.yindex.no-yellowback-streamer
+    languages: [go]
+    paths:
+      include: ["yindex/**"]
+    pattern-either:
+      - pattern: $PKG.RegisterYellowbackStreamerServer(...)
+      - pattern: $PKG.UnimplementedYellowbackStreamerServer
+    message: >-
+      yindex serves three methods of the stock CompactTxStreamer proto and never answers a
+      YellowbackStreamer method: verdicts and the YED token set are the node's (AGENTS.md rule 1,
+      contract rule 3 of the workspace's yellowback-lightwalletd plan).
+    severity: ERROR
+    metadata:
+      category: security
+      bucket: high
+      impact: HIGH
+      likelihood: LOW
+      confidence: HIGH
+      cwe: ["CWE-345: Insufficient Verification of Data Authenticity"]
