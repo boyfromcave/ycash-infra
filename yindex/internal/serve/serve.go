@@ -6,6 +6,7 @@ package serve
 import (
 	"context"
 	"errors"
+	"math"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -47,9 +48,9 @@ func (s *Server) GetAddressUtxosStream(arg *walletrpc.GetAddressUtxosArg, srv wa
 	if err != nil {
 		return err
 	}
-	return s.Store.Utxos(srv.Context(), addrs, int64(arg.StartHeight), int(arg.MaxEntries), func(u store.Utxo) error {
+	return s.Store.Utxos(srv.Context(), addrs, height(arg.StartHeight), int(arg.MaxEntries), func(u store.Utxo) error {
 		return srv.Send(&walletrpc.GetAddressUtxosReply{
-			Address: u.Address, Txid: u.Txid, Index: u.Vout, Script: u.Script, ValueZat: u.ValueZat, Height: uint64(u.Height),
+			Address: u.Address, Txid: u.Txid, Index: u.Vout, Script: u.Script, ValueZat: u.ValueZat, Height: uint64(u.Height), // #nosec G115 -- stored heights are block heights the ingester wrote from getblock, never negative
 		})
 	})
 }
@@ -89,10 +90,10 @@ func (s *Server) GetTaddressTxids(f *walletrpc.TransparentAddressBlockFilter, sr
 	}
 	start, end := int64(0), int64(0)
 	if f.Range != nil && f.Range.Start != nil {
-		start = int64(f.Range.Start.Height)
+		start = height(f.Range.Start.Height)
 	}
 	if f.Range != nil && f.Range.End != nil {
-		end = int64(f.Range.End.Height)
+		end = height(f.Range.End.Height)
 	}
 	if end == 0 {
 		tip, err := s.Tip(srv.Context())
@@ -102,8 +103,17 @@ func (s *Server) GetTaddressTxids(f *walletrpc.TransparentAddressBlockFilter, sr
 		end = tip
 	}
 	return s.Store.AddressTxs(srv.Context(), a, start, end, func(r store.RawTx) error {
-		return srv.Send(&walletrpc.RawTransaction{Data: r.Raw, Height: uint64(r.Height)})
+		return srv.Send(&walletrpc.RawTransaction{Data: r.Raw, Height: uint64(r.Height)}) // #nosec G115 -- stored heights are block heights the ingester wrote from getblock, never negative
 	})
+}
+
+// height converts a client-supplied block height to the index's int64, clamping instead of wrapping:
+// a height above MaxInt64 is past any tip, never a negative one.
+func height(h uint64) int64 {
+	if h > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(h)
 }
 
 // collect adapts the unary call onto the streaming implementation.

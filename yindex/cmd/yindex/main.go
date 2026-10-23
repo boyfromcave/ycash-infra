@@ -104,5 +104,7 @@ func health(addr string, ready func(context.Context) error, metrics func(context
 		}
 		w.WriteHeader(200)
 	})
-	log.Fatal(http.ListenAndServe(addr, mux))
+	// Probe and metrics port: bounded header read so a slow client cannot hold connections open (gosec G114).
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	log.Fatal(srv.ListenAndServe())
 }
