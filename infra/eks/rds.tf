@@ -12,22 +12,24 @@ resource "aws_security_group" "rds" {
   description = "yindex Postgres: 5432 from the EKS nodes"
   vpc_id      = module.vpc.vpc_id
   ingress {
+    description     = "Postgres from the EKS nodes (yindex)"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [module.eks.node_security_group_id]
   }
+  # RDS opens no connection of its own (replies are stateful): egress only inside the VPC.
   egress {
+    description = "inside the VPC only"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [module.vpc.vpc_cidr_block]
   }
 }
 
 module "rds" {
-  source  = "terraform-aws-modules/rds/aws"
-  version = "~> 6.10"
+  source = "git::https://github.com/terraform-aws-modules/terraform-aws-rds.git?ref=578c95b19abf30b9b1068dd54025ac8e6df3212f" # v6.13.1 (main.tf: pinned by commit)
 
   identifier = "${var.name}-yindex"
 
