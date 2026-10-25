@@ -37,7 +37,8 @@ ycashd:
     # Either inline (kind only) or an existing Secret with keys rpcuser/rpcpassword (EKS: External Secrets).
     existingSecret: ""
     user: ycash
-    password: ""
+    # password: no default. Set ycashd.rpc.password (kind: values-kind.yaml's regtest credential) or
+    # existingSecret; templates/ycashd/secret.yaml fails the render with neither.
   p2p:
     listen: true
     port: 8833
