@@ -139,6 +139,15 @@
       "reason": "Operator scripts run by hand against a kind cluster; the URL is the node RPC endpoint from the script's own config, never untrusted input.",
       "by": "secops CI setup",
       "date": "2026-10-23"
+    },
+    {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+      "paths": [
+        "contrib/secops/**"
+      ],
+      "reason": "contrib/secops/code-scanning-triage.py runs `gh api` with an argv list (no shell) built from constants, the alert number from the API and the workflow-supplied repository name; it runs only in .github/workflows/code-scanning.yml with that job's own token. A subprocess call anywhere else is still reported.",
+      "by": "secops triage",
+      "date": "2026-10-25"
     }
   ]
 }
