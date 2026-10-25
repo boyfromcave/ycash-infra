@@ -33,23 +33,28 @@ spec:
       labels: {{- include "yc.labels" . | nindent 8 }}
         app.kubernetes.io/component: faucet
     spec:
-      securityContext: { runAsUser: 2004, runAsNonRoot: true, fsGroup: 2004 }
+      automountServiceAccountToken: false
+      {{- include "yc.podSecurity" (list . 2004) | nindent 6 }}
       volumes:
+        - { name: tmp, emptyDir: {} }
         - name: params
           persistentVolumeClaim: { claimName: {{ $fn }}-faucet-params }
       initContainers:
         - name: fetch-params
           image: {{ include "yc.image" .Values.images.faucet }}
           imagePullPolicy: {{ .Values.images.faucet.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
+          resources: {{- toYaml .Values.helperResources | nindent 12 }}
           command: [python3, -I, /app/fetch-params.py]
           env:
             - { name: PARAMS_DIR, value: /params }
             - { name: PARAMS_URL, value: {{ $f.params.url | quote }} }
-          volumeMounts: [{ name: params, mountPath: /params }]
+          volumeMounts: [{ name: params, mountPath: /params }, { name: tmp, mountPath: /tmp }]
       containers:
         - name: faucet
           image: {{ include "yc.image" .Values.images.faucet }}
           imagePullPolicy: {{ .Values.images.faucet.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
           env:
             - { name: RPC_URL, value: {{ printf "http://%s:%d/" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) | quote }} }
             - name: RPC_USER
@@ -60,9 +65,11 @@ spec:
             - { name: RATE_SECONDS, value: {{ $f.rateSeconds | quote }} }
             - { name: WALLET_URL, value: "/" }
           ports: [{ name: http, containerPort: 8080 }]
-          volumeMounts: [{ name: params, mountPath: /params, readOnly: true }]
+          volumeMounts: [{ name: params, mountPath: /params, readOnly: true }, { name: tmp, mountPath: /tmp }]
           readinessProbe: { httpGet: { path: /faucet/info, port: http }, periodSeconds: 10, timeoutSeconds: 5 }
-          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
+          # liveness only checks the server answers: /faucet/info also asks the node
+          livenessProbe: { tcpSocket: { port: http }, periodSeconds: 30 }
+          resources: {{- toYaml .Values.regtest.faucet.resources | nindent 12 }}
 ---
 apiVersion: v1
 kind: Service

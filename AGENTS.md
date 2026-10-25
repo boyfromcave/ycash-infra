@@ -28,4 +28,5 @@ yellowback-workspace (`../AGENTS.md`), on `upgrade/vault` like the other clients
 
 ## Commands
 
-`make` lists targets. `make lint` runs `helm lint`, `kubeconform` and `go vet ./...`.
+`make` lists targets. `make lint` runs `helm lint` (kind and EKS values), the image-pin check
+(`scripts/lint-images.sh`), `kubeconform` and `go vet ./...`.
