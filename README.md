@@ -56,9 +56,10 @@ surface: clients still see exactly the four services of the proto
 twin), plain-YEC post-quantum `sq…`/`tq…`/`rq…` (53 characters: a `TX_PQPKH` output,
 `20 <SHA256(scheme‖pk)> 51|52 c2`, D-Q-20) and post-quantum YED `yb…`/`yt…`/`yr…` (53 characters,
 mapped to the `sq…`/`tq…`/`rq…` form of the same script). The old mainnet YED prefix `ye…` is
-refused, as the post-quantum node refuses it (D-Q-21). A post-quantum address reaches only the
-methods the gateway routes to `yindex`: `lightwalletd-dd`'s own taddr methods refuse it, so keep
-the five address methods in `yindex.routes`.
+refused, as the post-quantum node refuses it (D-Q-21). `lightwalletd-dd`'s own taddr methods
+accept the same forms when it serves `--yellowback` (`frontend/service.go` `taddrOf`,
+`checkTaddress`), but the five address methods stay in `yindex.routes` so that address queries are
+answered from the index and never reach the node.
 
 ## Quick start (kind)
 
