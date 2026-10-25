@@ -12,7 +12,10 @@ jobs:
         with: { persist-credentials: false }
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with: { go-version: "1.26" }
+        with:
+          go-version: "1.26"
+          # no Go cache, as codeql.yml and secops.yml: a pull_request run must not save one
+          cache: false
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
       - run: helm lint charts/ycash-lightwallet -f charts/ycash-lightwallet/values-kind.yaml
       # every rendered image pinned by a non-latest tag or a digest (audit 06/I-1)
@@ -32,7 +35,10 @@ jobs:
         with: { terraform_version: "1.9.8" }
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with: { go-version: "1.26" }
+        with:
+          go-version: "1.26"
+          # no Go cache, as codeql.yml and secops.yml: a pull_request run must not save one
+          cache: false
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
       - run: make eks-validate
   yindex-image:
