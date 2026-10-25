@@ -20,8 +20,7 @@ data "aws_availability_zones" "available" {}
 data "aws_caller_identity" "current" {}
 
 module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.16"
+  source = "git::https://github.com/terraform-aws-modules/terraform-aws-vpc.git?ref=7c1f791efd61f326ed6102d564d1a65d1eceedf0" # v5.21.0
 
   name                = var.name
   cidr                = "10.40.0.0/16"
@@ -36,8 +35,7 @@ module "vpc" {
 }
 
 module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.31"
+  source = "git::https://github.com/terraform-aws-modules/terraform-aws-eks.git?ref=8a0efdbbc84180a26e0bacfd2b6fcfceac53b3b6" # v20.37.2
 
   cluster_name                             = var.name
   cluster_version                          = var.kubernetes_version
@@ -62,10 +60,13 @@ module "eks" {
   }
 }
 
+# Modules are pinned by commit (the registry's version constraints are not in .terraform.lock.hcl, so
+# `~>` would float): the newest release inside the constraint the file had, the tag in the comment.
+# Bump: `git ls-remote --tags https://github.com/terraform-aws-modules/terraform-aws-<name>.git`.
+
 # ---- IRSA: one role per add-on, bound to its ServiceAccount (namespace:name) ------------------
 module "ebs_csi_irsa" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.52"
+  source = "git::https://github.com/terraform-aws-modules/terraform-aws-iam.git//modules/iam-role-for-service-accounts-eks?ref=c29ec1ed409683086f63f83ff5b10a6f3c296ef2" # v5.60.0
 
   role_name             = "${var.name}-ebs-csi"
   attach_ebs_csi_policy = true
@@ -73,8 +74,7 @@ module "ebs_csi_irsa" {
 }
 
 module "lb_controller_irsa" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.52"
+  source = "git::https://github.com/terraform-aws-modules/terraform-aws-iam.git//modules/iam-role-for-service-accounts-eks?ref=c29ec1ed409683086f63f83ff5b10a6f3c296ef2" # v5.60.0
 
   role_name                              = "${var.name}-lb-controller"
   attach_load_balancer_controller_policy = true
@@ -82,8 +82,7 @@ module "lb_controller_irsa" {
 }
 
 module "external_secrets_irsa" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.52"
+  source = "git::https://github.com/terraform-aws-modules/terraform-aws-iam.git//modules/iam-role-for-service-accounts-eks?ref=c29ec1ed409683086f63f83ff5b10a6f3c296ef2" # v5.60.0
 
   role_name                             = "${var.name}-external-secrets"
   attach_external_secrets_policy        = true
@@ -92,8 +91,7 @@ module "external_secrets_irsa" {
 }
 
 module "external_dns_irsa" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.52"
+  source = "git::https://github.com/terraform-aws-modules/terraform-aws-iam.git//modules/iam-role-for-service-accounts-eks?ref=c29ec1ed409683086f63f83ff5b10a6f3c296ef2" # v5.60.0
 
   role_name                     = "${var.name}-external-dns"
   attach_external_dns_policy    = true
@@ -103,8 +101,7 @@ module "external_dns_irsa" {
 
 # cert-manager solves ACME DNS-01 in the same hosted zone (addons.tf: ClusterIssuer letsencrypt-prod).
 module "cert_manager_irsa" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.52"
+  source = "git::https://github.com/terraform-aws-modules/terraform-aws-iam.git//modules/iam-role-for-service-accounts-eks?ref=c29ec1ed409683086f63f83ff5b10a6f3c296ef2" # v5.60.0
 
   role_name                     = "${var.name}-cert-manager"
   attach_cert_manager_policy    = true
