@@ -53,7 +53,7 @@ never copied into this repository, plus this repository's own `rules/`:
 
 | Source | License | Rule ids | Covers |
 |---|---|---|---|
-| [semgrep/semgrep-rules](https://github.com/semgrep/semgrep-rules) | Semgrep Rules License v1.0 (free; our own use only, no redistribution) | `go.…`, `terraform.…`, `yaml.kubernetes.…`, `dockerfile.…`, `python.…`, `generic.…` | Go, Terraform, Kubernetes YAML, Dockerfiles, shell, Python, browser JS, nginx, secrets, GitHub Actions |
+| [semgrep/semgrep-rules](https://github.com/semgrep/semgrep-rules) | Semgrep Rules License v1.0 (free; our own use only, no redistribution) | `go.…`, `terraform.…`, `yaml.kubernetes.…`, `dockerfile.…`, `bash.…`, `python.…`, `javascript.…`, `generic.…`, `yaml.github-actions.…` | Go, Terraform, Kubernetes YAML, Dockerfiles, shell, Python, browser JS, nginx, secrets, GitHub Actions |
 | [trailofbits/semgrep-rules](https://github.com/trailofbits/semgrep-rules) | AGPL-3.0 | `trailofbits.…` | Go, Python, generic (e.g. Postgres sslmode), GitHub Actions |
 | `contrib/semgrep/rules/` | this repository's | `ycash-infra.…` | image pinning, Pod privileges, credentials in ConfigMaps/values, yindex's proto surface |
 
