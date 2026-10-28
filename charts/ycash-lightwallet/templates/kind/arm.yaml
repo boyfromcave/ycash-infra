@@ -57,14 +57,19 @@ spec:
     spec:
       serviceAccountName: {{ $fn }}-arm-yellowback
       restartPolicy: OnFailure
-      securityContext: { runAsUser: 2001, runAsNonRoot: true }
+      {{- include "yc.podSecurity" (list . 2001) | nindent 6 }}
       volumes:
         - { name: work, emptyDir: {} }
+        - { name: home, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
         - name: recorded
           configMap: { name: {{ $fn }}-yellowback-set, optional: true }
       initContainers:
         - name: set
           image: {{ include "yc.image" .Values.images.ycashd }}
+          imagePullPolicy: {{ .Values.images.ycashd.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
+          resources: {{- toYaml .Values.helperResources | nindent 12 }}
           env:
             - name: YCASHD_RPC_USER
               valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
@@ -73,6 +78,7 @@ spec:
           volumeMounts:
             - { name: work, mountPath: /work }
             - { name: recorded, mountPath: /recorded, readOnly: true }
+            - { name: home, mountPath: /srv/ycash }   # ycash-cli creates $HOME/.ycash
           command: [sh, -ec]
           args:
             - |
@@ -98,7 +104,11 @@ spec:
         - name: roll
           image: {{ include "yc.image" .Values.images.kubectl }}
           imagePullPolicy: {{ .Values.images.kubectl.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
+          resources: {{- toYaml .Values.helperResources | nindent 12 }}
           env:
+            - { name: HOME, value: /tmp }               # kubectl's discovery cache on the emptyDir
+            - { name: KUBECACHEDIR, value: /tmp/kube-cache }
             - { name: NS, value: {{ .Release.Namespace | quote }} }
             - { name: RPC_URL, value: {{ printf "http://%s:%d/" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) | quote }} }
             - name: YCASHD_RPC_USER
@@ -107,6 +117,7 @@ spec:
               valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
           volumeMounts:
             - { name: work, mountPath: /work, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
           command: [sh, -ec]
           args:
             - |

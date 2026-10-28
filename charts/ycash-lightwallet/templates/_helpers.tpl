@@ -28,3 +28,15 @@ adopts its attestor set only at exactly BOND_MATURITY (ycash-dd/ycash6 src/yello
 {{- end -}}
 {{- $m -}}
 {{- end -}}
+{{- /* Hardening (code scanning, Checkov CKV_K8S_20/22/28/30/37): every container's securityContext, from
+values.yaml containerSecurityContext. Writable paths are emptyDir or PVC mounts in each template. */ -}}
+{{- define "yc.containerSecurity" -}}
+securityContext: {{- toYaml .Values.containerSecurityContext | nindent 2 }}
+{{- end -}}
+{{- /* The pod-level half: non-root with the image's own UID (the images bake it: ycash6
+contrib/docker/ycashd/Dockerfile useradd --uid 2001, the images/ Dockerfiles), RuntimeDefault seccomp.
+Call with (list $ uid). */ -}}
+{{- define "yc.podSecurity" -}}
+{{- $uid := index . 1 -}}
+securityContext: { runAsUser: {{ $uid }}, runAsGroup: {{ $uid }}, runAsNonRoot: true, fsGroup: {{ $uid }}, seccompProfile: { type: RuntimeDefault } }
+{{- end -}}
