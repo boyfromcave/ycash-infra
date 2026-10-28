@@ -38,6 +38,9 @@ PLATFORM    ?= $(shell uname -m | sed 's/x86_64/linux\/amd64/;s/arm64/linux\/arm
 CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
+# kind-up / kind-reset-chain / demo: how long each Deployment and StatefulSet of the release may take
+# to roll out before the target fails (scripts/kind-check-release.sh)
+ROLLOUT_TIMEOUT ?= 10m
 
 .PHONY: help line docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local
 
@@ -92,17 +95,17 @@ kind-load: ## push the local images into the cluster
 	-kind load docker-image --name $(CLUSTER) $(REGISTRY)/web:local
 	-kind load docker-image --name $(CLUSTER) $(REGISTRY)/faucet:local
 
-kind-up: kind-create kind-load ## cluster + gateway + cert-manager + the chart (values-kind.yaml)
-	scripts/kind-up.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
+kind-up: kind-create kind-load ## cluster + gateway + cert-manager + the chart (values-kind.yaml); fails unless every workload rolls out (ROLLOUT_TIMEOUT=10m each) and no pod is failing
+	ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) scripts/kind-up.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
 
 kind-cert: ## a browser-trusted certificate for https://localhost from mkcert's local CA as the gateway's TLS Secret (mkcert -install touches the system trust store)
 	scripts/kind-cert.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
 
 demo: ## idempotent: cluster, images, the mkcert certificate, kube-prometheus-stack, the chart; prints the wallet, faucet and Grafana URLs (docs/try-it.md)
-	MONITORING=$${MONITORING:-1} scripts/demo.sh $(CLUSTER) $(NAMESPACE) $(RELEASE) "$(YEW)"
+	ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) MONITORING=$${MONITORING:-1} scripts/demo.sh $(CLUSTER) $(NAMESPACE) $(RELEASE) "$(YEW)"
 
 kind-reset-chain: ## wipe the regtest chain (node + Postgres volumes, attestor set, Jobs) and redeploy
-	scripts/kind-reset-chain.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
+	ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) scripts/kind-reset-chain.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
 
 kind-down: ## delete the cluster
 	kind delete cluster --name $(CLUSTER)

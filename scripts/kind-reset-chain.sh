@@ -34,4 +34,5 @@ k wait --for=condition=complete job -l app.kubernetes.io/component=arm-yellowbac
 helm upgrade "$RELEASE" charts/ycash-lightwallet --kube-context "$CTX" -n "$NS" -f charts/ycash-lightwallet/values-kind.yaml --wait --timeout 15m
 k rollout status statefulset/"$RELEASE-ycashd" --timeout=10m
 k rollout status deployment/"$RELEASE-lightwalletd" --timeout=10m
+"$(dirname "$0")/kind-check-release.sh" "$CLUSTER" "$NS" "$RELEASE"
 echo "chain reset; try: make kind-smoke"
