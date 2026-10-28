@@ -42,12 +42,26 @@ DOMAIN      ?= lite.example.org
 # to roll out before the target fails (scripts/kind-check-release.sh)
 ROLLOUT_TIMEOUT ?= 10m
 
-.PHONY: help line docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local
+.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
 
 images: image-ycashd image-lightwalletd image-yindex image-web image-faucet ## build every image from the workspace trees
+
+# Image stamps (scripts/image-stamp.sh): each image-* target labels the image with a sha256 over these
+# files; kind-load refuses a :local image whose label differs from them as they are now (a chart change
+# can need a rebuilt image). The node and lightwalletd files are hashed in their own trees, never edited.
+STAMP_LABEL         := org.ycash.infra.stamp
+STAMP_ycashd        = $(YCASHD_DOCKERFILE) $(dir $(YCASHD_DOCKERFILE))entrypoint.sh
+STAMP_ycashd_legacy = $(YCASHD_LEGACY_DOCKERFILE) $(dir $(YCASHD_LEGACY_DOCKERFILE))entrypoint.sh
+STAMP_lightwalletd  = $(LWD)/Dockerfile $(LWD)/docker/entrypoint.sh
+STAMP_yindex        = images/yindex/Dockerfile
+STAMP_web           = images/web/Dockerfile images/web/nginx.conf
+STAMP_faucet        = images/faucet/Dockerfile images/faucet/faucet.py images/faucet/fetch-params.py images/faucet/index.html images/faucet/app.js
+# ALLOW_STALE_IMAGES=1 (every image) or =ycashd,lightwalletd (by name): kind-load warns about a stale
+# image instead of failing (e.g. a node image built before stamps from an unchanged Dockerfile)
+ALLOW_STALE_IMAGES ?=
 
 line: ## check the source trees: on BRANCH (or a branch containing it), one rpcversion across ycashd and lightwalletd-dd (RPC_VERSION= to require one)
 	@set -e; vs=""; for t in $(YCASH6) $(YCASH_DD) $(LWD); do \
@@ -65,32 +79,41 @@ line: ## check the source trees: on BRANCH (or a branch containing it), one rpcv
 
 image-ycashd: line ## ycashd from YCASH6 (BRANCH) and its contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
 	@test -f $(YCASHD_DOCKERFILE) || { echo "$(YCASHD_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH6) yet"; exit 1; }
-	docker build --platform $(PLATFORM) -f $(YCASHD_DOCKERFILE) --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
+	s=$$(scripts/image-stamp.sh hash $(STAMP_ycashd)) && docker build --platform $(PLATFORM) -f $(YCASHD_DOCKERFILE) --build-arg JOBS=$(JOBS) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
 
 image-ycashd-legacy: line ## the v4.5.0 tree YCASH_DD (BRANCH), same Dockerfile shape, tagged ycashd-legacy
 	@test -f $(YCASHD_LEGACY_DOCKERFILE) || { echo "$(YCASHD_LEGACY_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH_DD) yet"; exit 1; }
-	docker build --platform $(PLATFORM) -f $(YCASHD_LEGACY_DOCKERFILE) --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd-legacy:local $(YCASH_DD)
+	s=$$(scripts/image-stamp.sh hash $(STAMP_ycashd_legacy)) && docker build --platform $(PLATFORM) -f $(YCASHD_LEGACY_DOCKERFILE) --build-arg JOBS=$(JOBS) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/ycashd-legacy:local $(YCASH_DD)
 
 proto-sync: ## refresh yindex/walletrpc from lightwalletd-dd (generated code, never edited here)
 	cp $(LWD)/walletrpc/{service.pb.go,service_grpc.pb.go,compact_formats.pb.go,service.proto,compact_formats.proto} yindex/walletrpc/
 
 image-lightwalletd: line ## lightwalletd-dd from LWD (BRANCH), its own Dockerfile; it speaks exactly the node's rpcversion
-	docker build --platform $(PLATFORM) --build-arg LWD_VERSION=$(LWD_REV) -t $(REGISTRY)/lightwalletd:$(LWD_REV) -t $(REGISTRY)/lightwalletd:local $(LWD)
+	s=$$(scripts/image-stamp.sh hash $(STAMP_lightwalletd)) && docker build --platform $(PLATFORM) --build-arg LWD_VERSION=$(LWD_REV) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/lightwalletd:$(LWD_REV) -t $(REGISTRY)/lightwalletd:local $(LWD)
 
 image-yindex: ## the address index
-	docker build --platform $(PLATFORM) -f images/yindex/Dockerfile -t $(REGISTRY)/yindex:$(YINDEX_REV) -t $(REGISTRY)/yindex:local .
+	s=$$(scripts/image-stamp.sh hash $(STAMP_yindex)) && docker build --platform $(PLATFORM) -f images/yindex/Dockerfile --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/yindex:$(YINDEX_REV) -t $(REGISTRY)/yindex:local .
 
 image-web: ## the yew/web static bundle behind nginx (needs yew/web built: scripts/build-core-wasm.sh + `npm run build` there; YEW=… for a worktree)
 	@test -d $(YEW)/web/dist || { echo "yew/web/dist missing: build the web wallet first (cd $(YEW)/web && scripts/build-core-wasm.sh && npm run build)"; exit 1; }
-	docker buildx build --load --platform $(PLATFORM) --build-context dist=$(YEW)/web/dist -t $(REGISTRY)/web:$(WEB_REV) -t $(REGISTRY)/web:local images/web
+	s=$$(scripts/image-stamp.sh hash $(STAMP_web)) && docker buildx build --load --platform $(PLATFORM) --build-context dist=$(YEW)/web/dist --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/web:$(WEB_REV) -t $(REGISTRY)/web:local images/web
 
 image-faucet: ## the regtest faucet (images/faucet: python:3.12-alpine + the standard library)
-	docker build --platform $(PLATFORM) -t $(REGISTRY)/faucet:$(YINDEX_REV) -t $(REGISTRY)/faucet:local images/faucet
+	s=$$(scripts/image-stamp.sh hash $(STAMP_faucet)) && docker build --platform $(PLATFORM) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/faucet:$(YINDEX_REV) -t $(REGISTRY)/faucet:local images/faucet
 
 kind-create: ## the kind cluster from kind/kind.yaml
 	kind get clusters | grep -qx $(CLUSTER) || kind create cluster --name $(CLUSTER) --config kind/kind.yaml
 
-kind-load: ## push the local images into the cluster
+image-check: ## each :local image's stamp label against its Dockerfile (and copied files) in the tree now
+	@export ALLOW_STALE_IMAGES="$(ALLOW_STALE_IMAGES)"; bad=0; \
+	scripts/image-stamp.sh check $(REGISTRY)/ycashd:local image-ycashd $(STAMP_ycashd) || bad=1; \
+	scripts/image-stamp.sh check $(REGISTRY)/lightwalletd:local image-lightwalletd $(STAMP_lightwalletd) || bad=1; \
+	scripts/image-stamp.sh check $(REGISTRY)/yindex:local image-yindex $(STAMP_yindex) || bad=1; \
+	scripts/image-stamp.sh check $(REGISTRY)/web:local image-web $(STAMP_web) || bad=1; \
+	scripts/image-stamp.sh check $(REGISTRY)/faucet:local image-faucet $(STAMP_faucet) || bad=1; \
+	[ $$bad = 0 ] || { echo "rebuild the image(s) above, or ALLOW_STALE_IMAGES=1 (all) / =ycashd,web (by name) to go on; pods already on a reloaded tag need kubectl rollout restart"; exit 1; }
+
+kind-load: image-check ## push the local images into the cluster (refuses stale ones: image-check, ALLOW_STALE_IMAGES=1)
 	kind load docker-image --name $(CLUSTER) $(REGISTRY)/ycashd:local $(REGISTRY)/lightwalletd:local $(REGISTRY)/yindex:local
 	-kind load docker-image --name $(CLUSTER) $(REGISTRY)/web:local
 	-kind load docker-image --name $(CLUSTER) $(REGISTRY)/faucet:local

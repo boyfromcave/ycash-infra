@@ -77,7 +77,7 @@ tree's HEAD contains `BRANCH` and that ycashd and lightwalletd-dd speak one rpcv
 takes 1–2 h on a laptop (depends are cached in a Docker build-cache mount afterwards).
 
 ```bash
-make images        # ycashd + lightwalletd-dd (from the BRANCH's trees), yindex, web, faucet
+make images        # ycashd + lightwalletd-dd (from the BRANCH's trees), yindex, web, faucet; again after a chart change that needs it
 make demo          # the demo kit: cluster, images, mkcert certificate, Grafana, the chart; prints the URLs (docs/try-it.md)
 make kind-up       # cluster + Envoy Gateway + cert-manager + the chart with values-kind.yaml
 make kind-smoke    # GetLightdInfo / GetYellowbackInfo / GetVaultInfo / GetChainInfo / ListSets through the gateway over TLS
@@ -85,6 +85,14 @@ make kind-parity   # yindex vs lightwalletd's node-proxied answers for every add
 make kind-load     # ghz against the gateway: the node's RPC ceiling per method (plan K1)
 make kind-down
 ```
+
+A chart change can need rebuilt images (the hardened chart's read-only root filesystem crash-loops a
+`web:local` built before its pid file moved to `/tmp`), and kind reuses any `:local` image: every
+`make image-*` labels its image with a hash of its Dockerfile and the files it copies in, and
+`make kind-load` (so `kind-up` and `demo`) refuses an image whose label differs from the tree, naming
+the `make image-…` to run (`make image-check` alone; `ALLOW_STALE_IMAGES=1`, or `=ycashd,web` by name,
+to go on). `kind-up` fails unless every Deployment and StatefulSet rolls out (`ROLLOUT_TIMEOUT=10m`
+each) and no pod is failing.
 
 The kind overlay runs one regtest `ycashd` with every upgrade through Canopy plus the vault
 upgrade active from height 1 (the seven `-nuparams` the devnet uses; the light clients' regtest
