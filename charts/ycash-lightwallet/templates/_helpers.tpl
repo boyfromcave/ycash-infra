@@ -40,3 +40,27 @@ Call with (list $ uid). */ -}}
 {{- $uid := index . 1 -}}
 securityContext: { runAsUser: {{ $uid }}, runAsGroup: {{ $uid }}, runAsNonRoot: true, fsGroup: {{ $uid }}, seccompProfile: { type: RuntimeDefault } }
 {{- end -}}
+{{- /* yindex and yindex-ingest: wait until Postgres takes connections, so they do not crash-loop on
+"lookup <release>-postgres: no such host" while the in-cluster StatefulSet starts (its headless Service
+has no address before the pod is ready). In-cluster: <release>-postgres:5432; external (RDS): the host
+and port of yindex.postgres.existingSecret's url. A plain nc loop, as lightwalletd's wait-for-node. */ -}}
+{{- define "yc.waitForPostgres" -}}
+- name: wait-for-postgres
+  image: {{ include "yc.image" .Values.images.ycashd }}
+  {{- include "yc.containerSecurity" . | nindent 2 }}
+  resources: {{- toYaml .Values.helperResources | nindent 4 }}
+  {{- if .Values.yindex.postgres.enabled }}
+  command: [sh, -c, "until nc -z {{ include "yc.fullname" . }}-postgres 5432; do sleep 2; done"]
+  {{- else }}
+  env:
+    - name: YINDEX_POSTGRES_URL
+      valueFrom: { secretKeyRef: { name: {{ .Values.yindex.postgres.existingSecret }}, key: url } }
+  command: [sh, -c]
+  args:
+    - |
+      hp=${YINDEX_POSTGRES_URL#*://}; hp=${hp##*@}; hp=${hp%%/*}; hp=${hp%%\?*}
+      host=${hp%:*}; port=${hp##*:}; [ "$host" = "$hp" ] && port=5432
+      echo "waiting for $host:$port"
+      until nc -z "$host" "$port"; do sleep 2; done
+  {{- end }}
+{{- end -}}

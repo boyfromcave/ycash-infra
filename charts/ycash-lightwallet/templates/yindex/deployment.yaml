@@ -19,6 +19,7 @@ spec:
     spec:
       automountServiceAccountToken: false
       {{- include "yc.podSecurity" (list $ 2003) | nindent 6 }}
+      initContainers: {{- include "yc.waitForPostgres" . | nindent 8 }}
       containers:
         - name: yindex
           image: {{ include "yc.image" .Values.images.yindex }}
@@ -66,6 +67,7 @@ spec:
     spec:
       automountServiceAccountToken: false
       {{- include "yc.podSecurity" (list $ 2003) | nindent 6 }}
+      initContainers: {{- include "yc.waitForPostgres" . | nindent 8 }}
       containers:
         - name: ingest
           image: {{ include "yc.image" .Values.images.yindex }}
