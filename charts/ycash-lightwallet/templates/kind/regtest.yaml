@@ -13,10 +13,17 @@ spec:
   template:
     spec:
       restartPolicy: OnFailure
-      securityContext: { runAsUser: 2001, runAsNonRoot: true }
+      automountServiceAccountToken: false
+      {{- include "yc.podSecurity" (list . 2001) | nindent 6 }}
+      # ycash-cli creates $HOME/.ycash (its default datadir) even with -conf=/dev/null
+      volumes: [{ name: home, emptyDir: {} }]
       containers:
         - name: bootstrap
           image: {{ include "yc.image" .Values.images.ycashd }}
+          imagePullPolicy: {{ .Values.images.ycashd.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
+          resources: {{- toYaml .Values.helperResources | nindent 12 }}
+          volumeMounts: [{ name: home, mountPath: /srv/ycash }]
           env:
             - name: YCASHD_RPC_USER
               valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
@@ -46,10 +53,17 @@ spec:
       labels: {{- include "yc.labels" . | nindent 8 }}
         app.kubernetes.io/component: miner
     spec:
-      securityContext: { runAsUser: 2001, runAsNonRoot: true }
+      automountServiceAccountToken: false
+      {{- include "yc.podSecurity" (list . 2001) | nindent 6 }}
+      # ycash-cli creates $HOME/.ycash (its default datadir) even with -conf=/dev/null
+      volumes: [{ name: home, emptyDir: {} }]
       containers:
         - name: miner
           image: {{ include "yc.image" .Values.images.ycashd }}
+          imagePullPolicy: {{ .Values.images.ycashd.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
+          resources: {{- toYaml .Values.helperResources | nindent 12 }}
+          volumeMounts: [{ name: home, mountPath: /srv/ycash }]
           env:
             - name: YCASHD_RPC_USER
               valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }

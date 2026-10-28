@@ -18,7 +18,8 @@ spec:
       labels: {{- include "yc.labels" . | nindent 8 }}
         app.kubernetes.io/component: ycashd
     spec:
-      securityContext: { fsGroup: 2001, runAsUser: 2001, runAsNonRoot: true }
+      automountServiceAccountToken: false
+      {{- include "yc.podSecurity" (list . 2001) | nindent 6 }}
       terminationGracePeriodSeconds: 120
       affinity:
         podAntiAffinity:
@@ -32,6 +33,7 @@ spec:
         - name: ycashd
           image: {{ include "yc.image" .Values.images.ycashd }}
           imagePullPolicy: {{ .Values.images.ycashd.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
           env:
             - { name: YCASHD_NETWORK, value: {{ .Values.ycashd.network | quote }} }
             - { name: YCASHD_RPC_PORT, value: {{ .Values.ycashd.rpc.port | quote }} }
@@ -63,6 +65,7 @@ spec:
           volumeMounts:
             - { name: data, mountPath: /var/lib/ycash }
             - { name: scripts, mountPath: /opt/ycash, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
           startupProbe:
             exec: { command: [sh, /opt/ycash/live.sh] }
             periodSeconds: 10
@@ -79,6 +82,7 @@ spec:
             preStop: { exec: { command: [sh, -c, "ycash-cli -datadir=/var/lib/ycash stop; sleep 20"] } }
           resources: {{- toYaml .Values.ycashd.resources | nindent 12 }}
       volumes:
+        - { name: tmp, emptyDir: {} }
         - name: scripts
           configMap: { name: {{ include "yc.fullname" . }}-ycashd-scripts, defaultMode: 0555 }
   volumeClaimTemplates:

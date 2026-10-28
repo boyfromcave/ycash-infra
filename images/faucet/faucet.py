@@ -44,6 +44,17 @@ PREFIX = "/faucet"
 PARAM_FILES = ("sapling-spend.params", "sapling-output.params")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+
+def param_path(requested):
+    """The file under PARAMS_DIR for a requested proving-file name, or None. The path is built from the
+    PARAM_FILES entry, never from the request, and must resolve inside PARAMS_DIR (no symlink out)."""
+    for name in PARAM_FILES:
+        if requested == name:
+            root = os.path.realpath(PARAMS_DIR)
+            p = os.path.realpath(os.path.join(root, name))
+            return p if p.startswith(root + os.sep) else None
+    return None
+
 _auth = base64.b64encode(f"{RPC_USER}:{RPC_PASSWORD}".encode()).decode()
 _lock = threading.Lock()          # one acting request at a time, and the rate limit's clock
 _last_act = 0.0
@@ -239,10 +250,10 @@ class H(http.server.BaseHTTPRequestHandler):
         if path == "/app.js":
             return self._file(os.path.join(HERE, "app.js"), "text/javascript; charset=utf-8")
         if path.startswith("/params/"):
-            name = path[len("/params/"):]
-            if name not in PARAM_FILES:
+            p = param_path(path[len("/params/"):])
+            if p is None:
                 return self._send(404, "not found")
-            p = os.path.join(PARAMS_DIR, name)
+            name = os.path.basename(p)
             if not os.path.isfile(p):
                 return self._send(404, f"{name} missing: the init container has not fetched it yet")
             return self._file(p, "application/octet-stream")

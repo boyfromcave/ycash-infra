@@ -13,22 +13,19 @@ Design and decisions: [docs/plans/ycash-infra-plan.md](docs/plans/ycash-infra-pl
 `ideation/web-wallet`). Working rules: [AGENTS.md](AGENTS.md). Part of
 [Ycash vaults and Yellowback](https://github.com/boyfromcave/yellowback).
 
-## Node line: `upgrade/vault`, not yet post-quantum
+## Node line: `upgrade/vault`, post-quantum
 
 The `ycashd` image is built from the workspace's `ycash6` tree as checked out, which is
-`upgrade/vault` (`make images`; `YCASH6=` points elsewhere). Those nodes answer `yed_getinfo` with
-`rpcversion` 6. **The post-quantum line (`upgrade/quantum-vaults`, `rpcversion` 8) is not
-supported yet**, and three things stand in the way:
+`upgrade/vault` (`make images`; `YCASH6=` points elsewhere). The post-quantum line
+(`upgrade/quantum-vaults`) has been merged into `upgrade/vault`, so those nodes answer
+`yed_getinfo` with `rpcversion` 8 (post-quantum owners and the fee rules), and so does
+`lightwalletd-dd` built from its `upgrade/vault`. The chart assumes that line:
+`ycashd.rpcVersion` defaults to 8 and the arming Job refuses any other node (`--set
+ycashd.rpcVersion=6` for an `upgrade/vault` tree from before the merge). `yindex` indexes the
+post-quantum address forms (below), and the regtest arming Job creates the attestor set at the
+YED module's `BOND_MATURITY` (8 on regtest), above the post-quantum line's floor of 2.
 
-- **`yindex` indexes P2PKH only.** It takes `s…` addresses and maps YED `ye…`/`yt…`/`yr…`
-  addresses to them; post-quantum addresses (`sq…`, PQ `yb…` owners) and the new mainnet YED
-  prefix `yb…` are refused, and `TX_PQPKH` outputs are not indexed. The node side of that index
-  is still open too.
-- **The regtest arming Job** creates the YED attestor set with `maturity 1`; the post-quantum
-  line's regtest floor is 2.
-- **No smoke test** has run this chart against post-quantum nodes.
-
-Until then, try the post-quantum line on the node repositories' devnet.
+**No smoke test** has yet been recorded running this chart against post-quantum nodes.
 
 ## What runs, and what is shared
 
@@ -59,9 +56,10 @@ surface: clients still see exactly the four services of the proto
 twin), plain-YEC post-quantum `sq…`/`tq…`/`rq…` (53 characters: a `TX_PQPKH` output,
 `20 <SHA256(scheme‖pk)> 51|52 c2`, D-Q-20) and post-quantum YED `yb…`/`yt…`/`yr…` (53 characters,
 mapped to the `sq…`/`tq…`/`rq…` form of the same script). The old mainnet YED prefix `ye…` is
-refused, as the post-quantum node refuses it (D-Q-21). A post-quantum address reaches only the
-methods the gateway routes to `yindex`: `lightwalletd-dd`'s own taddr methods refuse it, so keep
-the five address methods in `yindex.routes`.
+refused, as the post-quantum node refuses it (D-Q-21). `lightwalletd-dd`'s own taddr methods
+accept the same forms when it serves `--yellowback` (`frontend/service.go` `taddrOf`,
+`checkTaddress`), but the five address methods stay in `yindex.routes` so that address queries are
+answered from the index and never reach the node.
 
 ## Quick start (kind)
 

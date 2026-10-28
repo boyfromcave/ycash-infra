@@ -17,11 +17,13 @@ spec:
         app.kubernetes.io/component: yindex
       annotations: { prometheus.io/scrape: "true", prometheus.io/port: "9071" }
     spec:
-      securityContext: { runAsUser: 2003, runAsNonRoot: true }
+      automountServiceAccountToken: false
+      {{- include "yc.podSecurity" (list $ 2003) | nindent 6 }}
       containers:
         - name: yindex
           image: {{ include "yc.image" .Values.images.yindex }}
           imagePullPolicy: {{ .Values.images.yindex.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
           args: [serve]
           env:
             - { name: YINDEX_RPC_URL, value: "http://{{ include "yc.rpcHost" . }}:{{ .Values.ycashd.rpc.port }}" }
@@ -62,10 +64,13 @@ spec:
       labels: {{- include "yc.labels" . | nindent 8 }}
         app.kubernetes.io/component: yindex-ingest
     spec:
-      securityContext: { runAsUser: 2003, runAsNonRoot: true }
+      automountServiceAccountToken: false
+      {{- include "yc.podSecurity" (list $ 2003) | nindent 6 }}
       containers:
         - name: ingest
           image: {{ include "yc.image" .Values.images.yindex }}
+          imagePullPolicy: {{ .Values.images.yindex.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
           args: [ingest]
           env:
             - { name: YINDEX_RPC_URL, value: "http://{{ include "yc.rpcHost" . }}:{{ .Values.ycashd.rpc.port }}" }
@@ -81,6 +86,7 @@ spec:
             {{- end }}
             - { name: YINDEX_HTTP_ADDR, value: ":9071" }
           ports: [{ name: http, containerPort: 9071 }]
+          readinessProbe: { httpGet: { path: /live, port: http }, periodSeconds: 10 }
           livenessProbe: { httpGet: { path: /live, port: http }, periodSeconds: 30 }
           resources: {{- toYaml .Values.yindex.resources | nindent 12 }}
 ---
@@ -112,17 +118,29 @@ spec:
       labels: {{- include "yc.labels" . | nindent 8 }}
         app.kubernetes.io/component: postgres
     spec:
+      automountServiceAccountToken: false
+      {{- /* postgres:*-alpine's own postgres user (uid 70): its entrypoint then skips the root chown/gosu step */}}
+      {{- include "yc.podSecurity" (list $ 70) | nindent 6 }}
+      volumes:
+        - { name: run, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
       containers:
         - name: postgres
           image: {{ include "yc.image" .Values.images.postgres }}
+          imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
           env:
             - { name: POSTGRES_USER, value: yindex }
             - { name: POSTGRES_PASSWORD, value: yindex }   # in-cluster only; EKS uses RDS (postgres.enabled=false)
             - { name: POSTGRES_DB, value: yindex }
             - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
           ports: [{ name: pg, containerPort: 5432 }]
-          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql }
+            - { name: tmp, mountPath: /tmp }
           readinessProbe: { exec: { command: [pg_isready, -U, yindex] }, periodSeconds: 5 }
+          livenessProbe: { exec: { command: [pg_isready, -U, yindex] }, periodSeconds: 30, failureThreshold: 5 }
           resources: {{- toYaml .Values.yindex.postgres.resources | nindent 12 }}
   volumeClaimTemplates:
     - metadata: { name: data }

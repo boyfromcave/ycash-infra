@@ -20,15 +20,19 @@ spec:
         prometheus.io/port: "9068"
         prometheus.io/path: /metrics
     spec:
-      securityContext: { runAsUser: 2002, runAsNonRoot: true, fsGroup: 2002 }
+      automountServiceAccountToken: false
+      {{- include "yc.podSecurity" (list . 2002) | nindent 6 }}
       initContainers:
         - name: wait-for-node
           image: {{ include "yc.image" .Values.images.ycashd }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
+          resources: {{- toYaml .Values.helperResources | nindent 12 }}
           command: [sh, -c, "until nc -z {{ include "yc.rpcHost" . }} {{ .Values.ycashd.rpc.port }}; do sleep 2; done"]
       containers:
         - name: lightwalletd
           image: {{ include "yc.image" .Values.images.lightwalletd }}
           imagePullPolicy: {{ .Values.images.lightwalletd.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
           env:
             - { name: YCASHD_RPC_HOST, value: {{ include "yc.rpcHost" . | quote }} }
             - { name: YCASHD_RPC_PORT, value: {{ .Values.ycashd.rpc.port | quote }} }
@@ -48,6 +52,7 @@ spec:
             - { name: http, containerPort: 9068 }
           volumeMounts:
             - { name: cache, mountPath: /var/lib/lightwalletd }
+            - { name: tmp, mountPath: /tmp }
           # 9068 serves Prometheus metrics (/metrics); it answers once the server is up.
           readinessProbe:
             httpGet: { path: /metrics, port: http }
@@ -57,6 +62,7 @@ spec:
             periodSeconds: 30
           resources: {{- toYaml .Values.lightwalletd.resources | nindent 12 }}
       volumes:
+        - { name: tmp, emptyDir: {} }
         - name: cache
           emptyDir:
             {{- with .Values.lightwalletd.cache.medium }}
