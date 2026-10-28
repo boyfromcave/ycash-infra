@@ -23,8 +23,8 @@ RPC_VERSION ?=
 # the node image's Dockerfile (contrib/docker/ycashd/, K0a); it COPYs its entrypoint from the build context
 YCASHD_DOCKERFILE ?= $(YCASH6)/contrib/docker/ycashd/Dockerfile
 YCASHD_LEGACY_DOCKERFILE ?= $(YCASH_DD)/contrib/docker/ycashd/Dockerfile
-# the wallet tree: the workspace's wt/yew-web worktree when it exists (the web shell's branch), else yew/
-YEW         ?= $(if $(wildcard $(WORKSPACE)/wt/yew-web/web),$(WORKSPACE)/wt/yew-web,$(WORKSPACE)/yew)
+# the wallet tree: yew/ (the web shell is on its upgrade/vault since yew#14); YEW=… for a worktree
+YEW         ?= $(WORKSPACE)/yew
 CLUSTER     ?= ycash
 NAMESPACE   ?= ycash
 RELEASE     ?= ycash

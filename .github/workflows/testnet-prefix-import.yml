@@ -40,11 +40,11 @@ on:
       ycash6_sha:
         description: 'ycash6 commit (its yellowback-tests node-bin artifact is used)'
         type: string
-        default: '1c10c93cc73e89783edcdf690eece90b211077e1'
+        default: '727c61370641484d0741ca6f8e512ee5302bda39'
       ycash_dd_sha:
         description: 'ycash-dd commit (its yellowback-tests node-bin artifact is used)'
         type: string
-        default: '1bbcf26bc9df6daed171dacf0e79a37358915ddd'
+        default: '559d04e8e3b0adb6c0c823acbd42a2fdc82fe942'
   push:
     branches: [upgrade/vault, 'claude/**']
     paths:
@@ -60,8 +60,8 @@ permissions: {}
 env:
   # The node commits imported after a workflow_run (2026-10-28 upgrade/vault tips, testnet plan
   # "Execution status"); a dispatch can name others.
-  DEFAULT_YCASH6_SHA: 1c10c93cc73e89783edcdf690eece90b211077e1
-  DEFAULT_YCASH_DD_SHA: 1bbcf26bc9df6daed171dacf0e79a37358915ddd
+  DEFAULT_YCASH6_SHA: 727c61370641484d0741ca6f8e512ee5302bda39
+  DEFAULT_YCASH_DD_SHA: 559d04e8e3b0adb6c0c823acbd42a2fdc82fe942
 
 jobs:
   unit:
