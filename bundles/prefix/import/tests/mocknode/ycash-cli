@@ -1,0 +1,35 @@
+#!/usr/bin/env -S python3 -I
+"""A stand-in for ycash-cli, answering from the stand-in ycashd's state (tests/test_import.sh)."""
+import hashlib, json, os, sys
+
+args = [a for a in sys.argv[1:] if not a.startswith("-")]
+opts = dict(a.partition("=")[::2] for a in sys.argv[1:] if a.startswith("-"))
+net = os.path.join(opts["-datadir"], "testnet3")
+try:
+    with open(os.path.join(net, "mock-state.json")) as f:
+        st = json.load(f)
+except (OSError, ValueError):
+    sys.exit("error code: -28\nerror message:\nLoading block index...")
+hashes = st["hashes"]
+tip = len(hashes) - 1
+cmd, rest = args[0], args[1:]
+if cmd == "getblockchaininfo":
+    print(json.dumps({"chain": "test", "blocks": tip, "headers": tip,
+                      "bestblockhash": hashes[-1] if hashes else None,
+                      "chainwork": "%064x" % (32 * (tip + 1)), "initialblockdownload": True}, indent=2))
+elif cmd == "getblockhash":
+    h = int(rest[0])
+    if not 0 <= h <= tip:
+        sys.exit("error code: -8\nerror message:\nBlock height out of range")
+    print(hashes[h])
+elif cmd == "getbestblockhash":
+    print(hashes[-1])
+elif cmd == "gettxoutsetinfo":
+    print(json.dumps({"height": tip, "bestblock": hashes[-1], "transactions": tip + 1, "txouts": tip + 1,
+                      "hash_serialized": hashlib.sha256("".join(hashes).encode()).hexdigest(),
+                      "total_amount": 0}, indent=2))
+elif cmd == "stop":
+    open(os.path.join(net, "mock-stop"), "w").close()
+    print("Ycash server stopping")
+else:
+    sys.exit("mock ycash-cli: unknown command %s" % cmd)

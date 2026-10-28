@@ -1,0 +1,288 @@
+# testnet-prefix-import: import the Zcash-testnet prefix into both Ycash node lines and record the result.
+#
+# In plain words: the `testnet-prefix` job copies Zcash's public testnet history (blocks 0..510,247)
+# into a set of files. This job proves that both versions of the Ycash node software accept that
+# history as the start of the new Ycash testnet: each node reads every block from the files, checks
+# it, and must end on exactly the blocks the files say they hold. It runs four times: each node line
+# (ycash6 and ycash-dd), once with the node's normal shortcuts (checkpoints) and once checking every
+# proof and signature from scratch (-checkpoints=0). The results go to the run summary and to a
+# small JSON file per run.
+#
+# Triggers:
+#   workflow_run       after a successful `testnet-prefix` run of this repository (push, schedule or
+#                      dispatch; never a pull_request run): imports that run's `testnet-prefix`
+#                      artifact with the default node commits below.
+#   workflow_dispatch  prefix_run_id (a successful testnet-prefix run of this repository) and,
+#                      optionally, the node commits.
+#   push / pull_request on this workflow or bundles/prefix/import/: the unit job only (frame.py tests,
+#                      import.sh against the stand-in node), no node and no prefix.
+#
+# Security: workflow_run runs with this repository's default-branch workflow and token, so the
+# triggering run's artifact is treated as untrusted data. Nothing from it is executed; frame.py (from
+# this checkout) reads it with `python3 -I` and checks SHA256SUMS, the manifest and every block
+# before the node sees a byte. The token is read-only (actions: read, contents: read), nothing is
+# cached, and no step writes GITHUB_ENV or GITHUB_PATH. Node binaries come only from the `node-bin`
+# artifact of a push/schedule/dispatch run of the node repository's yellowback-tests.yml whose
+# head_sha is the requested commit (a successful run first): the pattern of yew's devnet-nightly.yml.
+# Those artifacts are kept 3 days; for an older commit, dispatch yellowback-tests.yml on it first.
+name: testnet-prefix-import
+
+on:
+  workflow_run:  # zizmor: ignore[dangerous-triggers] the artifact is data only: checked by frame.py from this checkout, never executed; read-only token
+    workflows: [testnet-prefix]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      prefix_run_id:
+        description: 'a successful testnet-prefix run of this repository (numeric run id)'
+        required: true
+        type: string
+      ycash6_sha:
+        description: 'ycash6 commit (its yellowback-tests node-bin artifact is used)'
+        type: string
+        default: '1c10c93cc73e89783edcdf690eece90b211077e1'
+      ycash_dd_sha:
+        description: 'ycash-dd commit (its yellowback-tests node-bin artifact is used)'
+        type: string
+        default: '1bbcf26bc9df6daed171dacf0e79a37358915ddd'
+  push:
+    branches: [upgrade/vault, 'claude/**']
+    paths:
+      - .github/workflows/testnet-prefix-import.yml
+      - bundles/prefix/import/**
+  pull_request:
+    paths:
+      - .github/workflows/testnet-prefix-import.yml
+      - bundles/prefix/import/**
+
+permissions: {}
+
+env:
+  # The node commits imported after a workflow_run (2026-10-28 upgrade/vault tips, testnet plan
+  # "Execution status"); a dispatch can name others.
+  DEFAULT_YCASH6_SHA: 1c10c93cc73e89783edcdf690eece90b211077e1
+  DEFAULT_YCASH_DD_SHA: 1bbcf26bc9df6daed171dacf0e79a37358915ddd
+
+jobs:
+  unit:
+    if: github.event_name != 'workflow_run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: frame.py unit tests (Zcash testnet blocks 0..10)
+        run: python3 -I bundles/prefix/import/tests/test_frame.py -v
+      - name: import.sh against the stand-in node
+        run: bundles/prefix/import/tests/test_import.sh
+      - name: shellcheck
+        run: shellcheck -S warning bundles/prefix/import/import.sh bundles/prefix/import/tests/test_import.sh
+
+  resolve:
+    # A workflow_run only for a successful testnet-prefix run of this repository that a fork's code
+    # did not produce (no pull_request run); a dispatch names its run, checked the same way below.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read  # read the prefix run and its artifact list
+    outputs:
+      prefix_run: ${{ steps.r.outputs.prefix_run }}
+      ycash6_sha: ${{ steps.r.outputs.ycash6_sha }}
+      ycash_dd_sha: ${{ steps.r.outputs.ycash_dd_sha }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          WR_ID: ${{ github.event.workflow_run.id }}
+          IN_RUN: ${{ inputs.prefix_run_id }}
+          IN_Y6: ${{ inputs.ycash6_sha }}
+          IN_DD: ${{ inputs.ycash_dd_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_run ]; then run=$WR_ID; y6=$DEFAULT_YCASH6_SHA; dd=$DEFAULT_YCASH_DD_SHA
+          else run=$IN_RUN; y6=${IN_Y6:-$DEFAULT_YCASH6_SHA}; dd=${IN_DD:-$DEFAULT_YCASH_DD_SHA}; fi
+          case "$run" in *[!0-9]*|'') echo "::error::prefix run id is not numeric"; exit 1 ;; esac
+          for s in "$y6" "$dd"; do
+            case "$s" in *[!0-9a-f]*|'') echo "::error::a node commit is not a hex sha"; exit 1 ;; esac
+            [ ${#s} -eq 40 ] || { echo "::error::a node commit is not a full 40-hex sha"; exit 1; }
+          done
+          ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq \
+            'select(.path == ".github/workflows/testnet-prefix.yml" and .conclusion == "success"
+                    and .head_repository.full_name == env.GITHUB_REPOSITORY
+                    and (.event == "push" or .event == "schedule" or .event == "workflow_dispatch")) | .id')
+          [ "$ok" = "$run" ] || { echo "::error::run $run is not a successful push/schedule/dispatch testnet-prefix run of $GITHUB_REPOSITORY"; exit 1; }
+          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" --jq '[.artifacts[] | select(.name == "testnet-prefix" and (.expired | not))] | length')
+          [ "$n" = 1 ] || { echo "::error::run $run has no unexpired testnet-prefix artifact"; exit 1; }
+          { echo "prefix_run=$run"; echo "ycash6_sha=$y6"; echo "ycash_dd_sha=$dd"; } >> "$GITHUB_OUTPUT"
+          echo "- prefix: testnet-prefix run [$run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run)" >> "$GITHUB_STEP_SUMMARY"
+
+  import:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        line: [ycash6, ycash-dd]
+        mode: [checkpoints, full]
+    # ubuntu-22.04: both node lines build their node-bin on it (glibc 2.35).
+    runs-on: ubuntu-22.04
+    # Full verification of 510,248 blocks may need most of a hosted job's 6 hours.
+    timeout-minutes: ${{ matrix.mode == 'full' && 355 || 240 }}
+    permissions:
+      contents: read
+      actions: read  # gh run download: the prefix run here, the node runs in the node repositories
+    env:
+      LINE: ${{ matrix.line }}
+      MODE: ${{ matrix.mode }}
+      NODE_REPO: boyfromcave/${{ matrix.line }}
+      NODE_SHA: ${{ matrix.line == 'ycash6' && needs.resolve.outputs.ycash6_sha || needs.resolve.outputs.ycash_dd_sha }}
+      PREFIX_RUN: ${{ needs.resolve.outputs.prefix_run }}
+      # seconds import.sh waits for the tip: the job timeout less 15 minutes for the downloads
+      MAX_WAIT: ${{ matrix.mode == 'full' && 20400 || 13500 }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: work directory (the runner's larger /mnt disk when there is one)
+        id: w
+        run: |
+          set -euo pipefail
+          if sudo mkdir -p /mnt/import 2>/dev/null && sudo chown "$(id -u):$(id -g)" /mnt/import; then root=/mnt/import
+          else root="$RUNNER_TEMP/import"; mkdir -p "$root"; fi
+          df -h "$root"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+      - name: download the prefix (data only)
+        id: prefix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT: ${{ steps.w.outputs.root }}
+        run: |
+          set -euo pipefail
+          gh run download "$PREFIX_RUN" -R "$GITHUB_REPOSITORY" -n testnet-prefix -D "$ROOT/prefix-dl"
+          mapfile -t sums < <(find "$ROOT/prefix-dl" -maxdepth 2 -type f -name SHA256SUMS)
+          [ "${#sums[@]}" = 1 ] || { echo "::error::the testnet-prefix artifact has ${#sums[@]} SHA256SUMS files, expected 1"; exit 1; }
+          dir=$(dirname "${sums[0]}")
+          ls -l "$dir"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+      - name: download the node binaries from a trusted node run
+        id: node
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT: ${{ steps.w.outputs.root }}
+        run: |
+          set -euo pipefail
+          # push/schedule/dispatch runs of yellowback-tests.yml at exactly NODE_SHA, in the node
+          # repository itself; successful runs first. Never a pull_request run.
+          runs=$(gh api "repos/$NODE_REPO/actions/workflows/yellowback-tests.yml/runs?head_sha=$NODE_SHA&per_page=100" --jq \
+            '[.workflow_runs[] | select(.head_sha == env.NODE_SHA and .head_repository.full_name == env.NODE_REPO
+                and (.event == "push" or .event == "schedule" or .event == "workflow_dispatch"))]
+             | sort_by(if .conclusion == "success" then 0 else 1 end) | .[].id')
+          got=''
+          for r in $runs; do
+            if gh run download "$r" -R "$NODE_REPO" -n node-bin -D "$ROOT/node-dl" 2>/dev/null; then got=$r; break; fi
+          done
+          [ -n "$got" ] || { echo "::error::no node-bin artifact in the trusted yellowback-tests runs of $NODE_REPO at $NODE_SHA (runs: ${runs:-none}); artifacts expire after 3 days: dispatch yellowback-tests.yml on that commit"; exit 1; }
+          mkdir -p "$ROOT/bin-src" "$ROOT/bin"
+          # ycash6 packs node-bin.tgz, ycash-dd node-bin.tar; both hold src/ycashd and src/ycash-cli.
+          if [ -f "$ROOT/node-dl/node-bin.tgz" ]; then tar -xzf "$ROOT/node-dl/node-bin.tgz" -C "$ROOT/bin-src" src/ycashd src/ycash-cli
+          elif [ -f "$ROOT/node-dl/node-bin.tar" ]; then tar -xf "$ROOT/node-dl/node-bin.tar" -C "$ROOT/bin-src" src/ycashd src/ycash-cli
+          else echo "::error::node-bin holds neither node-bin.tgz nor node-bin.tar"; ls -l "$ROOT/node-dl"; exit 1; fi
+          for b in ycashd ycash-cli; do
+            head -c4 "$ROOT/bin-src/src/$b" | od -An -c | grep -q 'E   L   F' || { echo "::error::$b is not an ELF executable"; exit 1; }
+            install -m 0755 "$ROOT/bin-src/src/$b" "$ROOT/bin/$b"
+          done
+          rm -rf "$ROOT/node-dl" "$ROOT/bin-src"
+          "$ROOT/bin/ycashd" --version | head -n 1 || true
+          echo "run=$got" >> "$GITHUB_OUTPUT"
+          echo "dir=$ROOT/bin" >> "$GITHUB_OUTPUT"
+      - name: zk parameters (ycash-dd only; the sums its zcutil/fetch-params.sh pins)
+        if: matrix.line == 'ycash-dd'
+        id: params
+        env:
+          ROOT: ${{ steps.w.outputs.root }}
+        run: |
+          set -euo pipefail
+          dir="$ROOT/zcash-params"; mkdir -p "$dir"; cd "$dir"
+          for f in sapling-spend.params sapling-output.params sprout-groth16.params; do
+            for i in 1 2; do curl -fsSL --retry 3 -o "$f.part.$i" "https://download.z.cash/downloads/$f.part.$i"; done
+            cat "$f.part.1" "$f.part.2" > "$f" && rm "$f.part.1" "$f.part.2"
+          done
+          sha256sum -c <<'EOF'
+          8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13  sapling-spend.params
+          2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4  sapling-output.params
+          b685d700c60328498fbde589c8c7c484c722b788b265b72af448a5bf0ee55b50  sprout-groth16.params
+          EOF
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+      - name: import
+        env:
+          ROOT: ${{ steps.w.outputs.root }}
+          PREFIX_DIR: ${{ steps.prefix.outputs.dir }}
+          BIN_DIR: ${{ steps.node.outputs.dir }}
+          PARAMS_DIR: ${{ steps.params.outputs.dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/result"
+          extra=()
+          [ -z "$PARAMS_DIR" ] || extra+=(--paramsdir "$PARAMS_DIR")
+          bundles/prefix/import/import.sh --bin "$BIN_DIR" --prefix "$PREFIX_DIR" --mode "$MODE" \
+            --work "$ROOT/work" --out "$RUNNER_TEMP/result/result-$LINE-$MODE.json" \
+            --line "$LINE" --node-sha "$NODE_SHA" --max-wait "$MAX_WAIT" "${extra[@]}"
+      - name: summary
+        if: ${{ !cancelled() }}
+        env:
+          NODE_RUN: ${{ steps.node.outputs.run }}
+        run: |
+          {
+            echo "### $LINE, $MODE"
+            echo "- node: $NODE_REPO commit \`$NODE_SHA\`, node-bin from run [$NODE_RUN]($GITHUB_SERVER_URL/$NODE_REPO/actions/runs/$NODE_RUN)"
+            echo "- prefix: testnet-prefix run [$PREFIX_RUN]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$PREFIX_RUN)"
+            echo
+            if [ -f "$RUNNER_TEMP/result/result-$LINE-$MODE.json" ]; then
+              python3 -I bundles/prefix/import/summarize.py "$RUNNER_TEMP/result/result-$LINE-$MODE.json" || true
+            else
+              echo "No result file: the job failed before the import."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: import-result-${{ matrix.line }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/result/
+          if-no-files-found: warn
+          retention-days: 90
+
+  compare:
+    needs: [resolve, import]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: import-result-*
+          path: results
+          merge-multiple: true
+      - name: compare the four results
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find results -name 'result-*.json' | sort)
+          { echo "## Prefix import: all legs"; echo; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${#files[@]}" != 4 ]; then
+            echo "Only ${#files[@]} of 4 results exist." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          rc=0
+          if [ "${#files[@]}" -gt 0 ]; then
+            python3 -I bundles/prefix/import/summarize.py "${files[@]}" >> "$GITHUB_STEP_SUMMARY" || rc=$?
+          fi
+          [ "${#files[@]}" = 4 ] && [ "$rc" = 0 ]

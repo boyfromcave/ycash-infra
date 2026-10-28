@@ -1,0 +1,76 @@
+#!/usr/bin/env -S python3 -I
+"""A stand-in for ycashd, for testing import.sh only (tests/test_import.sh).
+
+It reads the -loadblock files with the record scan of LoadExternalBlockFile, accepts each block
+whose hashPrevBlock is its tip, and publishes its state for the stand-in ycash-cli. MOCK_REFUSE_AT=H
+refuses the block at height H (as a node refusing an invalid block would), MOCK_DELAY the seconds
+per block.
+"""
+import hashlib, json, os, sys, time
+sys.dont_write_bytecode = True  # no __pycache__ in the tree
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+import frame  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from test_frame import node_scan  # noqa: E402
+
+if "--version" in sys.argv[1:]:
+    print("Mock ycashd (import.sh test stand-in)")
+    sys.exit(0)
+opts, files = {}, []
+for a in sys.argv[1:]:
+    k, _, v = a.partition("=")
+    if k == "-loadblock":
+        files.append(v)
+    else:
+        opts[k] = v
+for need in ("-testnet", "-connect", "-listen", "-dnsseed", "-datadir"):
+    if need not in opts:
+        sys.exit("mock ycashd: missing %s" % need)
+if opts["-connect"] != "0" or opts["-listen"] != "0":
+    sys.exit("mock ycashd: -connect=0 -listen=0 expected")
+net = os.path.join(opts["-datadir"], "testnet3")
+os.makedirs(net, exist_ok=True)
+logf = open(os.path.join(net, "debug.log"), "a", buffering=1)
+state_path = os.path.join(net, "mock-state.json")
+stop_path = os.path.join(net, "mock-stop")
+magic = bytes.fromhex(os.environ.get("MOCK_MAGIC", "fa1af9bf"))
+refuse_at = int(os.environ.get("MOCK_REFUSE_AT", "-1"))
+delay = float(os.environ.get("MOCK_DELAY", "0.05"))
+hashes = []
+st = {"checkpoints": opts.get("-checkpoints", "1")}
+
+
+def publish():
+    tmp = state_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(dict(st, hashes=hashes), f)
+    os.replace(tmp, state_path)
+
+
+publish()
+logf.write("mock: checkpoints=%s\n" % st["checkpoints"])
+for path in files:
+    t = time.time()
+    with open(path, "rb") as f:
+        data = f.read()
+    n = 0
+    for block in node_scan(data, magic):
+        if os.path.exists(stop_path):
+            break
+        h = frame.block_hash(block)
+        height = len(hashes)
+        if height == refuse_at:
+            logf.write("ERROR: ConnectBlock: mock refusal at height %d\n" % height)
+            continue
+        if height > 0 and frame.prev_hash(block) != hashes[-1]:
+            logf.write("Out of order block %s\n" % h)
+            continue
+        hashes.append(h)
+        n += 1
+        publish()
+        time.sleep(delay)
+    logf.write("Loaded %i blocks from external file in %dms\n" % (n, (time.time() - t) * 1000))
+while not os.path.exists(stop_path):
+    time.sleep(0.2)
+logf.write("Shutdown: done\n")
