@@ -1,0 +1,24 @@
+# One laptop: the testnet roles on kind, for rendering and for checking the chart's wiring (pods
+# schedule, Services and the NetworkPolicy exist, the scripts run). Not a working testnet: until N1
+# the compiled testnet parameters are the old, unreachable network (values.yaml header).
+# Images: `make image-ycashd image-ycashd-legacy` + `kind load docker-image` (the local tags).
+images:
+  ycashd:       { repository: ycash/ycashd,        tag: local }
+  ycashdLegacy: { repository: ycash/ycashd-legacy, tag: local }
+rpc:
+  # a kind-only credential, not a secret (AGENTS.md rule 7: kind uses default credentials)
+  user: ycash
+  password: ycash-testnet-kind
+seed:
+  replicas: 3
+  antiAffinity: { topologyKey: kubernetes.io/hostname, required: false }   # one node, one zone
+  p2pService: { type: NodePort, nodePortBase: 31833 }                      # 31833..31835
+  storage: { size: 5Gi }
+  resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 2Gi } }
+  podDisruptionBudget: { enabled: false }
+verifierDd:
+  antiAffinity: { topologyKey: kubernetes.io/hostname, required: false }
+  p2pService: { type: ClusterIP }
+  storage: { size: 5Gi }
+  zcashParams: { enabled: true, size: 3Gi }
+  resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 2Gi } }

@@ -390,7 +390,9 @@ def up(args):
     for path, what in ((QUOTE_AGENT, "the quote agent"), (ATTEST_AGENT, "yellowback-attest (cd %s && cargo build --locked --release)" % ATTEST_CRATE)):
         if not os.access(path, os.X_OK):
             raise SystemExit("%s not found at %s" % (what, path))
-    info = rpc("yed_getinfo")
+    # Right after kind-up or kind-reset-chain the node pod has just been replaced: the first
+    # connection through the NodePort can be dropped while it comes up, so wait for its RPC.
+    info = wait_until("the node's RPC at %s" % RPC_URL, lambda: _try(lambda: rpc("yed_getinfo")), 180, 3)
     if info["upgrade"]["status"] != "active" or not info["upgrade"].get("attestorSetId"):
         raise SystemExit("the node is not armed with an attestor set (yed_getinfo.upgrade: %r); the chart's arming Job does that" % info["upgrade"])
     os.makedirs(STATE_DIR, exist_ok=True)

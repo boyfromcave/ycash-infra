@@ -1,0 +1,12 @@
+Zcash testnet block vectors, hex, copied unchanged from ZcashFoundation/zebra
+zebra-test/src/vectors/ at commit e8db87eb69254e0d4eedd058eadd48bdfa09065a (tag v7.0.0):
+
+  block-test-0-000-000 .. 0-000-010   genesis and the next ten blocks (a linked chain)
+  block-test-0-002-259                a v2 transaction with a JoinSplit (Sprout, BCTV14 proof)
+  block-test-0-207-499 .. 0-207-501   Overwinter activation (207,500 is a Ycash compiled pin)
+  block-test-0-279-999 .. 0-280-001   Sapling activation (280,000 is a Ycash compiled pin and a Zebra checkpoint)
+  block-test-0-914-678, 0-925-483     v4 transactions with Sapling outputs/spends (above the fork:
+                                      used only to exercise the transaction parser)
+
+SHA256SUMS in this directory lists their sha256. To re-check against upstream:
+  curl -sS https://raw.githubusercontent.com/ZcashFoundation/zebra/e8db87eb69254e0d4eedd058eadd48bdfa09065a/zebra-test/src/vectors/block-test-0-000-001.txt | sha256sum

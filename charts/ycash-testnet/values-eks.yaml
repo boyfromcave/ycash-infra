@@ -1,0 +1,41 @@
+# AWS EKS (the cluster infra/eks builds). Differs from kind only in images, storage, the P2P load
+# balancers, secrets and sizes. Requires: the AWS Load Balancer Controller (NLB per seed), the EBS
+# CSI driver (gp3), External Secrets with a ClusterSecretStore, a CNI that enforces NetworkPolicy
+# (the VPC CNI with network policy enabled).
+#
+# Images: the RELEASE images by digest (plan §6.1: the testnet runs what was released; T-12, the
+# registry, is the owner's: ghcr.io public, ECR as the mirror, is the recommendation). The digests
+# are empty here and set at deploy (--set images.ycashd.digest=sha256:…); the chart refuses to
+# render an image with neither tag nor digest. CI and scripts/lint-images.sh render with a
+# placeholder digest. The repositories are placeholders until T-12.
+images:
+  ycashd:       { repository: ghcr.io/boyfromcave/ycashd,        tag: "", digest: "" }   # ycash6 release (6.22.0-rcN)
+  ycashdLegacy: { repository: ghcr.io/boyfromcave/ycashd-legacy, tag: "", digest: "" }   # ycash-dd at the vault-params tag (plan §2.3)
+rpc:
+  existingSecret: ycash-testnet-rpc
+  threads: 8
+  workqueue: 32
+seed:
+  replicas: 3
+  antiAffinity: { topologyKey: topology.kubernetes.io/zone, required: true }   # 3 seeds, 3 AZs
+  # -externalip per seed: the NLB addresses once allocated (or Elastic IPs pinned by annotation)
+  externalAddresses: []
+  p2pService:
+    type: LoadBalancer
+    externalTrafficPolicy: Local
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: external
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+      service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+  storage: { className: gp3, size: 50Gi }
+  resources: { requests: { cpu: "1", memory: 2Gi }, limits: { memory: 6Gi } }
+verifierDd:
+  replicas: 1
+  p2pService: { type: ClusterIP }
+  storage: { className: gp3, size: 50Gi }
+  zcashParams: { enabled: true, className: gp3, size: 3Gi }
+  resources: { requests: { cpu: "1", memory: 2Gi }, limits: { memory: 6Gi } }
+externalSecrets:
+  enabled: true
+  storeRef: aws-secrets-manager
+  ycashdRpc: ycash/testnet/ycashd-rpc   # {rpcuser, rpcpassword}; not yet in infra/eks secrets.tf (K7)

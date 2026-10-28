@@ -1,0 +1,37 @@
+# zebrad configuration for the Zcash-testnet prefix harvest (Zebra 7.0.0, harvest.ZEBRA_IMAGE).
+#
+# In plain words: this tells the Zcash node (Zebra) to follow the Zcash *test* network and to
+# answer questions about blocks only on its own loopback address, so nothing outside its own
+# container can talk to it.
+#
+# run-local.sh mounts this file at /etc/zebrad/zebrad.toml and passes CONFIG_FILE_PATH, which the
+# image's entrypoint turns into `zebrad --config`. ZEBRA_<SECTION>__<KEY> environment variables
+# override this file (Zebra's config loader). One zebrad runs, with the network, for both the sync
+# and the export (no stop height: run-local.sh stops it once the export is done). The image's entrypoint sets ZEBRA_STATE__CACHE_DIR and ZEBRA_RPC__COOKIE_DIR to
+# defaults when they are unset, which would override this file: run-local.sh passes both,
+# equal to the values below, and mounts the state volume at the state cache_dir.
+
+[network]
+network = "Testnet"
+# P2P: outbound is all the harvest needs; nothing has to reach this node from outside.
+listen_addr = "0.0.0.0:18233"
+# keep the peer address cache with the state, so a resumed sync finds peers faster
+cache_dir = true
+
+[consensus]
+checkpoint_sync = true
+
+[state]
+cache_dir = "/home/zebra/.cache/zebra"
+
+[rpc]
+# JSON-RPC on loopback only. The harvest's clients join the zebrad container's network
+# namespace (docker run --network container:<zebrad>), so 127.0.0.1 is all they need.
+listen_addr = "127.0.0.1:18232"
+# Cookie auth stays on (Zebra's default): clients send "__cookie__:<token>" as HTTP basic auth.
+enable_cookie_auth = true
+# outside the state directory, so the cached state never carries a cookie
+cookie_dir = "/home/zebra/rpc-cookie"
+
+[tracing]
+use_color = false

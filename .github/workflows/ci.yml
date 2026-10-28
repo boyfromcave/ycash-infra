@@ -21,6 +21,11 @@ jobs:
       # every rendered image pinned by a non-latest tag or a digest (audit 06/I-1)
       - run: scripts/lint-images.sh
       - run: helm template t charts/ycash-lightwallet -f charts/ycash-lightwallet/values-kind.yaml | kubeconform -strict -summary -schema-location default -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+      # the testnet renders (render-only until N1): charts/ycash-testnet kind + EKS values and the
+      # lightwallet chart's values-testnet.yaml, helm lint + kubeconform (placeholder release digests)
+      - run: make lint-testnet
+      # the testnet chart's node scripts (run.sh, ready.sh, live.sh, prefix-restore.sh) are POSIX sh
+      - run: shellcheck -s sh charts/ycash-testnet/files/*.sh
       - run: cd yindex && go vet ./... && go test ./... && go build ./...
   eks:
     # offline: terraform fmt/validate for infra/eks and the chart's EKS values through kubeconform with the CRD schemas

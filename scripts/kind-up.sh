@@ -62,4 +62,6 @@ if ARM=$(k -n "$NS" get job -l app.kubernetes.io/component=arm-yellowback -o nam
     -f charts/ycash-lightwallet/values-kind.yaml --wait --timeout 15m
   k -n "$NS" rollout status statefulset/"$RELEASE"-ycashd --timeout=10m
 fi
+echo "== every workload of the release rolled out, no pod failing (ROLLOUT_TIMEOUT=${ROLLOUT_TIMEOUT:-10m} each)"
+"$(dirname "$0")/kind-check-release.sh" "$CLUSTER" "$NS" "$RELEASE"
 echo "== up. Try: make kind-smoke; make kind-personas-up (attestors, prices: YED mintable)"

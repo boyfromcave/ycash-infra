@@ -26,7 +26,7 @@ have_image faucet || make image-faucet
 
 echo "== the cluster"
 make kind-create
-make kind-load 2>&1 | grep -v "already present" || true
+make kind-load 2>&1 | { grep -v "already present" || true; }   # fails on a stale image (make image-check)
 
 echo "== the certificate"
 scripts/kind-cert.sh "$CLUSTER" "$NS" "$RELEASE"

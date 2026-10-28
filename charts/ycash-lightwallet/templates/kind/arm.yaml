@@ -1,6 +1,6 @@
 {{- if and .Values.regtest.enabled .Values.regtest.armYellowback }}
 {{- $fn := include "yc.fullname" . }}
-{{- $cli := printf "ycash-cli -conf=/dev/null -regtest -rpcconnect=%s -rpcport=%d -rpcuser=$YCASHD_RPC_USER -rpcpassword=$YCASHD_RPC_PASSWORD" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) }}
+{{- $cli := printf "ycash-cli -conf=/dev/null -regtest -rpcconnect=%s -rpcport=%d -rpcuser=$YCASHD_RPC_USER -rpcpassword=$YCASHD_RPC_PASSWORD -rpcclienttimeout=30" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) }}
 {{- $set := .Values.regtest.attestorSet }}
 # Arm YED on regtest, the devnet's `up` recipe (ycash6/doc/yellowback-devnet.md section 2) as a Job:
 #   1. `set` (init container, the node image): after the bootstrap Job, `set_create` the YED attestor

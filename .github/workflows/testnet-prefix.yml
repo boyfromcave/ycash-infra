@@ -1,0 +1,176 @@
+# testnet-prefix: harvest Zcash testnet blocks 0..510,247, the history the Ycash testnet forks
+# from, into the prefix bundle (bundles/prefix/FORMAT.md, prefix format v1).
+#
+# In plain words: the new Ycash testnet starts from a copy of Zcash's public testnet history.
+# This job makes that copy in public: it runs a Zcash node (Zebra) pinned by digest, copies the
+# blocks out, checks every block against Zcash's own published checkpoints and Ycash's, and packs
+# them so that anyone who reruns it gets the same files byte for byte. On a push or a pull request
+# it only does a small smoke run (blocks 0..4,799); the full run and the release are started by
+# hand (workflow_dispatch).
+#
+# Jobs:
+#   test     the offline unit tests (bundles/prefix/tests), seconds
+#   harvest  bundles/prefix/run-local.sh: sync, export, verify, pack in the pinned image; uploads
+#            the artifact `testnet-prefix` (chunks, manifest.json, SHA256SUMS)
+#   publish  dispatch with publish=true on the full range from upgrade/vault only: re-verifies the
+#            artifact, attests build provenance for every asset, creates release testnet-prefix-v1
+#            (refuses if it exists)
+name: testnet-prefix
+on:
+  push:
+    branches: [upgrade/vault, "claude/**"]
+    paths: [bundles/prefix/**, .github/workflows/testnet-prefix.yml]
+  pull_request:
+    paths: [bundles/prefix/**, .github/workflows/testnet-prefix.yml]
+  workflow_dispatch:
+    inputs:
+      last_height:
+        description: last height to harvest (510247 = the full prefix; smaller for a trial)
+        type: string
+        default: "510247"
+      publish:
+        description: publish release testnet-prefix-v1 (full range from upgrade/vault only)
+        type: boolean
+        default: false
+permissions: {}
+concurrency:
+  group: testnet-prefix-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - run: make prefix-test
+
+  harvest:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: read
+    outputs:
+      last: ${{ steps.range.outputs.last }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: range
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_LAST: ${{ inputs.last_height }}
+        run: |
+          last=4799
+          if [ "$EVENT" = workflow_dispatch ]; then last="$INPUT_LAST"; fi
+          if ! [[ $last =~ ^[0-9]+$ ]] || (( last > 510247 )); then echo "last_height must be in 0..510247" >&2; exit 1; fi
+          # the sync budget: the job's 350 min less export, pack, upload and cache save
+          if (( last > 50000 )); then budget=270; else budget=60; fi
+          { echo "last=$last"; echo "budget=$budget"; } >> "$GITHUB_OUTPUT"
+      - name: free disk for the full range
+        if: fromJSON(steps.range.outputs.last) > 50000
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL /opt/ghc
+          df -h "$GITHUB_WORKSPACE"
+      # Zebra's state is cached so a sync cut short by the time budget resumes on the next dispatch.
+      # Never on pull requests and never on a publishing run: what is released syncs from scratch.
+      # (The output does not trust the cache anyway: every byte is checked against the hash chain,
+      # the Merkle roots and the checkpoints.)
+      - name: restore Zebra state
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: prefix-work/state
+          key: zebra-7.0.0-testnet-${{ steps.range.outputs.last }}-${{ github.run_id }}
+          restore-keys: zebra-7.0.0-testnet-${{ steps.range.outputs.last }}-
+      - name: harvest (sync, export, verify, pack)
+        env:
+          LAST: ${{ steps.range.outputs.last }}
+          SYNC_TIMEOUT_MIN: ${{ steps.range.outputs.budget }}
+          WORK: ${{ github.workspace }}/prefix-work
+          PROGRESS_MIN: "5"
+        run: bundles/prefix/run-local.sh "$LAST"
+      - name: verify again outside the container (runner's Python)
+        run: python3 -I bundles/prefix/harvest.py verify prefix-work/out
+      - name: summary
+        if: always()
+        env:
+          LAST: ${{ steps.range.outputs.last }}
+        run: |
+          {
+            echo "## testnet-prefix: Zcash testnet 0..$LAST"
+            if [ -f prefix-work/out/SHA256SUMS ]; then
+              echo '### SHA256SUMS'; echo '```'; cat prefix-work/out/SHA256SUMS; echo '```'
+              echo '### Sizes (bytes)'; echo '```'; (cd prefix-work/out && stat -c '%s %n' -- * | sort -k2); echo '```'
+              echo "Hash at $LAST: \`$(python3 -I -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["hashes"][str(m["last_height"])])' prefix-work/out/manifest.json)\`"
+            fi
+            if [ -f prefix-work/timings.txt ]; then echo '### Durations'; echo '```'; cat prefix-work/timings.txt; echo '```'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: testnet-prefix
+          path: |
+            prefix-work/out/*.blocks.gz
+            prefix-work/out/manifest.json
+            prefix-work/out/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+      - name: own the state for the cache
+        if: always() && github.event_name == 'workflow_dispatch' && !inputs.publish
+        run: if [ -d prefix-work/state ]; then sudo chown -R "$(id -u):$(id -g)" prefix-work/state; du -sh prefix-work/state; fi
+      - name: save Zebra state
+        if: always() && github.event_name == 'workflow_dispatch' && !inputs.publish
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: prefix-work/state
+          key: zebra-7.0.0-testnet-${{ steps.range.outputs.last }}-${{ github.run_id }}
+
+  publish:
+    needs: harvest
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.last_height == '510247' && github.ref == 'refs/heads/upgrade/vault'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: testnet-prefix
+          path: dist
+      - name: verify the artifact before publishing
+        run: |
+          python3 -I bundles/prefix/harvest.py verify dist
+          python3 -I -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["last_height"] == 510247, m["last_height"]' dist/manifest.json
+          test "$(find dist -type f | wc -l)" -eq 13
+      - name: refuse an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view testnet-prefix-v1 -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release testnet-prefix-v1 exists; the prefix is immutable (a changed one is a new format version)" >&2; exit 1
+          fi
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: create release testnet-prefix-v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Zcash testnet blocks 0..510,247, the history the Ycash testnet forks from (prefix format v1, bundles/prefix/FORMAT.md)."
+            echo
+            echo "Audit: rerun the testnet-prefix workflow (or bundles/prefix/run-local.sh) and compare SHA256SUMS; run"
+            echo "\`python3 -I bundles/prefix/harvest.py verify <dir>\` on the downloaded files; check provenance with"
+            echo "\`gh attestation verify <file> -R $GITHUB_REPOSITORY\`."
+            echo
+            echo '```'; cat dist/SHA256SUMS; echo '```'
+          } > notes.md
+          gh release create testnet-prefix-v1 dist/* -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "testnet-prefix-v1: Zcash testnet 0..510,247" --notes-file notes.md

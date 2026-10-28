@@ -24,10 +24,27 @@ func Open(ctx context.Context, url string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(ctx, schema); err != nil {
+	if err := applySchema(ctx, db); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+// schemaLockKey is the advisory lock that serializes schema creation. The server and the
+// ingester open the store at the same time on a fresh database, and two concurrent
+// CREATE TABLE IF NOT EXISTS can both pass the existence check and fail on pg_type's unique
+// index (SQLSTATE 23505), which restarted one of them once on every kind chain reset.
+const schemaLockKey = 0x79696e646578 // "yindex"
+
+func applySchema(ctx context.Context, db *pgxpool.Pool) error {
+	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", int64(schemaLockKey)); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, schema)
+		return err
+	})
 }
 
 func (s *Store) Close() { s.db.Close() }

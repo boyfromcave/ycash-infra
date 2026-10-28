@@ -29,6 +29,7 @@ CLUSTER     ?= ycash
 NAMESPACE   ?= ycash
 RELEASE     ?= ycash
 CHART       := charts/ycash-lightwallet
+TESTNET_CHART := charts/ycash-testnet
 REGISTRY    ?= ycash
 YCASHD_REV  := $(shell git -C $(YCASH6) rev-parse --short HEAD 2>/dev/null || echo dev)
 LWD_REV     := $(shell git -C $(LWD) rev-parse --short HEAD 2>/dev/null || echo dev)
@@ -37,13 +38,30 @@ PLATFORM    ?= $(shell uname -m | sed 's/x86_64/linux\/amd64/;s/arm64/linux\/arm
 CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
+# kind-up / kind-reset-chain / demo: how long each Deployment and StatefulSet of the release may take
+# to roll out before the target fails (scripts/kind-check-release.sh)
+ROLLOUT_TIMEOUT ?= 10m
 
-.PHONY: help line docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template kind-parity kind-personas-up kind-personas-down kind-personas-status
+.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
 
 images: image-ycashd image-lightwalletd image-yindex image-web image-faucet ## build every image from the workspace trees
+
+# Image stamps (scripts/image-stamp.sh): each image-* target labels the image with a sha256 over these
+# files; kind-load refuses a :local image whose label differs from them as they are now (a chart change
+# can need a rebuilt image). The node and lightwalletd files are hashed in their own trees, never edited.
+STAMP_LABEL         := org.ycash.infra.stamp
+STAMP_ycashd        = $(YCASHD_DOCKERFILE) $(dir $(YCASHD_DOCKERFILE))entrypoint.sh
+STAMP_ycashd_legacy = $(YCASHD_LEGACY_DOCKERFILE) $(dir $(YCASHD_LEGACY_DOCKERFILE))entrypoint.sh
+STAMP_lightwalletd  = $(LWD)/Dockerfile $(LWD)/docker/entrypoint.sh
+STAMP_yindex        = images/yindex/Dockerfile
+STAMP_web           = images/web/Dockerfile images/web/nginx.conf
+STAMP_faucet        = images/faucet/Dockerfile images/faucet/faucet.py images/faucet/fetch-params.py images/faucet/index.html images/faucet/app.js
+# ALLOW_STALE_IMAGES=1 (every image) or =ycashd,lightwalletd (by name): kind-load warns about a stale
+# image instead of failing (e.g. a node image built before stamps from an unchanged Dockerfile)
+ALLOW_STALE_IMAGES ?=
 
 line: ## check the source trees: on BRANCH (or a branch containing it), one rpcversion across ycashd and lightwalletd-dd (RPC_VERSION= to require one)
 	@set -e; vs=""; for t in $(YCASH6) $(YCASH_DD) $(LWD); do \
@@ -61,53 +79,62 @@ line: ## check the source trees: on BRANCH (or a branch containing it), one rpcv
 
 image-ycashd: line ## ycashd from YCASH6 (BRANCH) and its contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
 	@test -f $(YCASHD_DOCKERFILE) || { echo "$(YCASHD_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH6) yet"; exit 1; }
-	docker build --platform $(PLATFORM) -f $(YCASHD_DOCKERFILE) --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
+	s=$$(scripts/image-stamp.sh hash $(STAMP_ycashd)) && docker build --platform $(PLATFORM) -f $(YCASHD_DOCKERFILE) --build-arg JOBS=$(JOBS) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
 
 image-ycashd-legacy: line ## the v4.5.0 tree YCASH_DD (BRANCH), same Dockerfile shape, tagged ycashd-legacy
 	@test -f $(YCASHD_LEGACY_DOCKERFILE) || { echo "$(YCASHD_LEGACY_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH_DD) yet"; exit 1; }
-	docker build --platform $(PLATFORM) -f $(YCASHD_LEGACY_DOCKERFILE) --build-arg JOBS=$(JOBS) -t $(REGISTRY)/ycashd-legacy:local $(YCASH_DD)
+	s=$$(scripts/image-stamp.sh hash $(STAMP_ycashd_legacy)) && docker build --platform $(PLATFORM) -f $(YCASHD_LEGACY_DOCKERFILE) --build-arg JOBS=$(JOBS) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/ycashd-legacy:local $(YCASH_DD)
 
 proto-sync: ## refresh yindex/walletrpc from lightwalletd-dd (generated code, never edited here)
 	cp $(LWD)/walletrpc/{service.pb.go,service_grpc.pb.go,compact_formats.pb.go,service.proto,compact_formats.proto} yindex/walletrpc/
 
 image-lightwalletd: line ## lightwalletd-dd from LWD (BRANCH), its own Dockerfile; it speaks exactly the node's rpcversion
-	docker build --platform $(PLATFORM) --build-arg LWD_VERSION=$(LWD_REV) -t $(REGISTRY)/lightwalletd:$(LWD_REV) -t $(REGISTRY)/lightwalletd:local $(LWD)
+	s=$$(scripts/image-stamp.sh hash $(STAMP_lightwalletd)) && docker build --platform $(PLATFORM) --build-arg LWD_VERSION=$(LWD_REV) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/lightwalletd:$(LWD_REV) -t $(REGISTRY)/lightwalletd:local $(LWD)
 
 image-yindex: ## the address index
-	docker build --platform $(PLATFORM) -f images/yindex/Dockerfile -t $(REGISTRY)/yindex:$(YINDEX_REV) -t $(REGISTRY)/yindex:local .
+	s=$$(scripts/image-stamp.sh hash $(STAMP_yindex)) && docker build --platform $(PLATFORM) -f images/yindex/Dockerfile --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/yindex:$(YINDEX_REV) -t $(REGISTRY)/yindex:local .
 
 image-web: ## the yew/web static bundle behind nginx (needs yew/web built: scripts/build-core-wasm.sh + `npm run build` there; YEW=… for a worktree)
 	@test -d $(YEW)/web/dist || { echo "yew/web/dist missing: build the web wallet first (cd $(YEW)/web && scripts/build-core-wasm.sh && npm run build)"; exit 1; }
-	docker buildx build --load --platform $(PLATFORM) --build-context dist=$(YEW)/web/dist -t $(REGISTRY)/web:$(WEB_REV) -t $(REGISTRY)/web:local images/web
+	s=$$(scripts/image-stamp.sh hash $(STAMP_web)) && docker buildx build --load --platform $(PLATFORM) --build-context dist=$(YEW)/web/dist --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/web:$(WEB_REV) -t $(REGISTRY)/web:local images/web
 
 image-faucet: ## the regtest faucet (images/faucet: python:3.12-alpine + the standard library)
-	docker build --platform $(PLATFORM) -t $(REGISTRY)/faucet:$(YINDEX_REV) -t $(REGISTRY)/faucet:local images/faucet
+	s=$$(scripts/image-stamp.sh hash $(STAMP_faucet)) && docker build --platform $(PLATFORM) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/faucet:$(YINDEX_REV) -t $(REGISTRY)/faucet:local images/faucet
 
 kind-create: ## the kind cluster from kind/kind.yaml
 	kind get clusters | grep -qx $(CLUSTER) || kind create cluster --name $(CLUSTER) --config kind/kind.yaml
 
-kind-load: ## push the local images into the cluster
+image-check: ## each :local image's stamp label against its Dockerfile (and copied files) in the tree now
+	@export ALLOW_STALE_IMAGES="$(ALLOW_STALE_IMAGES)"; bad=0; \
+	scripts/image-stamp.sh check $(REGISTRY)/ycashd:local image-ycashd $(STAMP_ycashd) || bad=1; \
+	scripts/image-stamp.sh check $(REGISTRY)/lightwalletd:local image-lightwalletd $(STAMP_lightwalletd) || bad=1; \
+	scripts/image-stamp.sh check $(REGISTRY)/yindex:local image-yindex $(STAMP_yindex) || bad=1; \
+	scripts/image-stamp.sh check $(REGISTRY)/web:local image-web $(STAMP_web) || bad=1; \
+	scripts/image-stamp.sh check $(REGISTRY)/faucet:local image-faucet $(STAMP_faucet) || bad=1; \
+	[ $$bad = 0 ] || { echo "rebuild the image(s) above, or ALLOW_STALE_IMAGES=1 (all) / =ycashd,web (by name) to go on; pods already on a reloaded tag need kubectl rollout restart"; exit 1; }
+
+kind-load: image-check ## push the local images into the cluster (refuses stale ones: image-check, ALLOW_STALE_IMAGES=1)
 	kind load docker-image --name $(CLUSTER) $(REGISTRY)/ycashd:local $(REGISTRY)/lightwalletd:local $(REGISTRY)/yindex:local
 	-kind load docker-image --name $(CLUSTER) $(REGISTRY)/web:local
 	-kind load docker-image --name $(CLUSTER) $(REGISTRY)/faucet:local
 
-kind-up: kind-create kind-load ## cluster + gateway + cert-manager + the chart (values-kind.yaml)
-	scripts/kind-up.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
+kind-up: kind-create kind-load ## cluster + gateway + cert-manager + the chart (values-kind.yaml); fails unless every workload rolls out (ROLLOUT_TIMEOUT=10m each) and no pod is failing
+	ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) scripts/kind-up.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
 
 kind-cert: ## a browser-trusted certificate for https://localhost from mkcert's local CA as the gateway's TLS Secret (mkcert -install touches the system trust store)
 	scripts/kind-cert.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
 
 demo: ## idempotent: cluster, images, the mkcert certificate, kube-prometheus-stack, the chart; prints the wallet, faucet and Grafana URLs (docs/try-it.md)
-	MONITORING=$${MONITORING:-1} scripts/demo.sh $(CLUSTER) $(NAMESPACE) $(RELEASE) "$(YEW)"
+	ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) MONITORING=$${MONITORING:-1} scripts/demo.sh $(CLUSTER) $(NAMESPACE) $(RELEASE) "$(YEW)"
 
 kind-reset-chain: ## wipe the regtest chain (node + Postgres volumes, attestor set, Jobs) and redeploy
-	scripts/kind-reset-chain.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
+	ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) scripts/kind-reset-chain.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
 
 kind-down: ## delete the cluster
 	kind delete cluster --name $(CLUSTER)
 
 kind-smoke: ## GetLightdInfo, GetYellowbackInfo, GetVaultInfo, GetChainInfo, ListSets through the gateway
-	scripts/smoke.sh https://localhost:443
+	CONTEXT=$(CONTEXT) NAMESPACE=$(NAMESPACE) RELEASE=$(RELEASE) LWD_DIR=$(LWD) scripts/smoke.sh https://localhost:443
 
 # ---- the Yellowback personas (plan K0c): host-run, the devnet's own agents against the kind node
 PYTHON      ?= $(WORKSPACE)/.venv/bin/python
@@ -154,7 +181,7 @@ eks-deploy: ## helm upgrade --install with values-eks.yaml: ECR images at their 
 	  --wait --timeout 20m
 
 eks-smoke: ## the smoke test against the public host (TLS from Let's Encrypt; ADDR= a funded t-address)
-	ADDR="$(ADDR)" scripts/smoke.sh https://$(EKS_DOMAIN):443
+	ADDR="$(ADDR)" CONTEXT=$(EKS_CONTEXT) NAMESPACE=$(NAMESPACE) RELEASE=$(RELEASE) LWD_DIR=$(LWD) scripts/smoke.sh https://$(EKS_DOMAIN):443
 
 eks-down: ## helm uninstall (releases the NLB and the record) then terraform destroy (RDS and the secrets go too)
 	-helm uninstall $(RELEASE) --kube-context $(EKS_CONTEXT) -n $(NAMESPACE) --wait
@@ -182,12 +209,38 @@ docker-noauth: ## print an `export DOCKER_CONFIG=...` that bypasses Docker Deskt
 	@d=$${TMPDIR:-/tmp}/docker-noauth; mkdir -p $$d; python3 -c "import json,sys; c=json.load(open('$(HOME)/.docker/config.json')); c.pop('credsStore',None); c['auths']={}; json.dump(c,open('$$d/config.json','w'))"; \
 	for x in cli-plugins contexts buildx; do [ -e $(HOME)/.docker/$$x ] && ln -sfn $(HOME)/.docker/$$x $$d/$$x; done; echo "export DOCKER_CONFIG=$$d"
 
-lint: ## helm lint + image pins + kubeconform + go vet
+lint: lint-testnet ## helm lint + image pins + kubeconform + go vet
 	helm lint $(CHART) -f $(CHART)/values-kind.yaml
 	scripts/lint-images.sh
 	helm lint $(CHART) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET)
 	helm template $(RELEASE) $(CHART) -f $(CHART)/values-kind.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
 	cd yindex && go vet ./...
 
+# The testnet value sets leave the release digests to the deploy; lint renders them with a placeholder.
+PLACEHOLDER_DIGEST := sha256:0000000000000000000000000000000000000000000000000000000000000000
+TESTNET_LITE_SET := $(foreach c,ycashd lightwalletd yindex web,--set images.$(c).digest=$(PLACEHOLDER_DIGEST))
+TESTNET_EKS_SET  := --set images.ycashd.digest=$(PLACEHOLDER_DIGEST) --set images.ycashdLegacy.digest=$(PLACEHOLDER_DIGEST)
+
+lint-testnet: ## the testnet renders (render-only until N1): charts/ycash-testnet kind + EKS, the lightwallet chart's values-testnet.yaml; helm lint + kubeconform
+	helm lint $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml
+	helm lint $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml $(TESTNET_EKS_SET)
+	helm lint $(CHART) -f $(CHART)/values-eks.yaml -f $(CHART)/values-testnet.yaml $(TESTNET_LITE_SET)
+	helm template $(RELEASE) $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
+	helm template $(RELEASE) $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml $(TESTNET_EKS_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
+	helm template $(RELEASE) $(CHART) -f $(CHART)/values-eks.yaml -f $(CHART)/values-testnet.yaml $(TESTNET_LITE_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
+
 template: ## render the kind values to stdout
 	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) -f $(CHART)/values-kind.yaml
+
+# --- Zcash-testnet prefix (bundles/prefix, FORMAT.md) ---
+PREFIX_LAST ?= 4799
+PREFIX_DIR  ?= prefix-work/out
+
+prefix-test: ## the prefix harvest's offline unit tests (Python stdlib, real Zcash testnet vectors)
+	python3 -I -m unittest discover -s bundles/prefix/tests -v
+
+prefix-verify: ## re-verify a finished prefix directory offline (PREFIX_DIR=prefix-work/out)
+	python3 -I bundles/prefix/harvest.py verify $(PREFIX_DIR)
+
+prefix-local: ## harvest the prefix on this machine with Docker (PREFIX_LAST=4799 smoke; 510247 full)
+	bundles/prefix/run-local.sh $(PREFIX_LAST)

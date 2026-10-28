@@ -1,6 +1,8 @@
 {{- if .Values.regtest.enabled }}
 {{- $fn := include "yc.fullname" . }}
 {{- $cli := printf "ycash-cli -conf=/dev/null -regtest -rpcconnect=%s -rpcport=%d -rpcuser=$YCASHD_RPC_USER -rpcpassword=$YCASHD_RPC_PASSWORD" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) }}
+{{- /* the loops' client: a call open across a node restart fails after 30 s instead of hanging (default 900 s) */}}
+{{- $loopCli := printf "%s -rpcclienttimeout=30" $cli }}
 # The chain on kind: mine past coinbase maturity once, then keep one block every few seconds.
 # Both run ycash-cli from the node image against the RPC Service; no wallet state of their own.
 apiVersion: batch/v1
@@ -32,11 +34,12 @@ spec:
           command: [sh, -ec]
           args:
             - |
-              CLI="{{ $cli }}"
+              CLI="{{ $loopCli }}"
               until $CLI getblockcount >/dev/null 2>&1; do sleep 2; done
               have=$($CLI getblockcount)
               want={{ .Values.regtest.bootstrapBlocks }}
-              if [ "$have" -lt "$want" ]; then $CLI generate $((want - have)) >/dev/null; fi
+              # one long call (no client timeout): a retry while it still runs would mine on top of it
+              if [ "$have" -lt "$want" ]; then {{ $cli }} generate $((want - have)) >/dev/null; fi
               $CLI getblockchaininfo | jq '{blocks, upgrades}'
 ---
 apiVersion: apps/v1
@@ -70,7 +73,7 @@ spec:
             - name: YCASHD_RPC_PASSWORD
               valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcpassword } }
           command: [sh, -c]
-          args: ["while true; do {{ $cli }} generate 1 >/dev/null 2>&1 || true; sleep {{ .Values.regtest.minerIntervalSeconds }}; done"]
+          args: ["while true; do {{ $loopCli }} generate 1 >/dev/null 2>&1 || true; sleep {{ .Values.regtest.minerIntervalSeconds }}; done"]
 ---
 # The node's RPC on the host (kind/kind.yaml maps it to 18832) for ycash-cli and the devnet tools.
 apiVersion: v1
