@@ -18,6 +18,20 @@ images:
   # kind only (regtest.faucet): images/faucet, `make image-faucet`
   faucet:       { repository: ycash/faucet,       tag: local, pullPolicy: IfNotPresent }
 
+# ---- hardening (every container; Checkov CKV_K8S_20/22/28/30/37) -------------------------------
+# Each pod also runs non-root with its image's UID and RuntimeDefault seccomp (templates/_helpers.tpl
+# yc.podSecurity) and mounts no service-account token except the kind arming Job (it runs kubectl).
+# What a container must write is an emptyDir or PVC mount in its template, so the root filesystem
+# stays read-only.
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }
+# init containers, the kind Jobs and the miner: a shell loop around nc / ycash-cli / kubectl
+helperResources:
+  requests: { cpu: 10m, memory: 32Mi }
+  limits:   { memory: 128Mi }
+
 # ---- the node pool ---------------------------------------------------------------------------
 ycashd:
   replicas: 2
@@ -96,6 +110,7 @@ web:
   # Environment of the nginx container (images/web): CSP_CONNECT_SRC_EXTRA widens the CSP's
   # connect-src (dev only; see values-kind.yaml).
   env: {}
+  resources: { requests: { cpu: 50m, memory: 32Mi }, limits: { memory: 128Mi } }
 
 # ---- Envoy Gateway ----------------------------------------------------------------------------
 gateway:
@@ -155,6 +170,7 @@ regtest:
   faucet:
     enabled: false
     rateSeconds: 5            # one acting request (send/mine/reorg) per this many seconds, all callers
+    resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { memory: 256Mi } }
     params: { size: 100Mi, storageClassName: "", url: "https://download.z.cash/downloads/" }
 
 # ---- observability -----------------------------------------------------------------------------

@@ -17,12 +17,20 @@ spec:
       labels: {{- include "yc.labels" . | nindent 8 }}
         app.kubernetes.io/component: redis
     spec:
+      automountServiceAccountToken: false
+      {{- /* redis:*-alpine's own redis user (uid 999); --save "" keeps nothing, /data is its working directory */}}
+      {{- include "yc.podSecurity" (list . 999) | nindent 6 }}
+      volumes: [{ name: data, emptyDir: {} }]
       containers:
         - name: redis
           image: {{ include "yc.image" .Values.images.redis }}
+          imagePullPolicy: {{ .Values.images.redis.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
           args: ["--maxmemory", {{ .Values.redis.maxmemory | quote }}, "--maxmemory-policy", "allkeys-lru", "--save", ""]
           ports: [{ name: redis, containerPort: 6379 }]
+          volumeMounts: [{ name: data, mountPath: /data }]
           readinessProbe: { exec: { command: [redis-cli, ping] }, periodSeconds: 5 }
+          livenessProbe: { exec: { command: [redis-cli, ping] }, periodSeconds: 30, failureThreshold: 5 }
           resources: {{- toYaml .Values.redis.resources | nindent 12 }}
 ---
 apiVersion: v1

@@ -8,3 +8,9 @@ FROM nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef
 ENV CSP_CONNECT_SRC_EXTRA="" NGINX_ENVSUBST_FILTER="^CSP_"
 COPY --from=dist / /usr/share/nginx/html/
 COPY nginx.conf /etc/nginx/templates/default.conf.template
+# Unprivileged (as nginxinc/nginx-unprivileged): the pid file in /tmp, no `user` directive, and the
+# image's nginx user (uid 101) owning what nginx and the entrypoint write. The chart runs it with a
+# read-only root filesystem and emptyDirs at /etc/nginx/conf.d, /var/cache/nginx and /tmp.
+RUN sed -i -e 's,^pid .*,pid /tmp/nginx.pid;,' -e '/^user /d' /etc/nginx/nginx.conf \
+ && chown -R nginx:nginx /var/cache/nginx /etc/nginx/conf.d
+USER nginx
