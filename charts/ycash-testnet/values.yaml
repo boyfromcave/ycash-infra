@@ -1,0 +1,148 @@
+# Defaults. values-kind.yaml and values-eks.yaml override; a template never branches on "which
+# cloud", only on these values (AGENTS.md rule 2). README.md beside this file says what the chart
+# runs today and what it deliberately leaves out.
+#
+# SCAFFOLD, RENDER-ONLY. The testnet parameters compiled into ycash6 and ycash-dd today are the
+# old, unreachable Ycash testnet (workspace docs/plans/yellowback-testnet-plan.md §1.1): its
+# activation hashes and minimum chain work pin a chain nobody holds, the DNS seed does not answer,
+# and UPGRADE_VAULT has no testnet height. Until N1 lands the new parameters (plan §2.1) this chart
+# can be rendered and validated, not usefully run.
+#
+# NO KEYS. Nothing here holds a seed, a spending key or a payout address (AGENTS.md rule 4). The
+# key-holding roles (miner, faucet, attestors) wait for the owner's T-9 (plan §6.1, §8).
+nameOverride: ""
+
+# The only value this chart renders. Anything else fails the render (templates/_helpers.tpl
+# yt.network): the chart is the testnet's, never mainnet's (plan §6.1).
+network: testnet
+
+images:
+  # ycash6 (the release line): `make image-ycashd` on kind; the release image by digest on EKS (T-12)
+  ycashd:       { repository: ycash/ycashd,        tag: local, digest: "", pullPolicy: IfNotPresent }
+  # ycash-dd (the v4.5.0 line, the cross-line verifier): `make image-ycashd-legacy`
+  ycashdLegacy: { repository: ycash/ycashd-legacy, tag: local, digest: "", pullPolicy: IfNotPresent }
+  # The prefix framer (prefixRestore below). It is the image the prefix import work builds from
+  # bundles/prefix/import (frame.py: the magic-neutral `<LE u32 len><block>` stream to
+  # `<magic><LE u32 len><block>` records for -loadblock). NOT BUILT YET: empty until it exists; the
+  # render fails if prefixRestore.enabled is set without it.
+  prefixFrame:  { repository: "", tag: "", digest: "", pullPolicy: IfNotPresent }
+
+# ---- RPC: cluster-internal only, the node's own credentials ----------------------------------
+rpc:
+  port: 18832                 # testnet default
+  threads: 8
+  workqueue: 32
+  # Either inline (kind only) or an existing Secret with keys rpcuser/rpcpassword (EKS: External
+  # Secrets, below). templates/secret.yaml fails the render with neither. One credential for the
+  # release's nodes: they are all the workspace's own, and nothing outside the cluster reaches RPC.
+  existingSecret: ""
+  user: ycash
+  # password: no default.
+
+# ---- P2P --------------------------------------------------------------------------------------
+p2p:
+  port: 18833                 # testnet default
+
+# Who the nodes connect to. Empty until T-3 (domains and seed hostnames) and N1 (the new magic and
+# the seed list compiled into pnSeed6_test).
+peers:
+  addnode: []                 # host:port, written as addnode= lines on every node
+  dnsseed: false              # -dnsseed=0: the compiled testseed.ycash.xyz does not answer (plan §1.1)
+  # Every node also -addnode's the release's other seeds by their headless-Service DNS names, and the
+  # verifier -addnode's every seed, so the release forms one network inside the cluster as well.
+  inCluster: true
+
+# ---- the roles --------------------------------------------------------------------------------
+# Both roles render from one template (templates/node.yaml) with these keys.
+seed:
+  enabled: true
+  image: ycashd               # a key of `images`
+  replicas: 3                 # plan §6.2: 3 seeds, at least 2 zones
+  extraArgs: ""               # appended verbatim to ycashd's command line
+  confExtra: ""               # extra ycash.conf lines
+  insight: false              # -insightexplorer/-txindex: not needed by a seed (the lightwallet chart's nodes have it)
+  # -externalip per pod, by ordinal (seed-0 takes the first entry): the address peers are told to
+  # dial. On EKS the NLB's address per pod once it exists; empty = the node guesses.
+  externalAddresses: []
+  # podAntiAffinity: required spreads the seeds over distinct topologyKey values or leaves a pod
+  # Pending; preferred only tries. kind has one zone, so it uses the hostname, preferred.
+  antiAffinity: { topologyKey: topology.kubernetes.io/zone, required: true }
+  # One P2P Service per pod (stable address per seed, plan §6.2). LoadBalancer + the NLB annotations
+  # on EKS; NodePort (nodePortBase + ordinal) or ClusterIP on kind. Not-ready pods stay published:
+  # a syncing seed still serves the blocks it has.
+  p2pService:
+    type: LoadBalancer
+    annotations: {}
+    externalTrafficPolicy: Local    # keep the peer's address (ban scoring, getpeerinfo); LoadBalancer/NodePort only
+    nodePortBase: 0                 # NodePort only: 0 = assigned by the cluster
+    loadBalancerSourceRanges: []
+  storage: { className: "", size: 50Gi }
+  zcashParams: { enabled: false, className: "", size: 2Gi }   # ycash6 needs no parameter files
+  resources:
+    requests: { cpu: "1", memory: 2Gi }
+    limits:   { memory: 6Gi }
+  readinessLagBlocks: 1
+  startupProbeFailureThreshold: 720   # x10 s = 2 h: a prefix import or a reindex
+  podDisruptionBudget: { enabled: true, minAvailable: 2 }
+
+verifierDd:
+  enabled: true
+  image: ycashdLegacy
+  replicas: 1                 # plan §2.3: 1 or more; invited operators run their own
+  extraArgs: ""
+  confExtra: ""
+  insight: false
+  externalAddresses: []
+  antiAffinity: { topologyKey: topology.kubernetes.io/zone, required: false }
+  p2pService:
+    type: ClusterIP           # the verifier dials out; it need not be reachable from outside
+    annotations: {}
+    externalTrafficPolicy: Local
+    nodePortBase: 0
+    loadBalancerSourceRanges: []
+  storage: { className: "", size: 50Gi }
+  # ycashd 4.5 verifies the Sprout and Sapling parameters at start: its entrypoint fetches them once
+  # (zcutil/fetch-params.sh, sha256-checked) into this volume ($HOME/.zcash-params, about 1.7 GB).
+  zcashParams: { enabled: true, className: "", size: 3Gi }
+  resources:
+    requests: { cpu: "1", memory: 2Gi }
+    limits:   { memory: 6Gi }
+  readinessLagBlocks: 1
+  startupProbeFailureThreshold: 720
+  podDisruptionBudget: { enabled: false, minAvailable: 1 }
+
+# ---- prefix restore (plan §4.0): DISABLED BY DEFAULT ------------------------------------------
+# Two init containers on every node pod. `prefix-fetch` (scripts ConfigMap, prefix-restore.sh) runs
+# only on an empty datadir: it downloads SHA256SUMS, refuses unless its sha256 equals sha256sums,
+# downloads manifest.json and every chunk SHA256SUMS lists, refuses unless every file checks and the
+# manifest names format ycash-prefix/1, network zcash-testnet and lastHeight, then marks the prefix
+# verified. `prefix-frame` (images.prefixFrame) turns the verified chunks into -loadblock files
+# with the network magic; the node then imports them once (run.sh) and the readiness probe marks the
+# import done at lastHeight. Off until the prefix-v1 release is published (N3-a) and the framer image
+# exists (N3-b): both are in flight in this repository (bundles/prefix/).
+prefixRestore:
+  enabled: false
+  baseUrl: ""                 # where SHA256SUMS, manifest.json and the chunks are, e.g. the testnet-prefix-v1 release's download URL
+  sha256sums: ""              # sha256 of the SHA256SUMS file itself: the pin; required when enabled
+  lastHeight: 510247          # the prefix's last height (format v1: Zcash testnet 0..510,247)
+  magic: fa1af9bf             # the network magic the framer writes: today's testnet magic on both lines; N1/T-2 changes it
+  # The framer's command; Kubernetes expands $(PREFIX_DIR) and $(PREFIX_MAGIC). It reads the
+  # verified chunks in $(PREFIX_DIR) and writes *.dat files into $(PREFIX_DIR)/load. Align with
+  # bundles/prefix/import/frame.py's CLI when that image is built.
+  frameCommand: [python3, /opt/prefix/frame.py, --magic, "$(PREFIX_MAGIC)", --manifest, "$(PREFIX_DIR)/manifest.json", --out-dir, "$(PREFIX_DIR)/load"]
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits:   { memory: 1Gi }
+
+# ---- NetworkPolicy ----------------------------------------------------------------------------
+# Ingress to the node pods: P2P from anywhere; RPC only from this release's own pods and from the
+# peers listed in rpcFrom (NetworkPolicyPeer objects, e.g. the monitoring namespace). Egress open:
+# P2P to the world, DNS, and HTTPS for the prefix and the parameter files.
+networkPolicy:
+  enabled: true
+  rpcFrom: []
+
+externalSecrets:
+  enabled: false
+  storeRef: ""
+  ycashdRpc: ""               # the secret store's name holding {rpcuser, rpcpassword}

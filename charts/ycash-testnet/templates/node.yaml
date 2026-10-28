@@ -1,0 +1,169 @@
+{{- /* Both roles from one template: seed (ycash6, the release line) and verifier-dd (ycash-dd, the
+cross-line verifier). What differs between them is values (AGENTS.md rule 2). */ -}}
+{{- $root := . -}}
+{{- $net := include "yt.network" . -}}
+{{- $fn := include "yt.fullname" . -}}
+{{- $pr := .Values.prefixRestore -}}
+{{- range $key := list "seed" "verifierDd" }}
+{{- $r := index $root.Values $key }}
+{{- if $r.enabled }}
+{{- $role := include "yt.roleName" $key }}
+{{- $name := printf "%s-%s" $fn $role }}
+{{- $img := index $root.Values.images $r.image }}
+{{- $peers := include "yt.seedPeers" $root }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels: {{- include "yt.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  serviceName: {{ $name }}-headless
+  replicas: {{ $r.replicas }}
+  podManagementPolicy: Parallel
+  updateStrategy: { type: RollingUpdate }
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $role }}
+  template:
+    metadata:
+      labels: {{- include "yt.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $role }}
+        ycash.org/node: "true"
+      annotations:
+        checksum/scripts: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
+    spec:
+      securityContext: { fsGroup: 2001, runAsUser: 2001, runAsGroup: 2001, runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120
+      affinity:
+        podAntiAffinity:
+          {{- $term := dict "topologyKey" $r.antiAffinity.topologyKey "labelSelector" (dict "matchLabels" (dict "app.kubernetes.io/instance" $root.Release.Name "app.kubernetes.io/component" $role)) }}
+          {{- if $r.antiAffinity.required }}
+          requiredDuringSchedulingIgnoredDuringExecution: {{- list $term | toYaml | nindent 12 }}
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution: {{- list (dict "weight" 100 "podAffinityTerm" $term) | toYaml | nindent 12 }}
+          {{- end }}
+      {{- if $pr.enabled }}
+      initContainers:
+        # prefix-fetch: SHA256SUMS against the pinned sha256, every file against SHA256SUMS, the
+        # manifest's format/network/heights; an empty datadir only (files/prefix-restore.sh)
+        - name: prefix-fetch
+          image: {{ include "yt.image" (dict "image" $img "key" $r.image) }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: [sh, /opt/ycash/prefix-restore.sh]
+          env:
+            - { name: DATADIR, value: /var/lib/ycash }
+            - { name: PREFIX_BASE_URL, value: {{ required "prefixRestore.baseUrl is required when prefixRestore.enabled" $pr.baseUrl | quote }} }
+            - { name: PREFIX_SUMS_SHA256, value: {{ required "prefixRestore.sha256sums (the sha256 of SHA256SUMS) is required when prefixRestore.enabled" $pr.sha256sums | quote }} }
+            - { name: PREFIX_LAST_HEIGHT, value: {{ $pr.lastHeight | quote }} }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/ycash }
+            - { name: scripts, mountPath: /opt/ycash, readOnly: true }
+          resources: {{- toYaml $pr.resources | nindent 12 }}
+        # prefix-frame: the verified magic-neutral chunks to -loadblock files with the network magic
+        # (bundles/prefix/import/frame.py's image); skipped unless prefix-fetch verified a prefix
+        - name: prefix-frame
+          image: {{ include "yt.image" (dict "image" $root.Values.images.prefixFrame "key" "prefixFrame") }}
+          imagePullPolicy: {{ $root.Values.images.prefixFrame.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - 'set -eu; [ -e "$PREFIX_DIR/VERIFIED" ] || exit 0; [ -e "$PREFIX_DIR/FRAMED" ] && exit 0; rm -rf "$PREFIX_DIR/load"; mkdir -p "$PREFIX_DIR/load"; "$@"; touch "$PREFIX_DIR/FRAMED"'
+            - prefix-frame
+            {{- range $pr.frameCommand }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - { name: PREFIX_DIR, value: /var/lib/ycash/prefix }
+            - { name: PREFIX_MAGIC, value: {{ $pr.magic | quote }} }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/ycash }
+          resources: {{- toYaml $pr.resources | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: ycashd
+          image: {{ include "yt.image" (dict "image" $img "key" $r.image) }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: [sh, /opt/ycash/run.sh]
+          env:
+            - { name: DATADIR, value: /var/lib/ycash }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: YCASHD_NETWORK, value: {{ $net | quote }} }
+            - { name: YCASHD_RPC_PORT, value: {{ $root.Values.rpc.port | quote }} }
+            - { name: YCASHD_RPC_THREADS, value: {{ $root.Values.rpc.threads | quote }} }
+            - { name: YCASHD_RPC_WORKQUEUE, value: {{ $root.Values.rpc.workqueue | quote }} }
+            - { name: YCASHD_LISTEN, value: "1" }
+            - { name: YCASHD_INSIGHT, value: {{ ternary "1" "0" $r.insight | quote }} }
+            {{- $args := list (printf "-port=%d" (int $root.Values.p2p.port)) }}
+            {{- if not $root.Values.peers.dnsseed }}{{ $args = append $args "-dnsseed=0" }}{{ end }}
+            {{- with $r.extraArgs }}{{ $args = append $args . }}{{ end }}
+            - { name: YCASHD_EXTRA_ARGS, value: {{ join " " $args | quote }} }
+            {{- $conf := list }}
+            {{- range $root.Values.peers.addnode }}{{ $conf = append $conf (printf "addnode=%s" .) }}{{ end }}
+            {{- with $r.confExtra }}{{ $conf = append $conf . }}{{ end }}
+            - { name: YCASHD_CONF_EXTRA, value: {{ join "\n" $conf | quote }} }
+            - { name: EXTERNAL_ADDRESSES, value: {{ join " " $r.externalAddresses | quote }} }
+            - { name: PEERS, value: {{ $peers | quote }} }
+            - { name: READINESS_LAG, value: {{ $r.readinessLagBlocks | quote }} }
+            {{- if $pr.enabled }}
+            - { name: PREFIX_LAST_HEIGHT, value: {{ $pr.lastHeight | quote }} }
+            {{- end }}
+            - name: YCASHD_RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yt.rpcSecret" $root }}, key: rpcuser } }
+            - name: YCASHD_RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yt.rpcSecret" $root }}, key: rpcpassword } }
+          ports:
+            - { name: rpc, containerPort: {{ $root.Values.rpc.port }} }
+            - { name: p2p, containerPort: {{ $root.Values.p2p.port }} }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/ycash }
+            - { name: scripts, mountPath: /opt/ycash, readOnly: true }
+            {{- if $r.zcashParams.enabled }}
+            - { name: params, mountPath: /srv/ycash/.zcash-params }
+            {{- end }}
+          startupProbe:
+            exec: { command: [sh, /opt/ycash/live.sh] }
+            periodSeconds: 10
+            failureThreshold: {{ $r.startupProbeFailureThreshold }}
+          readinessProbe:
+            exec: { command: [sh, /opt/ycash/ready.sh] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            exec: { command: [sh, /opt/ycash/live.sh] }
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          lifecycle:
+            preStop: { exec: { command: [sh, -c, "ycash-cli -datadir=/var/lib/ycash stop; sleep 20"] } }
+          resources: {{- toYaml $r.resources | nindent 12 }}
+      volumes:
+        - name: scripts
+          configMap: { name: {{ $fn }}-node-scripts, defaultMode: 0555 }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with $r.storage.className }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ $r.storage.size }} } }
+    {{- if $r.zcashParams.enabled }}
+    - metadata: { name: params }
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with $r.zcashParams.className }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ $r.zcashParams.size }} } }
+    {{- end }}
+{{- end }}
+{{- end }}

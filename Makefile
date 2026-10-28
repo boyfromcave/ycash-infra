@@ -29,6 +29,7 @@ CLUSTER     ?= ycash
 NAMESPACE   ?= ycash
 RELEASE     ?= ycash
 CHART       := charts/ycash-lightwallet
+TESTNET_CHART := charts/ycash-testnet
 REGISTRY    ?= ycash
 YCASHD_REV  := $(shell git -C $(YCASH6) rev-parse --short HEAD 2>/dev/null || echo dev)
 LWD_REV     := $(shell git -C $(LWD) rev-parse --short HEAD 2>/dev/null || echo dev)
@@ -38,7 +39,7 @@ CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
 
-.PHONY: help line docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local
+.PHONY: help line docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -182,12 +183,25 @@ docker-noauth: ## print an `export DOCKER_CONFIG=...` that bypasses Docker Deskt
 	@d=$${TMPDIR:-/tmp}/docker-noauth; mkdir -p $$d; python3 -c "import json,sys; c=json.load(open('$(HOME)/.docker/config.json')); c.pop('credsStore',None); c['auths']={}; json.dump(c,open('$$d/config.json','w'))"; \
 	for x in cli-plugins contexts buildx; do [ -e $(HOME)/.docker/$$x ] && ln -sfn $(HOME)/.docker/$$x $$d/$$x; done; echo "export DOCKER_CONFIG=$$d"
 
-lint: ## helm lint + image pins + kubeconform + go vet
+lint: lint-testnet ## helm lint + image pins + kubeconform + go vet
 	helm lint $(CHART) -f $(CHART)/values-kind.yaml
 	scripts/lint-images.sh
 	helm lint $(CHART) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET)
 	helm template $(RELEASE) $(CHART) -f $(CHART)/values-kind.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
 	cd yindex && go vet ./...
+
+# The testnet value sets leave the release digests to the deploy; lint renders them with a placeholder.
+PLACEHOLDER_DIGEST := sha256:0000000000000000000000000000000000000000000000000000000000000000
+TESTNET_LITE_SET := $(foreach c,ycashd lightwalletd yindex web,--set images.$(c).digest=$(PLACEHOLDER_DIGEST))
+TESTNET_EKS_SET  := --set images.ycashd.digest=$(PLACEHOLDER_DIGEST) --set images.ycashdLegacy.digest=$(PLACEHOLDER_DIGEST)
+
+lint-testnet: ## the testnet renders (render-only until N1): charts/ycash-testnet kind + EKS, the lightwallet chart's values-testnet.yaml; helm lint + kubeconform
+	helm lint $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml
+	helm lint $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml $(TESTNET_EKS_SET)
+	helm lint $(CHART) -f $(CHART)/values-eks.yaml -f $(CHART)/values-testnet.yaml $(TESTNET_LITE_SET)
+	helm template $(RELEASE) $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
+	helm template $(RELEASE) $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml $(TESTNET_EKS_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
+	helm template $(RELEASE) $(CHART) -f $(CHART)/values-eks.yaml -f $(CHART)/values-testnet.yaml $(TESTNET_LITE_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
 
 template: ## render the kind values to stdout
 	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) -f $(CHART)/values-kind.yaml

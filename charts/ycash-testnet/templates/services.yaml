@@ -1,0 +1,88 @@
+{{- $root := . -}}
+{{- $_ := include "yt.network" . -}}
+{{- $fn := include "yt.fullname" . -}}
+{{- range $key := list "seed" "verifierDd" }}
+{{- $r := index $root.Values $key }}
+{{- if $r.enabled }}
+{{- $role := include "yt.roleName" $key }}
+{{- $name := printf "%s-%s" $fn $role }}
+---
+# RPC, cluster-internal only (ClusterIP; NetworkPolicy limits who reaches it): the ready nodes of
+# this role, for in-cluster tools (monitoring, the bundle verifier jobs once they exist).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-rpc
+  labels: {{- include "yt.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/component: {{ $role }}
+  ports:
+    - { name: rpc, port: {{ $root.Values.rpc.port }}, targetPort: rpc }
+---
+# Stable per-pod DNS names (<pod>.<this>.<ns>.svc), the in-cluster peer list (peers.inCluster)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-headless
+  labels: {{- include "yt.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/component: {{ $role }}
+  ports:
+    - { name: p2p, port: {{ $root.Values.p2p.port }}, targetPort: p2p }
+{{- $svc := $r.p2pService }}
+{{- range $i := until (int $r.replicas) }}
+---
+# P2P for pod {{ $name }}-{{ $i }} alone: a stable address per node (plan §6.2)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-{{ $i }}-p2p
+  labels: {{- include "yt.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+  {{- with $svc.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $svc.type }}
+  publishNotReadyAddresses: true
+  {{- if has $svc.type (list "LoadBalancer" "NodePort") }}
+  externalTrafficPolicy: {{ $svc.externalTrafficPolicy }}
+  {{- end }}
+  {{- if and (eq $svc.type "LoadBalancer") $svc.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges: {{- toYaml $svc.loadBalancerSourceRanges | nindent 4 }}
+  {{- end }}
+  selector:
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/component: {{ $role }}
+    statefulset.kubernetes.io/pod-name: {{ $name }}-{{ $i }}
+  ports:
+    - name: p2p
+      port: {{ $root.Values.p2p.port }}
+      targetPort: p2p
+      {{- if and (eq $svc.type "NodePort") (gt (int $svc.nodePortBase) 0) }}
+      nodePort: {{ add (int $svc.nodePortBase) $i }}
+      {{- end }}
+{{- end }}
+{{- if and $r.podDisruptionBudget.enabled (gt (int $r.replicas) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels: {{- include "yt.labels" $root | nindent 4 }}
+spec:
+  minAvailable: {{ $r.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ $root.Release.Name }}, app.kubernetes.io/component: {{ $role }} }
+{{- end }}
+{{- end }}
+{{- end }}

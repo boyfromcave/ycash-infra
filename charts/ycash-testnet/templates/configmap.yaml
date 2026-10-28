@@ -1,0 +1,17 @@
+{{- $_ := include "yt.network" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yt.fullname" . }}-node-scripts
+  labels: {{- include "yt.labels" . | nindent 4 }}
+data:
+  # the node container's command (per-pod arguments, then the image's entrypoint)
+  run.sh: |
+    {{- .Files.Get "files/run.sh" | nindent 4 }}
+  ready.sh: |
+    {{- .Files.Get "files/ready.sh" | nindent 4 }}
+  live.sh: |
+    {{- .Files.Get "files/live.sh" | nindent 4 }}
+  # the prefix-fetch init container (prefixRestore in values.yaml)
+  prefix-restore.sh: |
+    {{- .Files.Get "files/prefix-restore.sh" | nindent 4 }}

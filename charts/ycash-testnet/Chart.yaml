@@ -1,0 +1,7 @@
+apiVersion: v2
+name: ycash-testnet
+description: The Ycash public testnet's network roles - ycash6 seed nodes and the ycash-dd cross-line verifier (scaffold, render-only until N1)
+type: application
+version: 0.1.0
+appVersion: "6.22"
+keywords: [ycash, yellowback, testnet, yed]

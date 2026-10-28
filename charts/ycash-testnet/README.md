@@ -1,0 +1,109 @@
+# charts/ycash-testnet — the Ycash testnet's network roles
+
+## In plain words
+
+The Ycash testnet is a public practice network where Ycash Yellowback (YED) and the vault upgrade
+can run for weeks with worthless coins before anything reaches mainnet. A network needs a few
+always-on computers that new participants can find and download the chain from ("seed nodes"),
+and someone running the older Ycash node software alongside, to prove that both versions agree on
+every block ("the cross-line verifier"). This chart describes those computers for Kubernetes, so
+they can be started the same way on a laptop (kind) and in the cloud (AWS EKS).
+
+**Today it is a scaffold.** The testnet settings built into today's node programs describe Ycash's
+old testnet, which nobody can reach any more. Until the new settings land (step N1 of the testnet
+plan), this chart can be checked and rendered, but the nodes it starts would have nobody to talk
+to. It holds no keys of any kind.
+
+Plan: workspace `docs/plans/yellowback-testnet-plan.md` (§2.3 who runs what, §4.0 the prefix,
+§6 this environment); this repository's `docs/plans/ycash-infra-plan.md` K5–K7.
+
+## What it runs
+
+| Role | Kind | Image | Notes |
+|---|---|---|---|
+| `seed` | StatefulSet, 3 replicas | `ycash6` (`images.ycashd`) | `podAntiAffinity` by zone (required on EKS, preferred by hostname on kind); a PVC per pod; P2P 18833 through **one Service per pod** (`seed.p2pService`: an internet-facing NLB per seed on EKS, NodePort 31833–31835 on kind), not-ready pods still published |
+| `verifier-dd` | StatefulSet, 1 replica | `ycash-dd` (`images.ycashdLegacy`) | The cross-line verifier: syncs from the seeds over P2P. Its Sprout/Sapling parameter files on their own PVC (`verifierDd.zcashParams`) |
+| `prefix-fetch`, `prefix-frame` | init containers on both, **off by default** | the node image; the future framer image | below |
+
+Both roles render from one template (`templates/node.yaml`); everything that differs is a value
+(AGENTS.md rule 2). Each pod:
+- writes `ycash.conf` through the node image's own entrypoint (`contrib/docker/ycashd/entrypoint.sh`
+  in both node trees) with `testnet=1`;
+- answers RPC on 18832 with the release's own credentials (Secret, or an ExternalSecret on EKS),
+  reachable only inside the cluster through `<release>-<role>-rpc` (ClusterIP);
+- gets its per-pod arguments from `files/run.sh`: its `-externalip` by ordinal
+  (`<role>.externalAddresses`), `-addnode` for the other seeds by their headless-Service names
+  (`peers.inCluster`), and the prefix's `-loadblock` files until the import is done.
+
+`peers.addnode` (written as `addnode=` lines) and `peers.dnsseed` stay empty / off until T-3 (the
+seed hostnames) and N1 (the new magic and `pnSeed6_test`).
+
+`network` must be `testnet`: any other value fails the render (plan §6.1).
+
+The NetworkPolicy (`networkPolicy.enabled`, on by default) admits P2P from anywhere and RPC only
+from this release's pods and `networkPolicy.rpcFrom`; egress stays open. `charts/ycash-lightwallet`
+has no NetworkPolicy yet (its semgrep ledger records one as a hardening lead), so this is the first;
+it follows that chart's labels and port names.
+
+## The prefix restore (off by default)
+
+The testnet is Zcash testnet's history to block 510,247 and a new Ycash fork after it; the history
+below the fork is not on the testnet's P2P network from the start, so a first node imports it from
+the **prefix bundle** (format `ycash-prefix/1`, `bundles/prefix/` in this repository).
+
+With `prefixRestore.enabled`:
+1. `prefix-fetch` (`files/prefix-restore.sh`, in the node image: sh, curl, sha256sum, jq) runs only
+   on an **empty datadir**. A datadir with anything but `lost+found` and a partial `prefix/` is left
+   alone and the node starts from what it has.
+   - It downloads `SHA256SUMS` from `prefixRestore.baseUrl` and **refuses unless its sha256 equals
+     `prefixRestore.sha256sums`**, the pin in the values.
+   - It downloads `manifest.json` and every chunk listed, and refuses unless every file checks.
+   - It refuses unless the manifest is `ycash-prefix/1`, `zcash-testnet`, heights
+     0..`prefixRestore.lastHeight`, with the same chunk set and hashes as `SHA256SUMS`.
+   - A file that fails is deleted, so the pod's restart fetches it whole.
+2. `prefix-frame` (`images.prefixFrame`) turns the magic-neutral chunks (`<LE u32 len><block>`)
+   into `-loadblock` files (`<magic><LE u32 len><block>`, magic `prefixRestore.magic`).
+   - This is `bundles/prefix/import/frame.py`, packaged as an image. **That image does not exist
+     yet**: the render fails if the restore is enabled without it.
+   - `prefixRestore.frameCommand` is an assumed CLI, to align with frame.py once it is written.
+3. The node starts with `-loadblock` for each framed file. The readiness probe marks the import done
+   at `lastHeight`, and the next start drops the flag and the framed copies.
+
+The node validates every imported block. Below the compiled checkpoints it skips only what
+checkpoints skip (plan §4.0). The state bundle and `ycash-bootstrap` (plan §4.1, §4.4) come later
+(N2).
+
+## What it deliberately leaves out
+
+| Not here | Why | Waits for |
+|---|---|---|
+| `miner` (`-gen -mineraddress`), `pool` (yolo) | needs a payout key | T-9 (the `AGENTS.md` rule 4 amendment for this chart), N1 |
+| `attestor` (house seats), `bridge-persona` | hold signing keys | T-9, T-5 (the founding set), N1 |
+| `faucet` | spends a wallet | T-9 |
+| `dnsseed` | needs the new magic and a delegated hostname | N1 (T-2), T-3 |
+| `snapshotter`, `bundle-verifier` | need `-stopatheight` (node change) and the signing setup | N1, T-6 |
+| `status` page, alerts (plan §6.4) | nothing to watch yet | N3 after N1 |
+
+Nothing in this chart holds a seed, a spending key or a payout address; `rpcuser`/`rpcpassword` are
+the only secrets and they are the nodes' own (`AGENTS.md` rule 4, unchanged).
+
+## Values
+
+- `values.yaml`: defaults, every key documented.
+- `values-kind.yaml`: renders for kind. Images `ycash/ycashd:local` and `ycash/ycashd-legacy:local`
+  (`make image-ycashd image-ycashd-legacy`), 5 Gi PVCs, NodePort P2P, a kind-only RPC credential.
+- `values-eks.yaml`: renders for EKS: gp3, an NLB per seed, External Secrets
+  (`ycash/testnet/ycashd-rpc`, not yet in `infra/eks/secrets.tf`).
+  - Images are the **release images by digest** (plan §6.1). The repositories are placeholders
+    until T-12; the digests are set at deploy (`--set images.ycashd.digest=sha256:…`).
+  - The chart refuses an image with neither tag nor digest. `make lint-testnet` and
+    `scripts/lint-images.sh` render with a placeholder digest.
+
+```bash
+make lint-testnet     # helm lint + kubeconform: this chart (kind, EKS) and the lightwallet chart's values-testnet.yaml
+scripts/lint-images.sh
+helm template t charts/ycash-testnet -f charts/ycash-testnet/values-kind.yaml
+```
+
+Sizes (`storage.size` 50 Gi on EKS) are estimates until the full prefix harvest records its size
+(N3-a).

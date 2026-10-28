@@ -193,7 +193,8 @@ images/yindex/        Dockerfile for yindex
 images/web/           Dockerfile + nginx.conf for the yew/web bundle (K4)
 images/faucet/        the regtest faucet: faucet.py (JSON-RPC, the page, /params/), fetch-params.py (the init container)
 yindex/               Go: the address index (ingester, Postgres store, gRPC server for the three address methods)
-charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml
+charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml, values-testnet.yaml (over values-eks.yaml)
+charts/ycash-testnet/       the testnet's network roles: ycash6 seeds, the ycash-dd verifier, the prefix restore; no keys; render-only until N1 (its README)
 kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host)
 scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), kind-personas.py (K0c), wait-for.sh
 load/                 ghz scenarios (plan K1)

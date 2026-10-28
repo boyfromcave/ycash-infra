@@ -1,0 +1,40 @@
+# The public light-wallet endpoint on the Ycash testnet (workspace
+# docs/plans/yellowback-testnet-plan.md §2.3, §6.1): this chart, unchanged, layered OVER
+# values-eks.yaml:
+#
+#   helm upgrade --install ycash-testnet-lite charts/ycash-lightwallet -n ycash-testnet \
+#     -f charts/ycash-lightwallet/values-eks.yaml -f charts/ycash-lightwallet/values-testnet.yaml \
+#     --set images.ycashd.digest=sha256:… --set images.lightwalletd.digest=sha256:… …
+#
+# In plain words: the same light-wallet backend as on mainnet, pointed at the practice network.
+#
+# Render-only until N1: today's compiled testnet parameters are the old, unreachable network, so a
+# node started with these values has no peers (plan §1.1). The network-operator roles (seeds, the
+# cross-line verifier) are charts/ycash-testnet.
+#
+# Images: the RELEASE images by digest (plan §6.1; the registry is T-12, ghcr.io public is the
+# recommendation, so the repositories below are placeholders). The digests are set at deploy; CI
+# and scripts/lint-images.sh render with placeholder digests.
+images:
+  ycashd:       { repository: ghcr.io/boyfromcave/ycashd,       tag: "", digest: "" }
+  lightwalletd: { repository: ghcr.io/boyfromcave/lightwalletd, tag: "", digest: "" }
+  yindex:       { repository: ghcr.io/boyfromcave/yindex,       tag: "", digest: "" }
+  web:          { repository: ghcr.io/boyfromcave/web,          tag: "", digest: "" }
+ycashd:
+  network: testnet
+  rpc: { port: 18832, existingSecret: ycashd-testnet-rpc }
+  p2p: { port: 18833 }
+  # -dnsseed=0: the compiled testseed.ycash.xyz does not answer. The seeds' addresses arrive with T-3
+  # (hostnames) and charts/ycash-testnet's P2P Services: then confExtra gets `addnode=<seed>:18833`
+  # lines. A bootstrap init container (YCASHD_BOOTSTRAP, plan §4.4) follows ycash-bootstrap (N2).
+  extraArgs: "-dnsseed=0"
+  confExtra: ""
+gateway:
+  host: testnet-lite.example.org    # T-3: `testnet-lite.<domain>` (plan §6.3)
+regtest:
+  enabled: false
+  armYellowback: false
+  faucet: { enabled: false }        # the testnet faucet holds keys: charts/ycash-testnet after T-9
+externalSecrets:
+  ycashdRpc: ycash/testnet-lite/ycashd-rpc
+  yindexPostgres: ycash/testnet-lite/yindex-postgres

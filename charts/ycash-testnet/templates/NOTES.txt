@@ -1,0 +1,8 @@
+{{ .Release.Name }} (testnet): {{ if .Values.seed.enabled }}{{ .Values.seed.replicas }}x seed (ycash6){{ end }}{{ if .Values.verifierDd.enabled }}, {{ .Values.verifierDd.replicas }}x verifier-dd (ycash-dd){{ end }}; prefix restore {{ ternary "on" "off" .Values.prefixRestore.enabled }}.
+
+SCAFFOLD: the testnet parameters in today's node binaries are the old, unreachable Ycash testnet
+(workspace docs/plans/yellowback-testnet-plan.md §1.1). Until N1 ships the new ones, these nodes
+have no peers and no chain to follow. No keys: miner, faucet and attestors wait for T-9.
+
+P2P addresses (one Service per pod):
+  kubectl -n {{ .Release.Namespace }} get svc -l app.kubernetes.io/instance={{ .Release.Name }} | grep -- -p2p
