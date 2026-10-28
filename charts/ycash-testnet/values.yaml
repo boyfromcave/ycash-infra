@@ -27,6 +27,18 @@ images:
   # render fails if prefixRestore.enabled is set without it.
   prefixFrame:  { repository: "", tag: "", digest: "", pullPolicy: IfNotPresent }
 
+# ---- hardening (every container; Checkov CKV_K8S_20/22/28/30/37), as charts/ycash-lightwallet ------
+# Each node pod runs non-root with the node images' UID and RuntimeDefault seccomp
+# (templates/_helpers.tpl yt.podSecurity) and mounts no service-account token. What a container
+# writes is a mount in templates/node.yaml, so the root filesystem stays read-only: the datadir (PVC),
+# /tmp (emptyDir: ycash-dd's zcutil/fetch-params.sh keeps its lock there), $HOME /srv/ycash
+# (emptyDir: ycash-cli and wget write dotfiles there) and, for ycash-dd, $HOME/.zcash-params (PVC).
+podUid: 2001                  # ycash6 and ycash-dd contrib/docker/ycashd/Dockerfile: useradd --uid 2001
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: { drop: [ALL] }
+
 # ---- RPC: cluster-internal only, the node's own credentials ----------------------------------
 rpc:
   port: 18832                 # testnet default

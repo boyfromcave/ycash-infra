@@ -40,6 +40,17 @@ seed hostnames) and N1 (the new magic and `pnSeed6_test`).
 
 `network` must be `testnet`: any other value fails the render (plan §6.1).
 
+Hardening follows `charts/ycash-lightwallet` (`SECURITY-CI.md`; Checkov scans both renders). Every
+pod runs non-root as uid 2001, the node images' own user (`podUid`), with RuntimeDefault seccomp and
+no service-account token. Every container, the init containers included, has no privilege
+escalation, all capabilities dropped and a read-only root filesystem (`containerSecurityContext`),
+plus resources. What a container writes is a mount: the datadir (PVC), `/tmp` (emptyDir; ycash-dd's
+`fetch-params.sh` keeps its lock there), `$HOME` `/srv/ycash` (emptyDir; `ycash-cli` and `wget`
+dotfiles) and, on the verifier, `/srv/ycash/.zcash-params` (PVC). Init containers carry no probes
+(Kubernetes allows none on them). Two Checkov checks are accepted on the StatefulSets by annotation,
+with the reasons there: CKV_K8S_40 (uid 2001 is the image's, so a higher one needs a node-image change)
+and CKV_K8S_11 (CPU is requested, never limited, so CFS throttling cannot stall a node).
+
 The NetworkPolicy (`networkPolicy.enabled`, on by default) admits P2P from anywhere and RPC only
 from this release's pods and `networkPolicy.rpcFrom`; egress stays open. `charts/ycash-lightwallet`
 has no NetworkPolicy yet (its semgrep ledger records one as a hardening lead), so this is the first;

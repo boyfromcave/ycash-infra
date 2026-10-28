@@ -36,3 +36,15 @@ a tag nor a digest fails the render here (values-eks.yaml leaves both to the dep
 {{- end -}}
 {{- join " " $out -}}
 {{- end -}}
+{{- /* Hardening, as charts/ycash-lightwallet's yc.containerSecurity / yc.podSecurity (Checkov
+CKV_K8S_20/22/28/30/37): every container's securityContext from values.yaml containerSecurityContext;
+what a container writes is an emptyDir or PVC mount in templates/node.yaml. */ -}}
+{{- define "yt.containerSecurity" -}}
+securityContext: {{- toYaml .Values.containerSecurityContext | nindent 2 }}
+{{- end -}}
+{{- /* The pod-level half: non-root with the image's own UID (both node images bake it: ycash6 and
+ycash-dd contrib/docker/ycashd/Dockerfile useradd --uid 2001), RuntimeDefault seccomp. */ -}}
+{{- define "yt.podSecurity" -}}
+{{- $uid := .Values.podUid -}}
+securityContext: { runAsUser: {{ $uid }}, runAsGroup: {{ $uid }}, runAsNonRoot: true, fsGroup: {{ $uid }}, seccompProfile: { type: RuntimeDefault } }
+{{- end -}}

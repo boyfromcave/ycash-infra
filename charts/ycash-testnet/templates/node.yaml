@@ -18,6 +18,12 @@ metadata:
   name: {{ $name }}
   labels: {{- include "yt.labels" $root | nindent 4 }}
     app.kubernetes.io/component: {{ $role }}
+  # Checkov exceptions for this resource (SECURITY-CI.md "Accept a finding"), the two the lightwallet
+  # chart's pods also carry as accepted backlog: the UID is the one the node images bake, and CPU is
+  # requested, not limited.
+  annotations:
+    checkov.io/skip1: "CKV_K8S_40=uid 2001 is the ycashd images' own user (ycash6 and ycash-dd contrib/docker/ycashd/Dockerfile); a different UID needs a node-image change (AGENTS.md rule 1). Non-root, no escalation, all capabilities dropped, read-only root."
+    checkov.io/skip2: "CKV_K8S_11=no CPU limit on purpose: CFS throttling stalls ycashd (P2P relay, RPC, a prefix import); every container has a CPU request and a memory limit."
 spec:
   serviceName: {{ $name }}-headless
   replicas: {{ $r.replicas }}
@@ -35,8 +41,8 @@ spec:
       annotations:
         checksum/scripts: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
     spec:
-      securityContext: { fsGroup: 2001, runAsUser: 2001, runAsGroup: 2001, runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
       automountServiceAccountToken: false
+      {{- include "yt.podSecurity" $root | nindent 6 }}
       terminationGracePeriodSeconds: 120
       affinity:
         podAntiAffinity:
@@ -59,10 +65,12 @@ spec:
             - { name: PREFIX_BASE_URL, value: {{ required "prefixRestore.baseUrl is required when prefixRestore.enabled" $pr.baseUrl | quote }} }
             - { name: PREFIX_SUMS_SHA256, value: {{ required "prefixRestore.sha256sums (the sha256 of SHA256SUMS) is required when prefixRestore.enabled" $pr.sha256sums | quote }} }
             - { name: PREFIX_LAST_HEIGHT, value: {{ $pr.lastHeight | quote }} }
-          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          {{- include "yt.containerSecurity" $root | nindent 10 }}
           volumeMounts:
             - { name: data, mountPath: /var/lib/ycash }
             - { name: scripts, mountPath: /opt/ycash, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            - { name: home, mountPath: /srv/ycash }
           resources: {{- toYaml $pr.resources | nindent 12 }}
         # prefix-frame: the verified magic-neutral chunks to -loadblock files with the network magic
         # (bundles/prefix/import/frame.py's image); skipped unless prefix-fetch verified a prefix
@@ -80,9 +88,10 @@ spec:
           env:
             - { name: PREFIX_DIR, value: /var/lib/ycash/prefix }
             - { name: PREFIX_MAGIC, value: {{ $pr.magic | quote }} }
-          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          {{- include "yt.containerSecurity" $root | nindent 10 }}
           volumeMounts:
             - { name: data, mountPath: /var/lib/ycash }
+            - { name: tmp, mountPath: /tmp }
           resources: {{- toYaml $pr.resources | nindent 12 }}
       {{- end }}
       containers:
@@ -121,10 +130,13 @@ spec:
           ports:
             - { name: rpc, containerPort: {{ $root.Values.rpc.port }} }
             - { name: p2p, containerPort: {{ $root.Values.p2p.port }} }
-          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          {{- include "yt.containerSecurity" $root | nindent 10 }}
           volumeMounts:
             - { name: data, mountPath: /var/lib/ycash }
             - { name: scripts, mountPath: /opt/ycash, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            # $HOME: ycash-cli's and wget's dotfiles; ycash-dd's parameter files below it (params)
+            - { name: home, mountPath: /srv/ycash }
             {{- if $r.zcashParams.enabled }}
             - { name: params, mountPath: /srv/ycash/.zcash-params }
             {{- end }}
@@ -146,6 +158,8 @@ spec:
             preStop: { exec: { command: [sh, -c, "ycash-cli -datadir=/var/lib/ycash stop; sleep 20"] } }
           resources: {{- toYaml $r.resources | nindent 12 }}
       volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: home, emptyDir: {} }
         - name: scripts
           configMap: { name: {{ $fn }}-node-scripts, defaultMode: 0555 }
   volumeClaimTemplates:
