@@ -1,6 +1,6 @@
 {{- if and .Values.regtest.enabled .Values.regtest.armYellowback }}
 {{- $fn := include "yc.fullname" . }}
-{{- $cli := printf "ycash-cli -conf=/dev/null -regtest -rpcconnect=%s -rpcport=%d -rpcuser=$YCASHD_RPC_USER -rpcpassword=$YCASHD_RPC_PASSWORD" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) }}
+{{- $cli := printf "ycash-cli -conf=/dev/null -regtest -rpcconnect=%s -rpcport=%d -rpcuser=$YCASHD_RPC_USER -rpcpassword=$YCASHD_RPC_PASSWORD -rpcclienttimeout=30" (include "yc.rpcHost" .) (int .Values.ycashd.rpc.port) }}
 {{- $set := .Values.regtest.attestorSet }}
 # Arm YED on regtest, the devnet's `up` recipe (ycash6/doc/yellowback-devnet.md section 2) as a Job:
 #   1. `set` (init container, the node image): after the bootstrap Job, `set_create` the YED attestor
@@ -48,7 +48,7 @@ subjects: [{ kind: ServiceAccount, name: {{ $fn }}-arm-yellowback }]
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ $fn }}-arm-yellowback-r3   # r<N>: bump when the scripts below change (a Job's template is immutable)
+  name: {{ $fn }}-arm-yellowback-r4   # r<N>: bump when the scripts below change (a Job's template is immutable)
   labels: {{- include "yc.labels" . | nindent 4 }}
     app.kubernetes.io/component: arm-yellowback
 spec:
