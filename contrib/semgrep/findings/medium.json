@@ -1,0 +1,14 @@
+{
+ "bucket": "medium",
+ "sla_days": 90,
+ "findings": [
+  {
+   "fingerprint": "61090605f5d4b490",
+   "rule": "python.lang.security.audit.insecure-file-permissions",
+   "path": "bundles/prefix/tests/test_run_local.py",
+   "line": 92,
+   "first_seen": "2026-10-28",
+   "due": "2027-01-26"
+  }
+ ]
+}
