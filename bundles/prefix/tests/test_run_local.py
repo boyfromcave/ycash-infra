@@ -89,7 +89,7 @@ class RunLocal(unittest.TestCase):
         docker = os.path.join(bindir, "docker")
         with open(docker, "w") as fh:
             fh.write('#!/bin/sh\nexec "%s" -I "%s" "$@"\n' % (sys.executable, os.path.join(HERE, "fake_docker.py")))
-        os.chmod(docker, 0o755)
+        os.chmod(docker, 0o700)
         self.fake = os.path.join(self.d, "docker-state")
         self.work = os.path.join(self.d, "work")
         self.env = dict(os.environ, PATH=bindir + os.pathsep + os.environ["PATH"],

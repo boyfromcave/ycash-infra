@@ -155,6 +155,24 @@
       "reason": "contrib/secops/code-scanning-triage.py runs `gh api` with an argv list (no shell) built from constants, the alert number from the API and the workflow-supplied repository name; it runs only in .github/workflows/code-scanning.yml with that job's own token. A subprocess call anywhere else is still reported.",
       "by": "secops triage",
       "date": "2026-10-25"
+    },
+    {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+      "paths": [
+        "bundles/prefix/tests/fake_docker.py"
+      ],
+      "reason": "bundles/prefix/tests/fake_docker.py is the test double for `docker` in the run-local.sh tests: it starts sys.executable -I with argv lists (no shell) on this repository's own test scripts and harvest.py, with arguments from run-local.sh under test. It runs only inside `make prefix-test`, never in a deployment. A subprocess call anywhere else is still reported.",
+      "by": "testnet harvest",
+      "date": "2026-10-28"
+    },
+    {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-tainted-env-args",
+      "paths": [
+        "bundles/prefix/tests/fake_docker.py"
+      ],
+      "reason": "bundles/prefix/tests/fake_docker.py is the test double for `docker` in the run-local.sh tests: it starts sys.executable -I with argv lists (no shell) on this repository's own test scripts and harvest.py, with arguments from run-local.sh under test. It runs only inside `make prefix-test`, never in a deployment. A subprocess call anywhere else is still reported.",
+      "by": "testnet harvest",
+      "date": "2026-10-28"
     }
   ]
 }
