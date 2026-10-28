@@ -119,6 +119,13 @@
       "reason": "Documentation-only finding; adding a description to an existing aws_security_group_rule forces its replacement on the next apply. Add it with the next planned change to rds.tf.",
       "by": "secops CI setup",
       "date": "2026-10-23"
+    },
+    "e9346748462ab93f": {
+      "rule": "ycash-infra.k8s.secret-in-configmap-or-values",
+      "path": "charts/ycash-testnet/values-kind.yaml",
+      "reason": "The kind-only RPC password of the testnet chart's local render (rpc.password, a laptop cluster with no keys and RPC reachable only in-cluster): a default credential, not a secret, as the rule's own exclusion of charts/ycash-lightwallet/values-kind.yaml (AGENTS.md rule 7). EKS reads it through External Secrets (values-eks.yaml rpc.existingSecret).",
+      "by": "testnet chart hardening",
+      "date": "2026-10-28"
     }
   },
   "rule_paths": [

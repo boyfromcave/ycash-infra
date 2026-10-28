@@ -564,8 +564,10 @@ def main(argv=None):
         elif a.cmd == "verify":
             verify_dir(a.dir)
         elif a.cmd == "constants":
-            for k in ("ZEBRA_IMAGE", "PACK_IMAGE", "ZEBRA_CHECKPOINTS_COMMIT", "PREFIX_LAST_HEIGHT", "SMOKE_LAST_HEIGHT"):
-                print("%s=%s" % (k, globals()[k]))
+            for k, v in (("ZEBRA_IMAGE", ZEBRA_IMAGE), ("PACK_IMAGE", PACK_IMAGE),
+                         ("ZEBRA_CHECKPOINTS_COMMIT", ZEBRA_CHECKPOINTS_COMMIT),
+                         ("PREFIX_LAST_HEIGHT", PREFIX_LAST_HEIGHT), ("SMOKE_LAST_HEIGHT", SMOKE_LAST_HEIGHT)):
+                print("%s=%s" % (k, v))
     except (VerifyError, OSError, ValueError, KeyError, RuntimeError) as e:
         print("FAILED: %s: %s" % (type(e).__name__, e), file=sys.stderr)
         return 1
