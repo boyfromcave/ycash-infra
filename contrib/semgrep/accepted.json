@@ -173,6 +173,15 @@
       "reason": "bundles/prefix/tests/fake_docker.py is the test double for `docker` in the run-local.sh tests: it starts sys.executable -I with argv lists (no shell) on this repository's own test scripts and harvest.py, with arguments from run-local.sh under test. It runs only inside `make prefix-test`, never in a deployment. A subprocess call anywhere else is still reported.",
       "by": "testnet harvest",
       "date": "2026-10-28"
+    },
+    {
+      "rule": "python.lang.security.audit.insecure-file-permissions",
+      "paths": [
+        "bundles/prefix/tests/test_run_local.py"
+      ],
+      "reason": "The test writes a stand-in `docker` shell script into its own temporary directory and must make it executable; 0o700 (owner only) is the narrowest mode that runs. Test-only, never shipped. A chmod anywhere else is still reported.",
+      "by": "testnet harvest",
+      "date": "2026-10-28"
     }
   ]
 }

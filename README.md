@@ -131,7 +131,7 @@ its pool flag; `make kind-personas-up` again puts it back (it is resumable).
 
 `make demo` is the kind cluster as a thing a person tests in a browser: idempotent, it creates
 the cluster if needed, loads the images (the wallet bundle is built from the workspace's
-`wt/yew-web` tree when it exists, else `yew/`), installs a certificate for `localhost` from
+`yew/` tree, or `YEW=` a worktree), installs a certificate for `localhost` from
 **mkcert**'s local CA as the gateway's TLS Secret (`make kind-cert`; `mkcert -install` puts
 that CA into the **system trust store**, a password prompt once; without mkcert the self-signed
 certificate stays and Chrome warns), installs kube-prometheus-stack (`MONITORING=1`, the
