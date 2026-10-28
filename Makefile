@@ -111,7 +111,7 @@ kind-down: ## delete the cluster
 	kind delete cluster --name $(CLUSTER)
 
 kind-smoke: ## GetLightdInfo, GetYellowbackInfo, GetVaultInfo, GetChainInfo, ListSets through the gateway
-	scripts/smoke.sh https://localhost:443
+	CONTEXT=$(CONTEXT) NAMESPACE=$(NAMESPACE) RELEASE=$(RELEASE) LWD_DIR=$(LWD) scripts/smoke.sh https://localhost:443
 
 # ---- the Yellowback personas (plan K0c): host-run, the devnet's own agents against the kind node
 PYTHON      ?= $(WORKSPACE)/.venv/bin/python
@@ -158,7 +158,7 @@ eks-deploy: ## helm upgrade --install with values-eks.yaml: ECR images at their 
 	  --wait --timeout 20m
 
 eks-smoke: ## the smoke test against the public host (TLS from Let's Encrypt; ADDR= a funded t-address)
-	ADDR="$(ADDR)" scripts/smoke.sh https://$(EKS_DOMAIN):443
+	ADDR="$(ADDR)" CONTEXT=$(EKS_CONTEXT) NAMESPACE=$(NAMESPACE) RELEASE=$(RELEASE) LWD_DIR=$(LWD) scripts/smoke.sh https://$(EKS_DOMAIN):443
 
 eks-down: ## helm uninstall (releases the NLB and the record) then terraform destroy (RDS and the secrets go too)
 	-helm uninstall $(RELEASE) --kube-context $(EKS_CONTEXT) -n $(NAMESPACE) --wait
