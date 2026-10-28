@@ -5,3 +5,5 @@
 infra/eks/*.tfvars
 yindex/bin/
 load/results/
+prefix-work/
+__pycache__/

@@ -38,7 +38,7 @@ CONTEXT     ?= kind-$(CLUSTER)
 JOBS        ?= $(shell sysctl -n hw.logicalcpu 2>/dev/null || nproc)
 DOMAIN      ?= lite.example.org
 
-.PHONY: help line docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template kind-parity kind-personas-up kind-personas-down kind-personas-status
+.PHONY: help line docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -191,3 +191,16 @@ lint: ## helm lint + image pins + kubeconform + go vet
 
 template: ## render the kind values to stdout
 	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) -f $(CHART)/values-kind.yaml
+
+# --- Zcash-testnet prefix (bundles/prefix, FORMAT.md) ---
+PREFIX_LAST ?= 4799
+PREFIX_DIR  ?= prefix-work/out
+
+prefix-test: ## the prefix harvest's offline unit tests (Python stdlib, real Zcash testnet vectors)
+	python3 -I -m unittest discover -s bundles/prefix/tests -v
+
+prefix-verify: ## re-verify a finished prefix directory offline (PREFIX_DIR=prefix-work/out)
+	python3 -I bundles/prefix/harvest.py verify $(PREFIX_DIR)
+
+prefix-local: ## harvest the prefix on this machine with Docker (PREFIX_LAST=4799 smoke; 510247 full)
+	bundles/prefix/run-local.sh $(PREFIX_LAST)
