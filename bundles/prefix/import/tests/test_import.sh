@@ -52,7 +52,9 @@ python3 -I "$T/../summarize.py" "$TMP/r-checkpoints.json" "$TMP/r-full.json" > "
   || { cat "$TMP/sum-ok"; echo "FAIL: summary of good results"; exit 1; }
 grep -q 'All results ok and consistent' "$TMP/sum-ok"
 rc=0; python3 -I "$T/../summarize.py" "$TMP/r-full.json" "$TMP/r-refuse.json" > "$TMP/sum-bad" || rc=$?
-[ "$rc" = 1 ] && grep -q 'FAILED' "$TMP/sum-bad" || { cat "$TMP/sum-bad"; echo "FAIL: summary of a failed result"; exit 1; }
+if [ "$rc" != 1 ] || ! grep -q 'FAILED' "$TMP/sum-bad"; then
+  cat "$TMP/sum-bad"; echo "FAIL: summary of a failed result"; exit 1
+fi
 pass=$((pass + 1))
 
 # a work directory that is not empty: a usage error, nothing touched
