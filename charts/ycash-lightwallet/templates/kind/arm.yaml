@@ -48,7 +48,7 @@ subjects: [{ kind: ServiceAccount, name: {{ $fn }}-arm-yellowback }]
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ $fn }}-arm-yellowback-r4   # r<N>: bump when the scripts below change (a Job's template is immutable)
+  name: {{ $fn }}-arm-yellowback-r3   # r<N>: bump when the scripts below change (a Job's template is immutable)
   labels: {{- include "yc.labels" . | nindent 4 }}
     app.kubernetes.io/component: arm-yellowback
 spec:
