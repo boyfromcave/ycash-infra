@@ -56,15 +56,20 @@ make prefix-local PREFIX_LAST=510247    # the same through make
 
 The output lands in `prefix-work/out/` (`WORK=<dir>` moves it): the chunk files,
 `manifest.json` and `SHA256SUMS`. `prefix-work/state/` keeps Zebra's state, so a rerun skips the
-sync. It is owned by Zebra's user (uid 10001), so remove it with sudo or
+sync (it may hold a little more than the last height). It is owned by Zebra's user (uid 10001), so remove it with sudo or
 `docker run --rm -v "$PWD/prefix-work:/w" busybox rm -rf /w/state`.
 
 What the script does:
-1. **Sync.** Starts `zebrad` from the pinned image on Testnet and lets it sync from peers until
-   it has committed the last height, then Zebra stops itself (`debug_stop_at_height`).
-2. **Export.** Restarts `zebrad` on the same state with no network at all, so its chain cannot
-   change, and fetches every block with `getblockhash` and `getblock <hash> 0` over JSON-RPC
-   (cookie auth, on the container's loopback). Each block is checked as it arrives.
+1. **Sync.** Starts `zebrad` from the pinned image on Testnet and lets it sync from peers. The
+   script asks it for its height every 30 seconds until it is 10 blocks past the last height
+   (`TIP_MARGIN`), so every block to copy has more blocks on top of it.
+2. **Export.** While `zebrad` keeps running, fetches every block with `getblockhash` and
+   `getblock <hash> 0` over JSON-RPC (cookie auth, on the container's loopback), then stops
+   `zebrad` cleanly. Each block is checked as it arrives: the hash chain from the genesis and the
+   checkpoints. Blocks this deep are below Zebra's own testnet checkpoints, so they cannot change.
+   (Zebra is not restarted without the network for this: Zebra 7.0.0 starts its RPC server only
+   after its peer-to-peer setup has resolved a DNS seeder, so with no network it never answers;
+   the citations are in `run-local.sh`.)
 3. **Pack.** In the pinned pack image, with no network: checks every block again, compresses each
    chunk with `gzip -n -9`, writes `manifest.json` and `SHA256SUMS`, then runs `verify` on the
    result.
@@ -114,7 +119,9 @@ They run offline in seconds: header parsing and hashes on real Zcash testnet blo
 blocks 1..10, the Overwinter and Sapling activations, Sprout and Sapling transactions), a broken
 hash chain, checkpoint mismatches, chunk boundaries (510,247 gives 11 chunks, the last
 500,000..510,247; 4,799 gives one), packing the same stream twice giving identical bytes, and
-an export from a stand-in Zebra RPC server with cookie auth and retries.
+an export from a stand-in Zebra RPC server with cookie auth and retries, and `run-local.sh` end to
+end with a stand-in `docker` and a stand-in Zebra whose height climbs as it syncs
+(`tests/test_run_local.py`, `tests/fake_docker.py`).
 
 ## CI
 

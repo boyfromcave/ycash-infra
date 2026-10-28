@@ -6,9 +6,8 @@
 #
 # run-local.sh mounts this file at /etc/zebrad/zebrad.toml and passes CONFIG_FILE_PATH, which the
 # image's entrypoint turns into `zebrad --config`. ZEBRA_<SECTION>__<KEY> environment variables
-# override this file (Zebra's config loader): run-local.sh uses ZEBRA_STATE__DEBUG_STOP_AT_HEIGHT
-# for the sync phase only, so Zebra stops at the prefix's last height and its cached state stays
-# small. The image's entrypoint sets ZEBRA_STATE__CACHE_DIR and ZEBRA_RPC__COOKIE_DIR to
+# override this file (Zebra's config loader). One zebrad runs, with the network, for both the sync
+# and the export (no stop height: run-local.sh stops it once the export is done). The image's entrypoint sets ZEBRA_STATE__CACHE_DIR and ZEBRA_RPC__COOKIE_DIR to
 # defaults when they are unset, which would override this file: run-local.sh passes both,
 # equal to the values below, and mounts the state volume at the state cache_dir.
 
