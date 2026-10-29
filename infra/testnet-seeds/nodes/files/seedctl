@@ -242,7 +242,7 @@ prefix_check() {
   local net N h last
   for net in $(applied_nets); do
     N="$D/$net/node"
-    [ -d "$N/prefix/load" ] && [ -e "$N/prefix/FRAMED" ] || continue
+    if [ ! -d "$N/prefix/load" ] || [ ! -e "$N/prefix/FRAMED" ]; then continue; fi
     last=$(cat "$N/prefix/LAST_HEIGHT" 2>/dev/null || echo 0)
     h=$(cli "$net" getblockcount 2>/dev/null) || continue
     [ "$h" -ge "$last" ] || { log "$net: prefix import at $h of $last"; continue; }
