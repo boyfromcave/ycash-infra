@@ -58,6 +58,9 @@ layers never share a state file and a mistake in `nodes/` cannot touch an addres
   come from the same commit of this repository as the module, so nothing extra is fetched.
   A refused bundle stops the setup: the node does not start (see `/var/log/cloud-init-output.log`
   through SSM).
+  `prefix.magic` must be the testnet magic compiled into the image: `f77962d3` from N1 on (owner
+  decision T-2), `fa1af9bf` in node builds from before N1. A wrong magic makes the node skip every
+  framed block.
 
 ## What survives what
 
