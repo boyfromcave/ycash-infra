@@ -101,7 +101,9 @@ bundle_files() {
 }
 
 pack() {
-  [ -d "$DATADIR/$NETDIR/blocks" ] && [ -d "$DATADIR/$NETDIR/chainstate" ] || die "no $NETDIR/blocks or chainstate in $DATADIR"
+  if [ ! -d "$DATADIR/$NETDIR/blocks" ] || [ ! -d "$DATADIR/$NETDIR/chainstate" ]; then
+    die "no $NETDIR/blocks or chainstate in $DATADIR"
+  fi
   t="$OUT/$(tarball_name)"
   bundle_files "$DATADIR" > "$WORK/files.txt"
   [ -s "$WORK/files.txt" ] || die "nothing to pack"
