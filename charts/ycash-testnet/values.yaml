@@ -9,7 +9,7 @@
 # KEYS ONLY BEHIND T-9. By default nothing here holds a seed, a spending key or a payout address
 # (AGENTS.md rule 4). The faucet (below) spends a testnet wallet: it renders only with
 # testnetKeys.allowed, the deployer's opt-in under the owner's T-9 amendment of rule 4 (AGENTS.md; plan §6.1,
-# §8) and stays false until that amendment is in AGENTS.md.
+# §8): set it per network when that network should run the faucet or publish to GitHub.
 nameOverride: ""
 
 # The only value this chart renders. Anything else fails the render (templates/_helpers.tpl
