@@ -42,7 +42,7 @@ DOMAIN      ?= lite.example.org
 # to roll out before the target fails (scripts/kind-check-release.sh)
 ROLLOUT_TIMEOUT ?= 10m
 
-.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local
+.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local zcash-params-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -244,3 +244,7 @@ prefix-verify: ## re-verify a finished prefix directory offline (PREFIX_DIR=pref
 
 prefix-local: ## harvest the prefix on this machine with Docker (PREFIX_LAST=4799 smoke; 510247 full)
 	bundles/prefix/run-local.sh $(PREFIX_LAST)
+
+# --- Zcash parameter mirror (bundles/zcash-params) ---
+zcash-params-test: ## the parameter mirror's offline tests: SHA256SUMS vs the chart copy and ycash-dd's fetch-params.sh (YCASH_DD), the chart's init script
+	YCASH_DD=$(YCASH_DD) python3 -I -m unittest discover -s bundles/zcash-params/tests -v
