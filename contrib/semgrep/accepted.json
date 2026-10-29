@@ -177,9 +177,10 @@
     {
       "rule": "python.lang.security.audit.insecure-file-permissions",
       "paths": [
-        "bundles/prefix/tests/test_run_local.py"
+        "bundles/prefix/tests/test_run_local.py",
+        "bundles/zcash-params/tests/test_zcash_params.py"
       ],
-      "reason": "The test writes a stand-in `docker` shell script into its own temporary directory and must make it executable; 0o700 (owner only) is the narrowest mode that runs. Test-only, never shipped. A chmod anywhere else is still reported.",
+      "reason": "Each test writes a stand-in executable (docker, curl) into its own temporary directory and must make it executable; 0o700 (owner only) is the narrowest mode that runs. Test-only, never shipped. A chmod anywhere else is still reported.",
       "by": "testnet harvest",
       "date": "2026-10-28"
     }

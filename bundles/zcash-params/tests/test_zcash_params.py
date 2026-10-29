@@ -113,7 +113,7 @@ class InitContainer(unittest.TestCase):
         os.makedirs(self.origin)
         with open(os.path.join(self.bin, "curl"), "w") as f:
             f.write(FAKE_CURL)
-        os.chmod(os.path.join(self.bin, "curl"), 0o755)
+        os.chmod(os.path.join(self.bin, "curl"), 0o700)
         self.content = {n: (n * 1000).encode() for n in NAMES}
         for n, b in self.content.items():
             with open(os.path.join(self.origin, n), "wb") as f:
