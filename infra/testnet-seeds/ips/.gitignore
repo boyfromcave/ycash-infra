@@ -1,0 +1,3 @@
+# a module: the caller's root keeps the lock file and the state
+.terraform/
+.terraform.lock.hcl

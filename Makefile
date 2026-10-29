@@ -42,7 +42,7 @@ DOMAIN      ?= lite.example.org
 # to roll out before the target fails (scripts/kind-check-release.sh)
 ROLLOUT_TIMEOUT ?= 10m
 
-.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local zcash-params-test
+.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local zcash-params-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -196,6 +196,12 @@ eks-validate: ## offline: terraform fmt/validate + helm template (values-eks.yam
 	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
 	# the catalog's external-secrets.io/v1 ClusterSecretStore schema does not compile in kubeconform 0.8 (ExternalSecret v1 does): skipped
 	helm template cc $(TF_DIR)/charts/cluster-config --set hostedZoneId=Z0 | kubeconform -strict -summary -skip ClusterSecretStore $(KUBECONFORM_SCHEMAS)
+
+SEEDS_DIRS := infra/testnet-seeds/ips infra/testnet-seeds/nodes
+seeds-validate: ## offline: terraform fmt/validate for infra/testnet-seeds (ips, nodes) + shellcheck of the seed's scripts; no credentials, no plan
+	terraform fmt -check -recursive infra/testnet-seeds
+	set -e; for d in $(SEEDS_DIRS); do terraform -chdir=$$d init -backend=false -input=false >/dev/null; terraform -chdir=$$d validate; done
+	shellcheck infra/testnet-seeds/nodes/files/*.sh
 
 EKS_LINT_SET := --set gateway.host=lite.example.org \
   --set images.ycashd.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/ycashd --set images.ycashd.tag=rev \
