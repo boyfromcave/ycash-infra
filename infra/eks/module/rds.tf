@@ -1,13 +1,16 @@
 # RDS Postgres for yindex (values-eks.yaml: yindex.postgres.enabled=false, the url from Secrets
-# Manager `<secrets_prefix>/yindex-postgres` {url}). The index is rebuilt from the node in
-# minutes, so the instance is small and single-AZ by default (var.rds_multi_az); the data is
-# derived state, not the system of record.
+# Manager `<secrets_prefix>[/<network>]/yindex-postgres` {url}). The index is rebuilt from the node
+# in minutes, so the instance is small and single-AZ by default (var.rds_multi_az); the data is
+# derived state, not the system of record. With var.networks, one instance holds one database per
+# network (networks.tf creates them): the testnets' indexes are small, and one instance is $26 a
+# month where three would be $78.
 resource "random_password" "yindex_postgres" {
   length  = 32
   special = false
 }
 
 resource "aws_security_group" "rds" {
+  #checkov:skip=CKV2_AWS_5:attached to the RDS instance through module.rds (vpc_security_group_ids), which Checkov does not follow
   name        = "${var.name}-rds"
   description = "yindex Postgres: 5432 from the EKS nodes"
   vpc_id      = module.vpc.vpc_id
@@ -63,9 +66,13 @@ module "rds" {
   performance_insights_enabled = false
   create_monitoring_role       = false
   monitoring_interval          = 0
+
+  tags = var.tags
 }
 
 locals {
-  # RDS Postgres 15+ forces TLS (rds.force_ssl=1); pgx honours sslmode=require.
-  yindex_postgres_url = "postgres://yindex:${random_password.yindex_postgres.result}@${module.rds.db_instance_address}:5432/yindex?sslmode=require"
+  # RDS Postgres 15+ forces TLS (rds.force_ssl=1); pgx honours sslmode=require. One url per stack
+  # (secrets.tf local.stacks), each to its own database, all as the instance's one user: the
+  # networks are testnets of one operator, not tenants.
+  yindex_postgres_url = { for k, db in local.stacks : k => "postgres://yindex:${random_password.yindex_postgres.result}@${module.rds.db_instance_address}:5432/${db}?sslmode=require" }
 }

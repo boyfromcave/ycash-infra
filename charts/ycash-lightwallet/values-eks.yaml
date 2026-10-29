@@ -22,11 +22,11 @@ lightwalletd:
   cache: { medium: Memory, sizeLimit: 1Gi }
   autoscaling: { enabled: true, min: 3, max: 50, cpuUtilization: 60 }
   resources: { requests: { cpu: 500m, memory: 512Mi }, limits: { memory: 2Gi } }
-  trustedProxyCidrs: "10.40.0.0/16"   # the VPC (infra/eks main.tf): Envoy's pod IPs
+  trustedProxyCidrs: "10.40.0.0/16"   # the VPC (infra/eks/module main.tf): Envoy's pod IPs
 yindex:
   replicas: 3
   postgres:
-    enabled: false            # RDS (infra/eks rds.tf); the url arrives via ExternalSecret yindex-postgres {url}
+    enabled: false            # RDS (infra/eks/module rds.tf); the url arrives via ExternalSecret yindex-postgres {url}
     existingSecret: yindex-postgres
 redis:
   maxmemory: 2gb
@@ -52,5 +52,5 @@ monitoring: { serviceMonitor: true }
 externalSecrets:
   enabled: true
   storeRef: aws-secrets-manager
-  ycashdRpc: ycash/lite/ycashd-rpc            # Secrets Manager name holding {rpcuser, rpcpassword} (infra/eks secrets.tf)
+  ycashdRpc: ycash/lite/ycashd-rpc            # Secrets Manager name holding {rpcuser, rpcpassword} (infra/eks/module secrets.tf)
   yindexPostgres: ycash/lite/yindex-postgres  # {url}

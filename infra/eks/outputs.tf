@@ -1,21 +1,23 @@
+# The module's outputs, for the Makefile (eks-push, eks-deploy, eks-smoke). The account-bearing ones
+# stay sensitive: `terraform output` shows <sensitive>, `terraform output -raw` returns the value.
 output "cluster_name" { value = module.eks.cluster_name }
-output "region" { value = var.region }
-output "kubeconfig_command" { value = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}" }
-output "ecr_repositories" { value = { for k, r in aws_ecr_repository.images : k => r.repository_url } }
-output "ecr_registry" { value = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com" }
+output "region" { value = module.eks.region }
+output "kubeconfig_command" { value = module.eks.kubeconfig_command }
+output "ecr_registry" {
+  value     = module.eks.ecr_registry
+  sensitive = true
+}
+output "ecr_repositories" {
+  value     = module.eks.ecr_repositories
+  sensitive = true
+}
 output "irsa_roles" {
-  value = {
-    lb               = module.lb_controller_irsa.iam_role_arn
-    external_secrets = module.external_secrets_irsa.iam_role_arn
-    external_dns     = module.external_dns_irsa.iam_role_arn
-    cert_manager     = module.cert_manager_irsa.iam_role_arn
-  }
+  value     = module.eks.irsa_roles
+  sensitive = true
 }
-output "rds_endpoint" { value = module.rds.db_instance_endpoint }
-output "secrets" {
-  value = {
-    ycashd_rpc      = aws_secretsmanager_secret.ycashd_rpc.name
-    yindex_postgres = aws_secretsmanager_secret.yindex_postgres.name
-  }
+output "rds_endpoint" {
+  value     = module.eks.rds_endpoint
+  sensitive = true
 }
-output "domain" { value = var.domain }
+output "secrets" { value = module.eks.secrets }
+output "domain" { value = module.eks.domain }

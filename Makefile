@@ -155,8 +155,10 @@ kind-parity: ## yindex vs lightwalletd's node-proxied answers for every address 
 kind-load-test: ## ghz: the node RPC ceiling per method (plan K1)
 	load/run.sh localhost:443
 
-# ---- EKS (docs/eks-runbook.md). TF_DIR holds the terraform state; terraform output feeds the rest.
+# ---- EKS (docs/eks-runbook.md). TF_DIR is the example root around infra/eks/module and holds the
+# terraform state (local); terraform output feeds the rest. A private root calls the module instead.
 TF_DIR      ?= infra/eks
+EKS_MODULE  := infra/eks/module
 TF          ?= terraform -chdir=$(TF_DIR)
 EKS_CONTEXT ?= $(shell $(TF) output -raw cluster_name 2>/dev/null)
 ECR         ?= $(shell $(TF) output -raw ecr_registry 2>/dev/null)
@@ -187,15 +189,17 @@ eks-down: ## helm uninstall (releases the NLB and the record) then terraform des
 	-helm uninstall $(RELEASE) --kube-context $(EKS_CONTEXT) -n $(NAMESPACE) --wait
 	$(TF) destroy
 
-eks-validate: ## offline: terraform fmt/validate + helm template (values-eks.yaml) through kubeconform with the CRD schemas
+eks-validate: ## offline: terraform fmt/validate (example root and module), the module's test (mocked providers), helm template (values-eks.yaml) through kubeconform with the CRD schemas
 	terraform -chdir=$(TF_DIR) fmt -check -recursive
 	terraform -chdir=$(TF_DIR) init -backend=false -input=false >/dev/null
 	terraform -chdir=$(TF_DIR) validate
-	helm lint $(TF_DIR)/charts/cluster-config --set hostedZoneId=Z0
+	terraform -chdir=$(EKS_MODULE) init -backend=false -input=false >/dev/null
+	terraform -chdir=$(EKS_MODULE) test
+	helm lint $(EKS_MODULE)/charts/cluster-config --set hostedZoneId=Z0
 	helm lint $(CHART) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET)
 	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
 	# the catalog's external-secrets.io/v1 ClusterSecretStore schema does not compile in kubeconform 0.8 (ExternalSecret v1 does): skipped
-	helm template cc $(TF_DIR)/charts/cluster-config --set hostedZoneId=Z0 | kubeconform -strict -summary -skip ClusterSecretStore $(KUBECONFORM_SCHEMAS)
+	helm template cc $(EKS_MODULE)/charts/cluster-config --set hostedZoneId=Z0 | kubeconform -strict -summary -skip ClusterSecretStore $(KUBECONFORM_SCHEMAS)
 
 SEEDS_DIRS := infra/testnet-seeds/ips infra/testnet-seeds/nodes
 seeds-validate: ## offline: terraform fmt/validate for infra/testnet-seeds (ips, nodes), the nodes test (mocked AWS), shellcheck and the offline seedctl test; no credentials, no plan
@@ -228,14 +232,24 @@ lint: lint-testnet ## helm lint + image pins + kubeconform + go vet
 PLACEHOLDER_DIGEST := sha256:0000000000000000000000000000000000000000000000000000000000000000
 TESTNET_LITE_SET := $(foreach c,ycashd lightwalletd yindex web,--set images.$(c).digest=$(PLACEHOLDER_DIGEST))
 TESTNET_EKS_SET  := --set images.ycashd.digest=$(PLACEHOLDER_DIGEST) --set images.ycashdLegacy.digest=$(PLACEHOLDER_DIGEST)
+# the three testnets: values-<network>.yaml in both charts, one release (and one namespace) each
+TESTNET_NETWORKS := yb-fast yb-slow legacy
 
-lint-testnet: ## the testnet renders (render-only until N1): charts/ycash-testnet kind + EKS, the lightwallet chart's values-testnet.yaml; helm lint + kubeconform
+lint-testnet: ## the testnet renders (render-only until N1): charts/ycash-testnet kind + EKS, the lightwallet chart's values-testnet.yaml, each per network (yb-fast, yb-slow, legacy); helm lint + kubeconform
 	helm lint $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml
 	helm lint $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml $(TESTNET_EKS_SET)
 	helm lint $(CHART) -f $(CHART)/values-eks.yaml -f $(CHART)/values-testnet.yaml $(TESTNET_LITE_SET)
 	helm template $(RELEASE) $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
 	helm template $(RELEASE) $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml $(TESTNET_EKS_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
 	helm template $(RELEASE) $(CHART) -f $(CHART)/values-eks.yaml -f $(CHART)/values-testnet.yaml $(TESTNET_LITE_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
+	# the three testnets (plan Revision 3): each chart once per network, over kind and EKS values
+	set -e; for n in $(TESTNET_NETWORKS); do echo "== $$n"; \
+	  helm lint $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml -f $(TESTNET_CHART)/values-$$n.yaml $(TESTNET_EKS_SET) >/dev/null; \
+	  helm lint $(CHART) -f $(CHART)/values-eks.yaml -f $(CHART)/values-testnet.yaml -f $(CHART)/values-$$n.yaml $(TESTNET_LITE_SET) >/dev/null; \
+	  helm template $$n $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml -f $(TESTNET_CHART)/values-$$n.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS); \
+	  helm template $$n $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml -f $(TESTNET_CHART)/values-$$n.yaml $(TESTNET_EKS_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS); \
+	  helm template lite $(CHART) -f $(CHART)/values-eks.yaml -f $(CHART)/values-testnet.yaml -f $(CHART)/values-$$n.yaml $(TESTNET_LITE_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS); \
+	done
 
 template: ## render the kind values to stdout
 	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) -f $(CHART)/values-kind.yaml

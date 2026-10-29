@@ -13,6 +13,14 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end -}}
 testnet
 {{- end -}}
+{{- /* The testnet profile: empty (a build from before the profiles) or one of the three (T-14). */ -}}
+{{- define "yt.profile" -}}
+{{- $p := .Values.testnetProfile | default "" -}}
+{{- if and $p (not (has $p (list "fast" "slow" "legacy"))) -}}
+{{- fail (printf "testnetProfile %q: fast, slow or legacy (or empty for a build from before the profiles)" $p) -}}
+{{- end -}}
+{{- $p -}}
+{{- end -}}
 {{- /* repository[:tag][@digest], as charts/ycash-lightwallet's yc.image, but a reference with neither
 a tag nor a digest fails the render here (values-eks.yaml leaves both to the deploy). */ -}}
 {{- define "yt.image" -}}

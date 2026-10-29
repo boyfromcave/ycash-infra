@@ -1,0 +1,15 @@
+# testnet-yb-slow (workspace docs/plans/yellowback-testnet-plan.md, Revision 3): one release per network,
+# layered over values-kind.yaml or values-eks.yaml, e.g.
+#   helm upgrade --install yb-slow charts/ycash-testnet -n yb-slow -f charts/ycash-testnet/values-eks.yaml -f charts/ycash-testnet/values-yb-slow.yaml
+# What differs between the three testnets is only this: the profile, its ports and its magic. On the
+# testnet cluster the seeds run on EC2 (infra/testnet-seeds, on the same ports): the deployment sets
+# seed.enabled=false and peers.addnode to them.
+testnetProfile: slow
+rpc: { port: 18932 }
+p2p: { port: 18933 }
+prefixRestore:
+  magic: f77962d4                # the prefix is shared (magic-neutral); framed with this network's magic
+seed:
+  p2pService: { nodePortBase: 31933 }   # kind (NodePort) only: 31933.. per seed, so the three releases fit one kind cluster
+externalSecrets:
+  ycashdRpc: ycash/testnet/yb-slow/ycashd-rpc   # infra/eks/module, networks = [..., "yb-slow"]: {rpcuser, rpcpassword}

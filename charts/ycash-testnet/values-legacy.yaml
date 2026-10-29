@@ -1,0 +1,15 @@
+# testnet-legacy (workspace docs/plans/yellowback-testnet-plan.md, Revision 3): one release per network,
+# layered over values-kind.yaml or values-eks.yaml, e.g.
+#   helm upgrade --install legacy charts/ycash-testnet -n legacy -f charts/ycash-testnet/values-eks.yaml -f charts/ycash-testnet/values-legacy.yaml
+# What differs between the three testnets is only this: the profile, its ports and its magic. On the
+# testnet cluster the seeds run on EC2 (infra/testnet-seeds, on the same ports): the deployment sets
+# seed.enabled=false and peers.addnode to them.
+testnetProfile: legacy
+rpc: { port: 19032 }
+p2p: { port: 19033 }
+prefixRestore:
+  magic: f77962d5                # the prefix is shared (magic-neutral); framed with this network's magic
+seed:
+  p2pService: { nodePortBase: 32033 }   # kind (NodePort) only: 32033.. per seed, so the three releases fit one kind cluster
+externalSecrets:
+  ycashdRpc: ycash/testnet/legacy/ycashd-rpc   # infra/eks/module, networks = [..., "legacy"]: {rpcuser, rpcpassword}

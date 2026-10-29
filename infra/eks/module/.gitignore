@@ -1,0 +1,2 @@
+# a module directory keeps no lock file (its caller does)
+.terraform.lock.hcl

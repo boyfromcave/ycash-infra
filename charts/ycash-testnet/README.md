@@ -126,7 +126,18 @@ the only secrets and they are the nodes' own (`AGENTS.md` rule 4, unchanged).
 - `values-kind.yaml`: renders for kind. Images `ycash/ycashd:local` and `ycash/ycashd-legacy:local`
   (`make image-ycashd image-ycashd-legacy`), 5 Gi PVCs, NodePort P2P, a kind-only RPC credential.
 - `values-eks.yaml`: renders for EKS: gp3, an NLB per seed, External Secrets
-  (`ycash/testnet/ycashd-rpc`, not yet in `infra/eks/secrets.tf`).
+  (`ycash/testnet/ycashd-rpc`; per network the overlay below names that network's secret, which
+  `infra/eks/module` makes with `networks`).
+- `values-yb-fast.yaml`, `values-yb-slow.yaml`, `values-legacy.yaml`: **the three testnets**
+  (workspace testnet plan, Revision 3, T-14), one release per network over the kind or EKS values.
+  Each sets only what differs: `testnetProfile` (written into `ycash.conf` as
+  `testnetprofile=<p>` beside `testnet=1`, so ycashd and the probes' `ycash-cli` pick the same
+  network), the ports (P2P 18833 / 18933 / 19033, RPC one below), the prefix magic
+  (`f77962d3` / `d4` / `d5`; the prefix itself is shared), the kind NodePorts (31833 / 31933 /
+  32033 and up, so all three fit one kind cluster) and the per-network secret. On the testnet
+  cluster the seeds run on EC2 (`infra/testnet-seeds`, the same ports), so the deployment sets
+  `seed.enabled=false` and `peers.addnode` to them; the verifier stays in the cluster.
+  `testnetProfile` other than fast, slow, legacy or empty fails the render.
   - Images are the **release images by digest** (plan §6.1). The repositories are placeholders
     until T-12; the digests are set at deploy (`--set images.ycashd.digest=sha256:…`).
   - The chart refuses an image with neither tag nor digest. `make lint-testnet` and

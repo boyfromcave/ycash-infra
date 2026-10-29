@@ -2,6 +2,7 @@
 cross-line verifier). What differs between them is values (AGENTS.md rule 2). */ -}}
 {{- $root := . -}}
 {{- $net := include "yt.network" . -}}
+{{- $profile := include "yt.profile" . -}}
 {{- $fn := include "yt.fullname" . -}}
 {{- $pr := .Values.prefixRestore -}}
 {{- range $key := list "seed" "verifierDd" }}
@@ -135,6 +136,7 @@ spec:
             {{- with $r.extraArgs }}{{ $args = append $args . }}{{ end }}
             - { name: YCASHD_EXTRA_ARGS, value: {{ join " " $args | quote }} }
             {{- $conf := list }}
+            {{- with $profile }}{{ $conf = append $conf (printf "testnetprofile=%s" .) }}{{ end }}
             {{- range $root.Values.peers.addnode }}{{ $conf = append $conf (printf "addnode=%s" .) }}{{ end }}
             {{- with $r.confExtra }}{{ $conf = append $conf . }}{{ end }}
             - { name: YCASHD_CONF_EXTRA, value: {{ join "\n" $conf | quote }} }
