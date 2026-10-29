@@ -1,17 +1,19 @@
-# One instance per seed. What lives how long (../README.md, "What survives what"):
+# One instance per seed host; every host serves every enabled network, one container each.
+# What lives how long (../README.md, "What survives what"):
 #
 #   Elastic IP          ../ips, forever (prevent_destroy there)
 #   network interface   this layer; carries the Elastic IP and the security group, so the address
 #                       is in place before an instance boots and never moves between instances
-#   data volume         this layer; kept when an instance is replaced, replaced only by a reset
-#                       (`terraform apply -replace` of the volumes, ../README.md "Reset")
-#   instance            replaced whenever its user_data changes: a new image, new settings, or a new
-#                       data volume (the volume id is part of the user_data)
+#   data volume         this layer; every network's chain, side by side. Kept across upgrades,
+#                       resets (a reset deletes one network's directory on it, nothing more) and
+#                       instance replacements
+#   instance            replaced only for host-level reasons (a new data volume, a -replace by hand);
+#                       its user_data is read at creation only (ignore_changes below)
 #
-# Redeploy is destroy-then-create per instance, not create_before_destroy: the data volume and
-# the network interface can each be attached to one instance at a time, so a second instance could
-# not take them while the first still runs. A replaced seed is down for a few minutes; with
-# image_overrides, one seed can be upgraded first (a canary) while the others keep serving.
+# The networks themselves are not AWS resources: their configs are an output (network_configs)
+# that the operator's deploy workflow hands to seedctl on each host through SSM Run Command. A new
+# image, a reset or a new network therefore touches only the containers of that network; the
+# security group's P2P rules follow the enabled networks.
 
 data "aws_partition" "current" {}
 
@@ -21,33 +23,22 @@ data "aws_ssm_parameter" "ubuntu" {
 }
 
 locals {
-  ami        = var.ami_id != "" ? var.ami_id : data.aws_ssm_parameter.ubuntu[0].insecure_value
-  seed_keys  = sort(keys(var.seeds))
-  zone_of    = { for i, k in local.seed_keys : k => var.availability_zones[i % length(var.availability_zones)] }
-  image_of   = { for k in local.seed_keys : k => lookup(var.image_overrides, k, var.image) }
-  peers_of   = { for k in local.seed_keys : k => [for o in local.seed_keys : format("%s:%d", var.seeds[o].public_ip, var.p2p_port) if o != k] }
-  repo_root  = "${path.module}/../../.."
-  setup_sh   = file("${path.module}/files/setup.sh")
-  done_sh    = file("${path.module}/files/prefix-done.sh")
+  ami       = var.ami_id != "" ? var.ami_id : data.aws_ssm_parameter.ubuntu[0].insecure_value
+  zone_of   = { for i, k in local.seed_keys : k => var.availability_zones[i % length(var.availability_zones)] }
+  repo_root = "${path.module}/../../.."
+  setup_sh  = file("${path.module}/files/setup.sh")
+  seedctl   = file("${path.module}/files/seedctl")
+  # the prefix tools: seedctl uses them for any network with a prefix (the chart's own scripts)
   restore_sh = var.prefix == null ? "" : file("${local.repo_root}/charts/ycash-testnet/files/prefix-restore.sh")
   frame_py   = var.prefix == null ? "" : file("${local.repo_root}/bundles/prefix/import/frame.py")
 
-  # /opt/ycash-seed/seed.env, read by setup.sh and prefix-done.sh. Every value is validated in
-  # variables.tf to a character set that needs no quoting.
+  # /opt/ycash-seed/seed.env: the host's own settings only (no network, no image). Every value is
+  # validated in variables.tf to a character set that needs no quoting.
   seed_env = { for k in local.seed_keys : k => join("\n", [
     "SEED_NAME=${k}",
     "VOLUME_ID=${aws_ebs_volume.data[k].id}",
-    "IMAGE=${local.image_of[k]}",
-    "P2P_PORT=${var.p2p_port}",
     "EXTERNAL_IP=${var.seeds[k].public_ip}",
-    format("ADDNODES='%s'", join(" ", local.peers_of[k])),
-    format("EXTRA_ARGS='%s'", var.extra_args),
     "SWAP_MB=${var.swap_mb}",
-    "PREFIX_ENABLED=${var.prefix == null ? 0 : 1}",
-    "PREFIX_BASE_URL=${var.prefix == null ? "" : var.prefix.base_url}",
-    "PREFIX_SUMS_SHA256=${var.prefix == null ? "" : var.prefix.sums_sha256}",
-    "PREFIX_LAST_HEIGHT=${var.prefix == null ? 0 : var.prefix.last_height}",
-    "PREFIX_MAGIC=${var.prefix == null ? "" : var.prefix.magic}",
     "",
   ]) }
 
@@ -55,7 +46,7 @@ locals {
     write_files = concat([
       { path = "/opt/ycash-seed/seed.env", permissions = "0644", content = local.seed_env[k] },
       { path = "/opt/ycash-seed/setup.sh", permissions = "0755", content = local.setup_sh },
-      { path = "/opt/ycash-seed/prefix-done.sh", permissions = "0755", content = local.done_sh },
+      { path = "/opt/ycash-seed/seedctl", permissions = "0755", content = local.seedctl },
       ], var.prefix == null ? [] : [
       { path = "/opt/ycash-seed/prefix-restore.sh", permissions = "0755", content = local.restore_sh },
       { path = "/opt/ycash-seed/frame.py", permissions = "0644", content = local.frame_py },
@@ -68,7 +59,7 @@ locals {
 # ---- IAM: the instance role is SSM Session Manager and nothing else ---------------------------
 resource "aws_iam_role" "seed" {
   name_prefix = "${var.name_prefix}-"
-  description = "Testnet seed instances: SSM Session Manager only"
+  description = "Seed hosts: SSM Session Manager and Run Command only"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -155,14 +146,17 @@ resource "aws_instance" "seed" {
     tags                  = merge(var.tags, { Name = "${var.name_prefix}-${each.key}-root" })
   }
 
-  user_data_base64            = base64gzip(local.cloud_config[each.key])
-  user_data_replace_on_change = true
+  user_data_base64 = base64gzip(local.cloud_config[each.key])
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-${each.key}" })
 
   lifecycle {
-    # a newer Ubuntu AMI is picked up at the next replacement, never forces one by itself
-    ignore_changes = [ami]
+    # A newer Ubuntu AMI is picked up at the next replacement, never forces one by itself. The
+    # user_data is read at creation only: a module update reaches running hosts through the deploy
+    # workflow (it installs the module's seedctl before every run), so bumping the module never
+    # replaces every host at once. A host whose data volume is replaced is replaced with it.
+    ignore_changes       = [ami, user_data_base64]
+    replace_triggered_by = [aws_ebs_volume.data[each.key].id]
     precondition {
       condition     = length(base64gzip(local.cloud_config[each.key])) * 3 / 4 <= 16384
       error_message = "user_data is over EC2's 16 KB limit."

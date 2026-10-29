@@ -198,11 +198,12 @@ eks-validate: ## offline: terraform fmt/validate + helm template (values-eks.yam
 	helm template cc $(TF_DIR)/charts/cluster-config --set hostedZoneId=Z0 | kubeconform -strict -summary -skip ClusterSecretStore $(KUBECONFORM_SCHEMAS)
 
 SEEDS_DIRS := infra/testnet-seeds/ips infra/testnet-seeds/nodes
-seeds-validate: ## offline: terraform fmt/validate for infra/testnet-seeds (ips, nodes), the nodes test (mocked AWS) + shellcheck of the seed's scripts; no credentials, no plan
+seeds-validate: ## offline: terraform fmt/validate for infra/testnet-seeds (ips, nodes), the nodes test (mocked AWS), shellcheck and the offline seedctl test; no credentials, no plan
 	terraform fmt -check -recursive infra/testnet-seeds
 	set -e; for d in $(SEEDS_DIRS); do terraform -chdir=$$d init -backend=false -input=false >/dev/null; terraform -chdir=$$d validate; done
 	terraform -chdir=infra/testnet-seeds/nodes test
-	shellcheck infra/testnet-seeds/nodes/files/*.sh
+	shellcheck infra/testnet-seeds/nodes/files/*.sh infra/testnet-seeds/nodes/files/seedctl infra/testnet-seeds/nodes/tests/*.sh
+	infra/testnet-seeds/nodes/tests/seedctl.sh
 
 EKS_LINT_SET := --set gateway.host=lite.example.org \
   --set images.ycashd.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/ycashd --set images.ycashd.tag=rev \

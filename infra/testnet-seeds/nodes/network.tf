@@ -50,11 +50,12 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Inbound: P2P only. No SSH, no RPC: RPC binds to 127.0.0.1 on the instance, and an operator reaches
-# a shell through SSM Session Manager, which needs no inbound port.
+# Inbound: each enabled network's P2P port and nothing else. No SSH, no RPC: every node's RPC binds
+# to 127.0.0.1 on its own port, and an operator reaches a host through SSM, which needs no inbound
+# port. Disabling or removing a network closes its port.
 resource "aws_security_group" "seed" {
   name_prefix = "${var.name_prefix}-"
-  description = "Testnet seed: inbound P2P only, egress open"
+  description = "Seed hosts: inbound P2P of the enabled networks only, egress open"
   vpc_id      = aws_vpc.seeds.id
   tags        = merge(var.tags, { Name = var.name_prefix })
 
@@ -64,14 +65,14 @@ resource "aws_security_group" "seed" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "p2p" {
-  for_each = toset(var.p2p_ingress_cidrs)
+  for_each = { for p in setproduct(sort(keys(local.enabled)), var.p2p_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
 
   security_group_id = aws_security_group.seed.id
-  description       = "P2P"
+  description       = "P2P ${each.value.net}"
   ip_protocol       = "tcp"
-  from_port         = var.p2p_port
-  to_port           = var.p2p_port
-  cidr_ipv4         = each.value
+  from_port         = local.enabled[each.value.net].p2p_port
+  to_port           = local.enabled[each.value.net].p2p_port
+  cidr_ipv4         = each.value.cidr
   tags              = var.tags
 }
 

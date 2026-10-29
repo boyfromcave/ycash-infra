@@ -1,5 +1,6 @@
-# One Elastic IP per seed, keyed seed-0 .. seed-<n-1>. These addresses are compiled into the node as
-# its fixed seeds (pnSeed6_test), so they must outlive every redeploy and every testnet reset:
+# One Elastic IP per seed host, keyed seed-0 .. seed-<n-1>. Each host serves every network of its
+# stack on that network's own port, so one address is a fixed seed of every network (pnSeed6_test
+# per testnet profile, with its port). They must outlive every redeploy and every network reset:
 # prevent_destroy makes Terraform refuse any plan that would release one, including
 # `terraform destroy` and a lower seed_count. Retiring an address is a deliberate act by hand
 # (../README.md, "Retiring an address").

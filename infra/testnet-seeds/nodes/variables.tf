@@ -2,7 +2,7 @@
 # names an account, a bucket, a person or a region.
 
 variable "seeds" {
-  description = "The seed addresses, as the ips layer's `seeds` output: { seed-0 = { allocation_id, public_ip }, ... }. One instance per entry."
+  description = "The seed host addresses, as the ips layer's `seeds` output: { seed-0 = { allocation_id, public_ip }, ... }. One instance per entry; every instance serves every enabled network."
   type = map(object({
     allocation_id = string
     public_ip     = string
@@ -14,7 +14,7 @@ variable "seeds" {
 }
 
 variable "availability_zones" {
-  description = "Zones to spread the seeds over, round robin in key order (seed-0 in the first). Two or more is recommended."
+  description = "Zones to spread the hosts over, round robin in key order (seed-0 in the first). Two or more is recommended."
   type        = list(string)
   validation {
     condition     = length(var.availability_zones) >= 1 && length(var.availability_zones) <= 6
@@ -39,7 +39,7 @@ variable "tags" {
 }
 
 variable "vpc_cidr" {
-  description = "The seeds' own small VPC (one public subnet per zone, a /24 each, no NAT)."
+  description = "The hosts' own small VPC (one public subnet per zone, a /24 each, no NAT)."
   type        = string
   default     = "10.77.0.0/16"
   validation {
@@ -49,7 +49,7 @@ variable "vpc_cidr" {
 }
 
 variable "image" {
-  description = "The ycashd image, by digest: <repository>@sha256:<64 hex> (for example the node-image workflow's ghcr.io/<owner>/ycashd@sha256:...). Changing it replaces every instance whose seed has no override; the addresses and data volumes stay."
+  description = "The default ycashd image of every network, by digest: <repository>@sha256:<64 hex> (for example the node-image workflow's ghcr.io/<owner>/ycashd@sha256:...). One image serves every profile: the profile is a runtime argument. A network's own `image` overrides it. Changing it changes no AWS resource: seedctl rolls it out (README.md, \"Per-network lifecycle\")."
   type        = string
   validation {
     condition     = can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", var.image))
@@ -57,13 +57,53 @@ variable "image" {
   }
 }
 
-variable "image_overrides" {
-  description = "Per seed, an image that replaces `image` for that seed only: the canary of a rolling upgrade (one seed first, then `image` for the rest)."
-  type        = map(string)
-  default     = {}
+variable "networks" {
+  description = <<-EOT
+    The networks every host serves, one container each: { <key> = { profile, enabled, image,
+    bootstrap, extra_args } }. The key names the network in seedctl, in the container name
+    (ycashd-<key>) and in its data directory; the profile picks the ports, the magic and the node
+    arguments (locals.tf, `profiles`): fast, slow and legacy are the three testnets
+    (-testnet -testnetprofile=<profile>), main is mainnet (no -testnet; a separate stack, never
+    beside a testnet). Adding or removing a network is one entry. `image` overrides var.image for
+    that network; `bootstrap` (default true) imports var.prefix into an empty datadir (testnet
+    profiles only); `extra_args` is appended after var.extra_args.
+  EOT
+  type = map(object({
+    profile    = string
+    enabled    = optional(bool, true)
+    image      = optional(string)
+    bootstrap  = optional(bool, true)
+    extra_args = optional(string, "")
+  }))
+  default = {
+    yb-fast = { profile = "fast" }
+    yb-slow = { profile = "slow" }
+    legacy  = { profile = "legacy" }
+    main    = { profile = "main", enabled = false }
+  }
   validation {
-    condition     = alltrue([for k, v in var.image_overrides : can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", v))])
-    error_message = "every image_overrides value must be pinned by digest."
+    condition     = alltrue([for k, n in var.networks : can(regex("^[a-z][a-z0-9-]{0,15}$", k)) && contains(["fast", "slow", "legacy", "main"], n.profile)])
+    error_message = "networks: keys of lowercase letters, digits and dashes (at most 16, starting with a letter); profile one of fast, slow, legacy, main."
+  }
+  validation {
+    condition     = alltrue([for k, n in var.networks : n.image == null || can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", coalesce(n.image, "-")))])
+    error_message = "networks: every image override must be pinned by digest."
+  }
+  validation {
+    condition     = alltrue([for k, n in var.networks : can(regex("^[A-Za-z0-9=:._,/ +-]*$", n.extra_args))])
+    error_message = "networks: extra_args: letters, digits, spaces and = : . _ , / + - only."
+  }
+  validation {
+    condition     = length([for k, n in var.networks : k if n.enabled]) >= 1
+    error_message = "networks: at least one network must be enabled."
+  }
+  validation {
+    condition     = length(distinct([for k, n in var.networks : n.profile if n.enabled])) == length([for k, n in var.networks : k if n.enabled])
+    error_message = "networks: two enabled networks share a profile (and so its ports and magic)."
+  }
+  validation {
+    condition     = !contains([for k, n in var.networks : n.profile if n.enabled], "main") || length([for k, n in var.networks : k if n.enabled]) == 1
+    error_message = "networks: main is a stack of its own (own state, own addresses, own account), never enabled beside a testnet."
   }
 }
 
@@ -78,13 +118,13 @@ variable "architecture" {
 }
 
 variable "instance_type" {
-  description = "Instance type; must match `architecture` (t3a.* / t3.* for x86_64, t4g.* for arm64)."
+  description = "Instance type; must match `architecture` (t3a.* / t3.* for x86_64, t4g.* for arm64). t3a.medium (2 vCPU, 4 GiB) runs the three testnets."
   type        = string
-  default     = "t3a.small"
+  default     = "t3a.medium"
 }
 
 variable "cpu_credits" {
-  description = "Burstable CPU credit mode: unlimited lets the first sync run at full speed (a few cents of surplus credits), standard caps the bill and throttles."
+  description = "Burstable CPU credit mode: unlimited lets a first sync or an import run at full speed (a few cents of surplus credits), standard caps the bill and throttles."
   type        = string
   default     = "unlimited"
   validation {
@@ -100,15 +140,15 @@ variable "ami_id" {
 }
 
 variable "root_volume_size" {
-  description = "Root volume (OS, Docker, the image, swap), GiB, gp3, encrypted. Replaced with the instance."
+  description = "Root volume (OS, Docker, the images, swap), GiB, gp3, encrypted. Replaced with the instance."
   type        = number
-  default     = 16
+  default     = 20
 }
 
 variable "data_volume_size" {
-  description = "Data volume (the node's datadir), GiB, gp3, encrypted. Kept across redeploys, replaced on reset. The prefix import needs about 2.1 GB on top of the chain while it runs."
+  description = "Data volume (every network's datadir side by side, and the shared verified prefix), GiB, gp3, encrypted. Kept across upgrades, resets and instance replacements. Per testnet a few GB today (the 510,248-block prefix plus the new chain), plus about 1.1 GB per network while its prefix import runs and 1.1 GB for the shared prefix cache."
   type        = number
-  default     = 40
+  default     = 80
 }
 
 variable "kms_key_id" {
@@ -118,27 +158,21 @@ variable "kms_key_id" {
 }
 
 variable "swap_mb" {
-  description = "Swap file on the root volume, MiB (0 = none). Gives a 2 GiB instance headroom during the first sync."
+  description = "Swap file on the root volume, MiB (0 = none). Headroom for three nodes on 4 GiB during imports."
   type        = number
-  default     = 2048
-}
-
-variable "p2p_port" {
-  description = "The P2P port the security group opens and the node is told to advertise. The testnet's is 18833 (compiled into the node)."
-  type        = number
-  default     = 18833
+  default     = 4096
 }
 
 variable "p2p_ingress_cidrs" {
-  description = "Who may open a P2P connection. Seeds serve everyone: 0.0.0.0/0. Nothing else is ever opened inbound (no SSH; management is SSM Session Manager)."
+  description = "Who may open a P2P connection, on each enabled network's port. Seeds serve everyone: 0.0.0.0/0. Nothing else is ever opened inbound (no SSH, no RPC; management is SSM)."
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
 
 variable "extra_args" {
-  description = "Appended to ycashd's command line on every seed (for example -dbcache=512). Each seed already gets -externalip=<its address>, -addnode=<every other seed> and -dnsseed=0."
+  description = "Appended to ycashd's command line on every network of every host (a network's own extra_args follow it). Each node already gets -port, -externalip=<its address>, -addnode=<the other hosts on that network's port>, the profile's arguments and, on a testnet, -dnsseed=0. The default keeps three nodes inside 4 GiB."
   type        = string
-  default     = ""
+  default     = "-dbcache=256 -maxconnections=64"
   validation {
     condition     = can(regex("^[A-Za-z0-9=:._,/ +-]*$", var.extra_args))
     error_message = "extra_args: letters, digits, spaces and = : . _ , / + - only (no quotes or shell characters)."
@@ -147,25 +181,35 @@ variable "extra_args" {
 
 variable "prefix" {
   description = <<-EOT
-    Optional bootstrap from the testnet prefix release (bundles/prefix/FORMAT.md): on an empty data
-    volume the seed downloads it from base_url, refuses unless SHA256SUMS hashes to sums_sha256 and
-    every file checks, frames it with `magic` (bundles/prefix/import/frame.py) and imports it with
-    -loadblock. Null = no bootstrap: the seed syncs from its peers.
+    Optional bootstrap from the shared testnet prefix release (bundles/prefix/FORMAT.md; it is
+    magic-neutral, so all three testnets use the same one): on a testnet network's empty datadir the
+    host downloads it once into its own cache, refuses unless SHA256SUMS hashes to sums_sha256 and
+    every file checks, frames it with that network's magic (the profile's, locals.tf) and imports it
+    with -loadblock. A reset reuses the verified cache. Null = no bootstrap: each network syncs from
+    its peers.
   EOT
   type = object({
     base_url    = string
     sums_sha256 = string
     last_height = number
-    magic       = string
   })
   default = null
   validation {
     condition = var.prefix == null ? true : (
       can(regex("^https://[A-Za-z0-9._~/%-]+$", var.prefix.base_url)) &&
       can(regex("^[0-9a-f]{64}$", var.prefix.sums_sha256)) &&
-      can(regex("^[0-9a-f]{8}$", var.prefix.magic)) &&
       var.prefix.last_height > 0
     )
-    error_message = "prefix: base_url https://..., sums_sha256 64 lowercase hex, magic 8 lowercase hex, last_height > 0."
+    error_message = "prefix: base_url https://..., sums_sha256 64 lowercase hex, last_height > 0."
+  }
+}
+
+variable "prefix_magic_overrides" {
+  description = "Per network key, the magic the prefix is framed with instead of its profile's: only for a node image from before the profiles existed (its compiled testnet magic, fa1af9bf). A wrong magic makes the node skip every framed block."
+  type        = map(string)
+  default     = {}
+  validation {
+    condition     = alltrue([for k, m in var.prefix_magic_overrides : can(regex("^[0-9a-f]{8}$", m))])
+    error_message = "prefix_magic_overrides: 8 lowercase hex digits each."
   }
 }

@@ -1,7 +1,7 @@
 variable "seed_count" {
-  description = "How many seed addresses to allocate (seed-0 .. seed-<n-1>). Raising it adds addresses; lowering it is refused (prevent_destroy)."
+  description = "How many seed hosts' addresses to allocate (seed-0 .. seed-<n-1>); each host serves every network of the stack, each on its own port. Raising it adds addresses; lowering it is refused (prevent_destroy)."
   type        = number
-  default     = 3
+  default     = 2
   validation {
     condition     = var.seed_count >= 1 && var.seed_count <= 16 && floor(var.seed_count) == var.seed_count
     error_message = "seed_count must be a whole number from 1 to 16."
