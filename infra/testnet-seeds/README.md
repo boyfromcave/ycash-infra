@@ -161,8 +161,11 @@ settings.
 
 ## Checks
 
-`make seeds-validate`, also run in CI's `eks` job, does three things, offline, with no AWS
+`make seeds-validate`, also run in CI's `eks` job, does four things, offline, with no AWS
 credentials and no plan:
 - `terraform fmt -check` on both directories;
 - `terraform validate` on both directories;
+- `terraform test` on `nodes/` (`tests/render.tftest.hcl`): against a mocked AWS provider it
+  checks each seed's cloud-init (its address, its peers, its image, the prefix settings), the
+  16 KB user_data limit, IMDSv2, encryption, and that an image without a digest is refused;
 - `shellcheck` on the seed's scripts.
