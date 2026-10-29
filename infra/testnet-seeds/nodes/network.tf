@@ -1,7 +1,10 @@
 # The seeds' own VPC: one public /24 per zone, an internet gateway, no NAT (nothing here is private,
 # and a NAT gateway would cost more than the seeds). It is torn down and rebuilt with the nodes
 # layer; the Elastic IPs are regional and do not depend on it.
+# No VPC flow logs: the only inbound traffic is public P2P, which the node logs itself; flow logs
+# would cost more than they show here.
 resource "aws_vpc" "seeds" {
+  #checkov:skip=CKV2_AWS_11:public P2P only; flow logs cost more than they show for a testnet seed
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true

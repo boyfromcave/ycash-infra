@@ -10,6 +10,7 @@ locals {
 resource "aws_eip" "seed" {
   for_each = local.seeds
 
+  #checkov:skip=CKV2_AWS_19:attached by the nodes layer (its own state) to a network interface, and kept while no instance runs
   domain = "vpc"
   tags   = merge(var.tags, { Name = "${var.name_prefix}-${each.key}" })
 

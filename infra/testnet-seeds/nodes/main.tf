@@ -25,6 +25,7 @@ locals {
   seed_keys  = sort(keys(var.seeds))
   zone_of    = { for i, k in local.seed_keys : k => var.availability_zones[i % length(var.availability_zones)] }
   image_of   = { for k in local.seed_keys : k => lookup(var.image_overrides, k, var.image) }
+  peers_of   = { for k in local.seed_keys : k => [for o in local.seed_keys : format("%s:%d", var.seeds[o].public_ip, var.p2p_port) if o != k] }
   repo_root  = "${path.module}/../../.."
   setup_sh   = file("${path.module}/files/setup.sh")
   done_sh    = file("${path.module}/files/prefix-done.sh")
@@ -39,8 +40,8 @@ locals {
     "IMAGE=${local.image_of[k]}",
     "P2P_PORT=${var.p2p_port}",
     "EXTERNAL_IP=${var.seeds[k].public_ip}",
-    "ADDNODES=\"${join(" ", [for o in local.seed_keys : "${var.seeds[o].public_ip}:${var.p2p_port}" if o != k])}\"",
-    "EXTRA_ARGS=\"${var.extra_args}\"",
+    format("ADDNODES='%s'", join(" ", local.peers_of[k])),
+    format("EXTRA_ARGS='%s'", var.extra_args),
     "SWAP_MB=${var.swap_mb}",
     "PREFIX_ENABLED=${var.prefix == null ? 0 : 1}",
     "PREFIX_BASE_URL=${var.prefix == null ? "" : var.prefix.base_url}",
@@ -50,7 +51,7 @@ locals {
     "",
   ]) }
 
-  cloud_config = { for k in local.seed_keys : k => "#cloud-config\n${yamlencode({
+  cloud_init = { for k in local.seed_keys : k => {
     write_files = concat([
       { path = "/opt/ycash-seed/seed.env", permissions = "0644", content = local.seed_env[k] },
       { path = "/opt/ycash-seed/setup.sh", permissions = "0755", content = local.setup_sh },
@@ -60,7 +61,8 @@ locals {
       { path = "/opt/ycash-seed/frame.py", permissions = "0644", content = local.frame_py },
     ])
     runcmd = [["/opt/ycash-seed/setup.sh"]]
-  })}" }
+  } }
+  cloud_config = { for k in local.seed_keys : k => join("\n", ["#cloud-config", yamlencode(local.cloud_init[k])]) }
 }
 
 # ---- IAM: the instance role is SSM Session Manager and nothing else ---------------------------
@@ -123,7 +125,11 @@ resource "aws_instance" "seed" {
   ami                  = local.ami
   instance_type        = var.instance_type
   iam_instance_profile = aws_iam_instance_profile.seed.name
-  monitoring           = false
+  ebs_optimized        = true
+  # Basic (5-minute) metrics only: detailed monitoring would add about $2/month per seed for a
+  # testnet node whose health the operator reads through SSM (getblockchaininfo, getpeerinfo).
+  #checkov:skip=CKV_AWS_126:basic monitoring is enough for a testnet seed (cost)
+  monitoring = false
 
   primary_network_interface {
     network_interface_id = aws_network_interface.seed[each.key].id
