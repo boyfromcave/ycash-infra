@@ -31,7 +31,37 @@ a tag nor a digest fails the render here (values-eks.yaml leaves both to the dep
 {{- end -}}
 {{- define "yt.rpcSecret" -}}{{ default (printf "%s-rpc" (include "yt.fullname" .)) .Values.rpc.existingSecret }}{{- end -}}
 {{- /* role names as they appear in object names and the component label */ -}}
-{{- define "yt.roleName" -}}{{ if eq . "verifierDd" }}verifier-dd{{ else }}{{ . }}{{ end }}{{- end -}}
+{{- define "yt.roleName" -}}{{ if eq . "verifierDd" }}verifier-dd{{ else if eq . "faucetNode" }}faucet-node{{ else }}{{ . }}{{ end }}{{- end -}}
+{{- /* The node roles templates/node.yaml and services.yaml render, as JSON [[key, values], ...]: seed,
+verifierDd and, with the faucet, its wallet node (faucet.node plus enabled and wallet). */ -}}
+{{- define "yt.roles" -}}
+{{- $roles := list (list "seed" .Values.seed) (list "verifierDd" .Values.verifierDd) -}}
+{{- if .Values.faucet.enabled -}}
+{{- $roles = append $roles (list "faucetNode" (merge (dict "enabled" true "wallet" true) .Values.faucet.node)) -}}
+{{- end -}}
+{{- toJson $roles -}}
+{{- end -}}
+{{- /* The network's name, as its datadir (testnet plan Revision 3): testnet-yb-fast, testnet-yb-slow,
+testnet-legacy; "testnet" for a build from before the profiles. */ -}}
+{{- define "yt.networkName" -}}
+{{- $p := include "yt.profile" . -}}
+{{- if eq $p "fast" }}testnet-yb-fast{{ else if eq $p "slow" }}testnet-yb-slow{{ else if eq $p "legacy" }}testnet-legacy{{ else }}testnet{{ end -}}
+{{- end -}}
+{{- /* T-9: a role that holds a key renders only with testnetKeys.allowed (values.yaml). */ -}}
+{{- define "yt.keys" -}}
+{{- if not .root.Values.testnetKeys.allowed -}}
+{{- fail (printf "%s holds a key: charts/ycash-testnet holds testnet keys only under the owner's T-9 amendment of AGENTS.md rule 4 (plan §6.1); set testnetKeys.allowed=true once it is in force" .what) -}}
+{{- end -}}
+{{- end -}}
+{{- /* The Python services' pods (faucet, probe, status): non-root above uid 10,000, RuntimeDefault seccomp. */ -}}
+{{- define "yt.serviceSecurity" -}}
+{{- $uid := .Values.serviceUid -}}
+securityContext: { runAsUser: {{ $uid }}, runAsGroup: {{ $uid }}, runAsNonRoot: true, fsGroup: {{ $uid }}, seccompProfile: { type: RuntimeDefault } }
+{{- end -}}
+{{- /* The in-cluster RPC URL of a role's ready nodes (its -rpc Service). */ -}}
+{{- define "yt.rpcUrl" -}}
+http://{{ include "yt.fullname" .root }}-{{ .role }}-rpc:{{ .root.Values.rpc.port }}/
+{{- end -}}
 {{- /* the in-cluster peer list for a role: every seed pod's stable DNS name (headless Service) */ -}}
 {{- define "yt.seedPeers" -}}
 {{- $root := . -}}
@@ -55,4 +85,24 @@ ycash-dd contrib/docker/ycashd/Dockerfile useradd --uid 2001), RuntimeDefault se
 {{- define "yt.podSecurity" -}}
 {{- $uid := .Values.podUid -}}
 securityContext: { runAsUser: {{ $uid }}, runAsGroup: {{ $uid }}, runAsNonRoot: true, fsGroup: {{ $uid }}, seccompProfile: { type: RuntimeDefault } }
+{{- end -}}
+
+{{- /* The snapshotter containers' common environment (templates/snapshotter.yaml): the node image's
+entrypoint settings for this network and files/snapshot.sh's. */ -}}
+{{- define "yt.snapEnv" -}}
+- { name: WORK, value: /work }
+- { name: NETDIR, value: {{ .net | quote }} }
+- { name: PROFILE, value: {{ .profile | quote }} }
+- { name: STATE, value: /var/lib/ycash }
+- { name: YCASHD_NETWORK, value: testnet }
+- { name: YCASHD_TESTNET_PROFILE, value: {{ .profile | quote }} }
+- { name: YCASHD_RPC_PORT, value: {{ .root.Values.rpc.port | quote }} }
+- { name: YCASHD_EXTRA_ARGS, value: "-dnsseed=0" }
+- { name: YCASHD_CONF_EXTRA, value: {{ join "\n" .conf | quote }} }
+- { name: FLAVOUR, value: {{ .sn.flavour | quote }} }
+- { name: STATEMENT_FIELDS, value: {{ join " " .sn.statementFields | quote }} }
+- name: YCASHD_RPC_USER
+  valueFrom: { secretKeyRef: { name: {{ include "yt.rpcSecret" .root }}, key: rpcuser } }
+- name: YCASHD_RPC_PASSWORD
+  valueFrom: { secretKeyRef: { name: {{ include "yt.rpcSecret" .root }}, key: rpcpassword } }
 {{- end -}}

@@ -1,12 +1,15 @@
-{{- /* Both roles from one template: seed (ycash6, the release line) and verifier-dd (ycash-dd, the
-cross-line verifier). What differs between them is values (AGENTS.md rule 2). */ -}}
+{{- /* Every node role from one template: seed (ycash6, the release line), verifier-dd (ycash-dd, the
+cross-line verifier) and, with the faucet, faucet-node (ycash6 with the faucet's wallet, restored from
+the Secret by -mnemonicfile). What differs between them is values (AGENTS.md rule 2). */ -}}
 {{- $root := . -}}
 {{- $net := include "yt.network" . -}}
 {{- $profile := include "yt.profile" . -}}
 {{- $fn := include "yt.fullname" . -}}
 {{- $pr := .Values.prefixRestore -}}
-{{- range $key := list "seed" "verifierDd" }}
-{{- $r := index $root.Values $key }}
+{{- range $entry := include "yt.roles" $root | fromJsonArray }}
+{{- $key := index $entry 0 }}
+{{- $r := index $entry 1 }}
+{{- $wallet := default false $r.wallet }}
 {{- if $r.enabled }}
 {{- $role := include "yt.roleName" $key }}
 {{- $name := printf "%s-%s" $fn $role }}
@@ -38,7 +41,8 @@ spec:
     metadata:
       labels: {{- include "yt.labels" $root | nindent 8 }}
         app.kubernetes.io/component: {{ $role }}
-        ycash.org/node: "true"
+        # "wallet" keeps the faucet's node out of the nodes' NetworkPolicy (templates/faucet.yaml has its own)
+        ycash.org/node: {{ ternary "wallet" "true" $wallet | quote }}
       annotations:
         checksum/scripts: {{ include (print $root.Template.BasePath "/configmap.yaml") $root | sha256sum }}
     spec:
@@ -132,7 +136,11 @@ spec:
             - { name: YCASHD_RPC_PORT, value: {{ $root.Values.rpc.port | quote }} }
             - { name: YCASHD_RPC_THREADS, value: {{ $root.Values.rpc.threads | quote }} }
             - { name: YCASHD_RPC_WORKQUEUE, value: {{ $root.Values.rpc.workqueue | quote }} }
-            - { name: YCASHD_LISTEN, value: "1" }
+            - { name: YCASHD_LISTEN, value: {{ ternary "0" "1" $wallet | quote }} }
+            {{- if $wallet }}
+            # the recovery phrase as a file (-mnemonicfile; acts only when the wallet is created)
+            - { name: YCASHD_MNEMONIC_FILE, value: "/run/secrets/faucet-wallet/{{ $root.Values.faucet.wallet.secretKey }}" }
+            {{- end }}
             - { name: YCASHD_INSIGHT, value: {{ ternary "1" "0" $r.insight | quote }} }
             {{- $args := list (printf "-port=%d" (int $root.Values.p2p.port)) }}
             {{- if not $root.Values.peers.dnsseed }}{{ $args = append $args "-dnsseed=0" }}{{ end }}
@@ -165,6 +173,9 @@ spec:
             {{- if $r.zcashParams.enabled }}
             - { name: params, mountPath: /srv/ycash/.zcash-params }
             {{- end }}
+            {{- if $wallet }}
+            - { name: wallet, mountPath: /run/secrets/faucet-wallet, readOnly: true }
+            {{- end }}
           startupProbe:
             exec: { command: [sh, /opt/ycash/live.sh] }
             periodSeconds: 10
@@ -187,6 +198,13 @@ spec:
         - { name: home, emptyDir: {} }
         - name: scripts
           configMap: { name: {{ $fn }}-node-scripts, defaultMode: 0555 }
+        {{- if $wallet }}
+        - name: wallet
+          secret:
+            secretName: {{ $root.Values.faucet.wallet.existingSecret }}
+            defaultMode: 0440
+            items: [{ key: {{ $root.Values.faucet.wallet.secretKey }}, path: {{ $root.Values.faucet.wallet.secretKey }} }]
+        {{- end }}
   volumeClaimTemplates:
     - metadata: { name: data }
       spec:

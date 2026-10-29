@@ -22,6 +22,12 @@ ycashd:
   testnetProfile: fast
 gateway:
   host: lite-fast.example.org
+  # The testnet chart's faucet and status page share this gateway (charts/ycash-testnet faucet.route and
+  # status.route attach to listeners https-faucet and https-status). Off until the deployment turns
+  # those on; then, with the real hosts:
+  # extraListeners:
+  #   - { name: faucet, host: faucet-fast.example.org }
+  #   - { name: status, host: status-fast.example.org }
 lightwalletd:
   yellowback: true
 # Yellowback is on here: lightwalletd-dd proxies YellowbackStreamer. The YED personas and this

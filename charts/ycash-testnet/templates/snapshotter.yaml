@@ -1,0 +1,296 @@
+{{- if .Values.snapshotter.enabled }}
+{{- $root := . }}
+{{- $fn := include "yt.fullname" . }}
+{{- $sn := .Values.snapshotter }}
+{{- $profile := include "yt.profile" . }}
+{{- $net := include "yt.networkName" . }}
+{{- if not $profile }}{{ fail "snapshotter.enabled needs testnetProfile (the bundle names its network)" }}{{ end }}
+{{- if not (has $sn.flavour (list "full" "full-insight")) }}{{ fail "snapshotter.flavour: full or full-insight" }}{{ end }}
+{{- $gh := $sn.publish.github }}
+{{- if $gh.enabled }}{{ include "yt.keys" (dict "root" . "what" "the snapshotter's GitHub publish (a token)") }}{{ end }}
+{{- $img := .Values.images.ycashd }}
+{{- $ddImg := .Values.images.ycashdLegacy }}
+{{- $ref := $sn.referenceRpc }}
+{{- if not $ref }}{{ $ref = include "yt.rpcUrl" (dict "root" . "role" (ternary "verifier-dd" "seed" .Values.verifierDd.enabled)) }}{{ end }}
+{{- /* addnode= lines: the deployment's peers, the in-cluster seeds and the verifier's pods */ -}}
+{{- $conf := list }}
+{{- range .Values.peers.addnode }}{{ $conf = append $conf (printf "addnode=%s" .) }}{{ end }}
+{{- range splitList " " (include "yt.seedPeers" .) }}{{ if . }}{{ $conf = append $conf (printf "addnode=%s" .) }}{{ end }}{{ end }}
+{{- if .Values.verifierDd.enabled }}
+{{- range $i := until (int $root.Values.verifierDd.replicas) }}
+{{- $conf = append $conf (printf "addnode=%s-verifier-dd-%d.%s-verifier-dd-headless.%s.svc.cluster.local:%d" $fn $i $fn $root.Release.Namespace (int $root.Values.p2p.port)) }}
+{{- end }}
+{{- end }}
+{{- $envArgs := dict "root" . "net" $net "profile" $profile "conf" $conf "sn" $sn }}
+{{- $insight := ternary "1" "0" (eq $sn.flavour "full-insight") }}
+# The snapshotter and bundle verifier (plan §4.1-§4.3, bundles/state/FORMAT.md, files/snapshot.sh). The
+# node volumes keep their chains between runs; the work volume is new each run.
+{{- range $v := list "src" "dd" }}
+{{- if or (eq $v "src") $sn.verifierDd.enabled }}
+{{- $st := index $sn.storage $v }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fn }}-snapshot-{{ $v }}
+  labels: {{- include "yt.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: snapshotter
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with $st.className }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources: { requests: { storage: {{ $st.size }} } }
+{{- end }}
+{{- end }}
+{{- if $sn.verifierDd.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fn }}-snapshot-params
+  labels: {{- include "yt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: snapshotter
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.verifierDd.zcashParams.className }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources: { requests: { storage: {{ .Values.verifierDd.zcashParams.size }} } }
+{{- end }}
+{{- if $sn.publish.s3.enabled }}
+---
+# IRSA: the S3 upload's credentials come from this ServiceAccount's role (no secret in the cluster)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fn }}-snapshotter
+  labels: {{- include "yt.labels" . | nindent 4 }}
+  annotations:
+    eks.amazonaws.com/role-arn: {{ required "snapshotter.publish.s3.roleArn (the IRSA role allowed to write the bucket)" $sn.publish.s3.roleArn | quote }}
+automountServiceAccountToken: false
+{{- end }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $fn }}-snapshotter
+  labels: {{- include "yt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: snapshotter
+  annotations:
+    checkov.io/skip1: "CKV_K8S_40=uid 2001 is the ycashd images' own user (ycash6 and ycash-dd contrib/docker/ycashd/Dockerfile); a different UID needs a node-image change (AGENTS.md rule 1). Non-root, no escalation, all capabilities dropped, read-only root."
+    checkov.io/skip2: "CKV_K8S_11=no CPU limit on purpose: CFS throttling stalls ycashd while it syncs and while gettxoutsetinfo walks the UTXO set; every container has a CPU request and a memory limit."
+spec:
+  schedule: {{ $sn.schedule | quote }}
+  concurrencyPolicy: Forbid           # the node volumes are ReadWriteOnce and hold one node each
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: {{ $sn.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels: {{- include "yt.labels" . | nindent 12 }}
+            app.kubernetes.io/component: snapshotter
+          annotations:
+            checksum/scripts: {{ include (print $root.Template.BasePath "/snapshot-scripts.yaml") $root | sha256sum }}
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          {{- if $sn.publish.s3.enabled }}
+          serviceAccountName: {{ $fn }}-snapshotter
+          {{- end }}
+          {{- include "yt.podSecurity" . | nindent 10 }}
+          terminationGracePeriodSeconds: 120
+          volumes:
+            - { name: tmp, emptyDir: {} }
+            - { name: home, emptyDir: {} }
+            - name: scripts
+              configMap: { name: {{ $fn }}-node-scripts, defaultMode: 0555 }
+            - name: snapshot
+              configMap: { name: {{ $fn }}-snapshot-scripts, defaultMode: 0555 }
+            - name: src
+              persistentVolumeClaim: { claimName: {{ $fn }}-snapshot-src }
+            {{- if $sn.verifierDd.enabled }}
+            - name: dd
+              persistentVolumeClaim: { claimName: {{ $fn }}-snapshot-dd }
+            - name: params
+              persistentVolumeClaim: { claimName: {{ $fn }}-snapshot-params }
+            {{- end }}
+            # the tarball and its extracted copy: a fresh volume each run, deleted with the pod
+            - name: work
+              ephemeral:
+                volumeClaimTemplate:
+                  metadata:
+                    labels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: snapshotter }
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    {{- with $sn.storage.work.className }}
+                    storageClassName: {{ . }}
+                    {{- end }}
+                    resources: { requests: { storage: {{ $sn.storage.work.size }} } }
+          initContainers:
+            - name: pick
+              image: {{ include "yt.image" (dict "image" $img "key" "ycashd") }}
+              imagePullPolicy: {{ $img.pullPolicy }}
+              command: [sh, /opt/snapshot/snapshot.sh, pick]
+              env:
+                {{- include "yt.snapEnv" $envArgs | nindent 16 }}
+                - { name: DATADIR, value: /var/lib/ycash }
+                - { name: REF_RPC_URL, value: {{ $ref | quote }} }
+                - { name: SNAP_EVERY, value: {{ $sn.every | quote }} }
+                - { name: SNAP_DEPTH, value: {{ $sn.depth | quote }} }
+                - { name: SNAP_MIN_HEIGHT, value: {{ $sn.minHeight | quote }} }
+                - { name: SNAP_HEIGHT, value: {{ $sn.height | toString | quote }} }
+                - { name: SNAP_FORCE, value: {{ ternary "1" "0" $sn.force | quote }} }
+              {{- include "yt.containerSecurity" . | nindent 14 }}
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: src, mountPath: /var/lib/ycash }
+                - { name: snapshot, mountPath: /opt/snapshot, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+                - { name: home, mountPath: /srv/ycash }
+              resources: {{- toYaml .Values.zcashParams.resources | nindent 16 }}
+            {{- if $sn.verifierDd.enabled }}
+            - name: zcash-params
+              image: {{ include "yt.image" (dict "image" $ddImg "key" "ycashdLegacy") }}
+              imagePullPolicy: {{ $ddImg.pullPolicy }}
+              command: [sh, /opt/ycash/zcash-params.sh]
+              env:
+                - { name: ZCASH_PARAMS_URL, value: {{ required "zcashParams.url" .Values.zcashParams.url | quote }} }
+                - { name: ZCASH_PARAMS_SUMS, value: /opt/ycash/zcash-params.SHA256SUMS }
+                - { name: PARAMS_DIR, value: /srv/ycash/.zcash-params }
+              {{- include "yt.containerSecurity" . | nindent 14 }}
+              volumeMounts:
+                - { name: scripts, mountPath: /opt/ycash, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+                - { name: home, mountPath: /srv/ycash }
+                - { name: params, mountPath: /srv/ycash/.zcash-params }
+              resources: {{- toYaml .Values.zcashParams.resources | nindent 16 }}
+            {{- end }}
+            {{- range $step := list "produce" "restore-check" }}
+            - name: {{ $step }}
+              image: {{ include "yt.image" (dict "image" $img "key" "ycashd") }}
+              imagePullPolicy: {{ $img.pullPolicy }}
+              command: [sh, /opt/snapshot/snapshot.sh, {{ $step }}]
+              env:
+                {{- include "yt.snapEnv" $envArgs | nindent 16 }}
+                - { name: DATADIR, value: /var/lib/ycash }
+                - { name: LINE, value: ycash6 }
+                - { name: YCASHD_INSIGHT, value: {{ $insight | quote }} }
+              {{- include "yt.containerSecurity" $root | nindent 14 }}
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: src, mountPath: /var/lib/ycash }
+                - { name: snapshot, mountPath: /opt/snapshot, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+                - { name: home, mountPath: /srv/ycash }
+              resources: {{- toYaml $sn.resources | nindent 16 }}
+            {{- end }}
+            {{- if $sn.verifierDd.enabled }}
+            - name: verify-dd
+              image: {{ include "yt.image" (dict "image" $ddImg "key" "ycashdLegacy") }}
+              imagePullPolicy: {{ $ddImg.pullPolicy }}
+              command: [sh, /opt/snapshot/snapshot.sh, verify]
+              env:
+                {{- include "yt.snapEnv" $envArgs | nindent 16 }}
+                - { name: DATADIR, value: /var/lib/ycash }
+                - { name: LINE, value: ycash-dd }
+                - { name: YCASHD_INSIGHT, value: "0" }
+              {{- include "yt.containerSecurity" . | nindent 14 }}
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: dd, mountPath: /var/lib/ycash }
+                - { name: snapshot, mountPath: /opt/snapshot, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+                - { name: home, mountPath: /srv/ycash }
+                - { name: params, mountPath: /srv/ycash/.zcash-params }
+              resources: {{- toYaml $sn.resources | nindent 16 }}
+            {{- end }}
+            - name: finalize
+              image: {{ include "yt.image" (dict "image" $img "key" "ycashd") }}
+              imagePullPolicy: {{ $img.pullPolicy }}
+              command: [sh, /opt/snapshot/snapshot.sh, finalize]
+              env:
+                {{- include "yt.snapEnv" $envArgs | nindent 16 }}
+                - { name: DATADIR, value: /var/lib/ycash }
+                - { name: VERSION, value: {{ $sn.version | quote }} }
+                - { name: MIN_STATEMENTS, value: {{ ternary "2" "1" $sn.verifierDd.enabled | quote }} }
+              {{- include "yt.containerSecurity" . | nindent 14 }}
+              volumeMounts:
+                - { name: work, mountPath: /work }
+                - { name: src, mountPath: /var/lib/ycash }
+                - { name: snapshot, mountPath: /opt/snapshot, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+              resources: {{- toYaml .Values.zcashParams.resources | nindent 16 }}
+          containers:
+            {{- if $sn.publish.s3.enabled }}
+            - name: publish-s3
+              image: {{ include "yt.image" (dict "image" .Values.images.awsCli "key" "awsCli") }}
+              imagePullPolicy: {{ .Values.images.awsCli.pullPolicy }}
+              command: [sh, /opt/snapshot/snapshot.sh, publish-s3]
+              env:
+                - { name: WORK, value: /work }
+                - { name: NETDIR, value: {{ $net | quote }} }
+                - { name: FLAVOUR, value: {{ $sn.flavour | quote }} }
+                - { name: HOME, value: /tmp }
+                - { name: S3_BUCKET, value: {{ required "snapshotter.publish.s3.bucket" $sn.publish.s3.bucket | quote }} }
+                - { name: S3_PREFIX, value: {{ $sn.publish.s3.prefix | quote }} }
+                {{- with $sn.publish.s3.region }}
+                - { name: AWS_REGION, value: {{ . | quote }} }
+                {{- end }}
+              {{- include "yt.containerSecurity" . | nindent 14 }}
+              volumeMounts:
+                - { name: work, mountPath: /work, readOnly: true }
+                - { name: snapshot, mountPath: /opt/snapshot, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+              resources: {{- toYaml .Values.zcashParams.resources | nindent 16 }}
+            {{- end }}
+            {{- if $gh.enabled }}
+            - name: publish-github
+              image: {{ include "yt.image" (dict "image" $img "key" "ycashd") }}
+              imagePullPolicy: {{ $img.pullPolicy }}
+              command: [sh, /opt/snapshot/snapshot.sh, publish-github]
+              env:
+                - { name: WORK, value: /work }
+                - { name: NETDIR, value: {{ $net | quote }} }
+                - { name: FLAVOUR, value: {{ $sn.flavour | quote }} }
+                - { name: GITHUB_REPOSITORY, value: {{ required "snapshotter.publish.github.repository (owner/name)" $gh.repository | quote }} }
+                - { name: GITHUB_DRAFT, value: {{ $gh.draft | toString | quote }} }
+                - { name: GITHUB_UPLOAD_TARBALL, value: {{ $gh.uploadTarball | toString | quote }} }
+                - { name: TARBALL_URL, value: {{ $gh.tarballUrl | quote }} }
+                - name: GH_TOKEN
+                  valueFrom: { secretKeyRef: { name: {{ $gh.existingSecret }}, key: {{ $gh.secretKey }} } }
+              {{- include "yt.containerSecurity" . | nindent 14 }}
+              volumeMounts:
+                - { name: work, mountPath: /work, readOnly: true }
+                - { name: snapshot, mountPath: /opt/snapshot, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+              resources: {{- toYaml .Values.zcashParams.resources | nindent 16 }}
+            {{- end }}
+            # the run's result in the Job's log (and the step that ends the pod when nothing publishes)
+            - name: report
+              image: {{ include "yt.image" (dict "image" $img "key" "ycashd") }}
+              imagePullPolicy: {{ $img.pullPolicy }}
+              command: [sh, -c, 'if [ -e /work/SKIP ]; then echo "snapshot: nothing new"; else cat /work/out/manifest.json /work/out/SHA256SUMS; fi']
+              {{- include "yt.containerSecurity" . | nindent 14 }}
+              volumeMounts:
+                - { name: work, mountPath: /work, readOnly: true }
+              resources: {{- toYaml .Values.zcashParams.resources | nindent 16 }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# The snapshotter's nodes take no connection from anywhere (they dial out, -listen=0; their RPC is
+# for the pod itself).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fn }}-snapshotter
+  labels: {{- include "yt.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: snapshotter }
+  policyTypes: [Ingress]
+{{- end }}
+{{- end }}

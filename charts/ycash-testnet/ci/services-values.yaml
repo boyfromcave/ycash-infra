@@ -1,0 +1,24 @@
+# CI only (make lint-testnet, scripts/lint-images.sh, contrib/secops/checkov.sh): every service of this
+# chart turned on with placeholders, layered over values-kind.yaml or values-eks.yaml and a network's
+# values, so lint, kubeconform, the image pins and Checkov see the faucet, the probe, the status page,
+# the snapshotter (both publish steps) and the alerts. Not a deployment's values: no host, bucket, role
+# or repository here is real, and testnetKeys.allowed stands in for T-9.
+testnetKeys: { allowed: true }
+faucet:
+  enabled: true
+  params: { enabled: true }
+probe:
+  enabled: true
+  bundleManifestUrl: https://bundles.example.org/latest/manifest.json
+status:
+  enabled: true
+  route: { enabled: true }
+  notices: [{ date: "2026-11-02", text: "an example notice" }]
+snapshotter:
+  enabled: true
+  publish:
+    s3: { enabled: true, bucket: bundles.example.org, roleArn: "arn:aws:iam::000000000000:role/snapshotter" }
+    github: { enabled: true, repository: example/bundles }
+monitoring:
+  serviceMonitor: true
+  alerts: { enabled: true }

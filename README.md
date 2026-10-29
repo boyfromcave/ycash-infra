@@ -44,7 +44,11 @@ where Ycash itself forked:
 - **Seed nodes** (always on, fixed addresses): `infra/testnet-seeds`, Terraform for EC2 + Elastic
   IPs. Each host serves all three networks; deploy, upgrade, reset and status per network.
 - **Services** (light-wallet backend per network, on demand): `infra/eks/module` plus
-  `charts/ycash-lightwallet` and `charts/ycash-testnet`, one namespace per network.
+  `charts/ycash-lightwallet` and `charts/ycash-testnet`, one namespace per network. The testnet chart
+  also carries, per network and behind values flags, the **faucet** (`images/faucet`, testnet mode;
+  needs the owner's T-9), the **probe and status page** (`images/testnet-status`), the **snapshotter
+  and bundle verifier** (state bundles, `bundles/state/FORMAT.md`) and the **alerts**
+  (kube-prometheus-stack): [charts/ycash-testnet/README.md](charts/ycash-testnet/README.md#the-services).
 - **The plan:** workspace `docs/plans/yellowback-testnet-plan.md`.
 
 ## Node line: `upgrade/vault`, post-quantum
@@ -233,16 +237,18 @@ second endpoint until the owner says otherwise.
 images/ycashd/        the published ycashd image's page (README); the image is built from the node tree's own contrib/docker/ycashd/Dockerfile
 images/yindex/        Dockerfile for yindex
 images/web/           Dockerfile + nginx.conf for the yew/web bundle (K4)
-images/faucet/        the regtest faucet: faucet.py (JSON-RPC, the page, /params/), fetch-params.py (the init container)
+images/faucet/        the faucet: regtest (kind demo) and testnet modes, faucet.py (JSON-RPC, the pages, /params/), fetch-params.py (the init container), its README
+images/testnet-status/ a testnet's probe (nodes, seeds, state hashes -> /metrics) and public status page, its README
 yindex/               Go: the address index (ingester, Postgres store, gRPC server for the three address methods)
-charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml, values-testnet.yaml (over values-eks.yaml), values-{yb-fast,yb-slow,legacy}.yaml (one release per testnet)
-charts/ycash-testnet/       the testnets' network roles: ycash6 seeds, the ycash-dd verifier, the prefix restore; values-{yb-fast,yb-slow,legacy}.yaml; no keys; not yet run on a cluster (its README)
+charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml, values-testnet.yaml (over values-eks.yaml), values-{yb-fast,yb-slow,legacy}.yaml (one release per testnet); gateway.extraListeners puts the testnet faucet and status hosts on its gateway
+charts/ycash-testnet/       the testnets' network roles: ycash6 seeds, the ycash-dd verifier, the prefix restore, and per network the faucet, probe, status page, snapshotter and alerts (flags); values-{yb-fast,yb-slow,legacy}.yaml; not yet run on a cluster (its README)
 kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host)
 scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), kind-personas.py (K0c), wait-for.sh
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: module/ (VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons as helm_release; one namespace per network) and a thin example root
 infra/testnet-seeds/  Terraform: the seed hosts on EC2 + Elastic IPs (ips/, nodes/), every testnet on each host, seedctl (its README)
 bundles/prefix/       the Zcash testnet history bundle: format (FORMAT.md), harvest, import checks (testnet-prefix*.yml)
+bundles/state/        the testnet state bundle: format (FORMAT.md, ycash-state/1), verify.py, the snapshotter's offline tests
 bundles/zcash-params/ the mirrored Zcash parameter files' checksums (zcash-params.yml)
 .github/workflows/    ci, the security scans, node-image (the ycashd image), testnet-prefix(-import), zcash-params
 keys/                 public keys only: ycash-release.pub, the owner's minisign key for release SHA256SUMS (its README)

@@ -11,6 +11,10 @@
 images:
   ycashd:       { repository: ghcr.io/boyfromcave/ycashd,        tag: "", digest: "" }   # ycash6 release (6.22.0-rcN)
   ycashdLegacy: { repository: ghcr.io/boyfromcave/ycashd-legacy, tag: "", digest: "" }   # ycash-dd at the vault-params tag (plan §2.3)
+  # images/faucet and images/testnet-status: not published yet (no workflow builds them; README "The
+  # services"); the deployment sets repository and digest when it turns them on
+  faucet:       { repository: ghcr.io/boyfromcave/faucet,         tag: "", digest: "" }
+  status:       { repository: ghcr.io/boyfromcave/testnet-status, tag: "", digest: "" }
 rpc:
   existingSecret: ycash-testnet-rpc
   threads: 8
@@ -39,3 +43,19 @@ externalSecrets:
   enabled: true
   storeRef: aws-secrets-manager
   ycashdRpc: ycash/testnet/ycashd-rpc   # {rpcuser, rpcpassword}; per network (values-<network>.yaml): infra/eks/module with networks
+# The services (plan §6.2, §6.4): off here until their images are published and the deployment turns
+# them on (README "The services"): probe + status + alerts need images.status's digest; the faucet
+# needs T-9 (testnetKeys.allowed) and its wallet; the snapshotter needs storage and, to publish, a bucket
+# and an IRSA role or a GitHub token.
+probe: { enabled: false }
+status: { enabled: false }
+snapshotter:
+  storage:
+    src:  { className: gp3, size: 60Gi }
+    dd:   { className: gp3, size: 60Gi }
+    work: { className: gp3, size: 40Gi }
+faucet:
+  node: { storage: { className: gp3, size: 50Gi } }
+monitoring:
+  serviceMonitor: true        # kube-prometheus-stack is installed by infra/eks/module
+  alerts: { enabled: false }  # with probe.enabled (the alerts read the probe's metrics)

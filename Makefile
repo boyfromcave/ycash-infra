@@ -42,12 +42,12 @@ DOMAIN      ?= lite.example.org
 # to roll out before the target fails (scripts/kind-check-release.sh)
 ROLLOUT_TIMEOUT ?= 10m
 
-.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local zcash-params-test
+.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local zcash-params-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
 
-images: image-ycashd image-lightwalletd image-yindex image-web image-faucet ## build every image from the workspace trees
+images: image-ycashd image-lightwalletd image-yindex image-web image-faucet image-testnet-status ## build every image from the workspace trees
 
 # Image stamps (scripts/image-stamp.sh): each image-* target labels the image with a sha256 over these
 # files; kind-load refuses a :local image whose label differs from them as they are now (a chart change
@@ -58,7 +58,8 @@ STAMP_ycashd_legacy = $(YCASHD_LEGACY_DOCKERFILE) $(dir $(YCASHD_LEGACY_DOCKERFI
 STAMP_lightwalletd  = $(LWD)/Dockerfile $(LWD)/docker/entrypoint.sh
 STAMP_yindex        = images/yindex/Dockerfile
 STAMP_web           = images/web/Dockerfile images/web/nginx.conf
-STAMP_faucet        = images/faucet/Dockerfile images/faucet/faucet.py images/faucet/fetch-params.py images/faucet/index.html images/faucet/app.js
+STAMP_faucet        = images/faucet/Dockerfile images/faucet/faucet.py images/faucet/fetch-params.py images/faucet/index.html images/faucet/app.js images/faucet/testnet.html images/faucet/testnet.js
+STAMP_testnet_status = images/testnet-status/Dockerfile images/testnet-status/probe.py images/testnet-status/status.py images/testnet-status/index.html images/testnet-status/status.js
 # ALLOW_STALE_IMAGES=1 (every image) or =ycashd,lightwalletd (by name): kind-load warns about a stale
 # image instead of failing (e.g. a node image built before stamps from an unchanged Dockerfile)
 ALLOW_STALE_IMAGES ?=
@@ -98,8 +99,11 @@ image-web: ## the yew/web static bundle behind nginx (needs yew/web built: scrip
 	@test -d $(YEW)/web/dist || { echo "yew/web/dist missing: build the web wallet first (cd $(YEW)/web && scripts/build-core-wasm.sh && npm run build)"; exit 1; }
 	s=$$(scripts/image-stamp.sh hash $(STAMP_web)) && docker buildx build --load --platform $(PLATFORM) --build-context dist=$(YEW)/web/dist --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/web:$(WEB_REV) -t $(REGISTRY)/web:local images/web
 
-image-faucet: ## the regtest faucet (images/faucet: python:3.12-alpine + the standard library)
+image-faucet: ## the faucet (images/faucet: the kind demo's regtest faucet and a testnet's, FAUCET_MODE; python:3.12-alpine + the standard library)
 	s=$$(scripts/image-stamp.sh hash $(STAMP_faucet)) && docker build --platform $(PLATFORM) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/faucet:$(YINDEX_REV) -t $(REGISTRY)/faucet:local images/faucet
+
+image-testnet-status: ## a testnet's probe and status page (images/testnet-status: python:3.12-alpine + the standard library)
+	s=$$(scripts/image-stamp.sh hash $(STAMP_testnet_status)) && docker build --platform $(PLATFORM) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/testnet-status:$(YINDEX_REV) -t $(REGISTRY)/testnet-status:local images/testnet-status
 
 kind-create: ## the kind cluster from kind/kind.yaml
 	kind get clusters | grep -qx $(CLUSTER) || kind create cluster --name $(CLUSTER) --config kind/kind.yaml
@@ -234,6 +238,9 @@ TESTNET_LITE_SET := $(foreach c,ycashd lightwalletd yindex web,--set images.$(c)
 TESTNET_EKS_SET  := --set images.ycashd.digest=$(PLACEHOLDER_DIGEST) --set images.ycashdLegacy.digest=$(PLACEHOLDER_DIGEST)
 # the three testnets: values-<network>.yaml in both charts, one release (and one namespace) each
 TESTNET_NETWORKS := yb-fast yb-slow legacy
+# every service of charts/ycash-testnet on, with placeholders (ci/services-values.yaml)
+TESTNET_SERVICES_SET := -f $(TESTNET_CHART)/ci/services-values.yaml
+TESTNET_SERVICES_EKS_SET := $(TESTNET_SERVICES_SET) --set images.faucet.digest=$(PLACEHOLDER_DIGEST) --set images.status.digest=$(PLACEHOLDER_DIGEST)
 
 lint-testnet: ## the testnet renders (render-only until N1): charts/ycash-testnet kind + EKS, the lightwallet chart's values-testnet.yaml, each per network (yb-fast, yb-slow, legacy); helm lint + kubeconform
 	helm lint $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml
@@ -249,7 +256,18 @@ lint-testnet: ## the testnet renders (render-only until N1): charts/ycash-testne
 	  helm template $$n $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml -f $(TESTNET_CHART)/values-$$n.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS); \
 	  helm template $$n $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml -f $(TESTNET_CHART)/values-$$n.yaml $(TESTNET_EKS_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS); \
 	  helm template lite $(CHART) -f $(CHART)/values-eks.yaml -f $(CHART)/values-testnet.yaml -f $(CHART)/values-$$n.yaml $(TESTNET_LITE_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS); \
+	  echo "== $$n, every service on"; \
+	  helm lint $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml -f $(TESTNET_CHART)/values-$$n.yaml $(TESTNET_EKS_SET) $(TESTNET_SERVICES_EKS_SET) >/dev/null; \
+	  helm template $$n $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml -f $(TESTNET_CHART)/values-$$n.yaml $(TESTNET_SERVICES_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS); \
+	  helm template $$n $(TESTNET_CHART) -f $(TESTNET_CHART)/values-eks.yaml -f $(TESTNET_CHART)/values-$$n.yaml $(TESTNET_EKS_SET) $(TESTNET_SERVICES_EKS_SET) | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS); \
+	  helm template lite $(CHART) -f $(CHART)/values-eks.yaml -f $(CHART)/values-testnet.yaml -f $(CHART)/values-$$n.yaml $(TESTNET_LITE_SET) \
+	    --set 'gateway.extraListeners[0].name=faucet' --set "gateway.extraListeners[0].host=faucet-$$n.example.org" \
+	    --set 'gateway.extraListeners[1].name=status' --set "gateway.extraListeners[1].host=status-$$n.example.org" | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS); \
 	done
+	# the refusals: the faucet without T-9, a profile-less snapshotter, alerts without the probe
+	! helm template t $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml --set faucet.enabled=true >/dev/null 2>&1
+	! helm template t $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml --set snapshotter.enabled=true >/dev/null 2>&1
+	! helm template t $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml --set probe.enabled=false --set status.enabled=false --set monitoring.alerts.enabled=true >/dev/null 2>&1
 
 template: ## render the kind values to stdout
 	helm template $(RELEASE) $(CHART) -n $(NAMESPACE) -f $(CHART)/values-kind.yaml
@@ -266,6 +284,14 @@ prefix-verify: ## re-verify a finished prefix directory offline (PREFIX_DIR=pref
 
 prefix-local: ## harvest the prefix on this machine with Docker (PREFIX_LAST=4799 smoke; 510247 full)
 	bundles/prefix/run-local.sh $(PREFIX_LAST)
+
+# --- the testnet services (charts/ycash-testnet: faucet, probe and status page, snapshotter) ---
+state-test: ## the state bundle's offline tests: snapshot.sh's steps against a stand-in node, verify.py (bundles/state)
+	python3 -I -m unittest discover -s bundles/state/tests -v
+
+services-test: state-test ## offline tests of the faucet (both modes), the probe and the status page, the state bundle
+	python3 -I -m unittest discover -s images/faucet/tests -v
+	python3 -I -m unittest discover -s images/testnet-status/tests -v
 
 # --- Zcash parameter mirror (bundles/zcash-params) ---
 zcash-params-test: ## the parameter mirror's offline tests: SHA256SUMS vs the chart copy and ycash-dd's fetch-params.sh (YCASH_DD), the chart's init script

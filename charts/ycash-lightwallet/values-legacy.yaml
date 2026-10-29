@@ -22,6 +22,12 @@ ycashd:
   testnetProfile: legacy
 gateway:
   host: lite-legacy.example.org
+  # The testnet chart's faucet and status page share this gateway (charts/ycash-testnet faucet.route and
+  # status.route attach to listeners https-faucet and https-status). Off until the deployment turns
+  # those on; then, with the real hosts:
+  # extraListeners:
+  #   - { name: faucet, host: faucet-legacy.example.org }
+  #   - { name: status, host: status-legacy.example.org }
 lightwalletd:
   yellowback: false
 # The control network: no Vault, YED off (T-19: no personas, no attestor set), so lightwalletd-dd
