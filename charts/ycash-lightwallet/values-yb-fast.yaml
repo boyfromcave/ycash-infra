@@ -20,11 +20,12 @@ ycashd:
   extraArgs: "-dnsseed=0"
   confExtra: "testnetprofile=fast"
 gateway:
-  host: yb-fast-lite.testnet.example.org
+  host: lite-fast.example.org
 lightwalletd:
   yellowback: true
 # Yellowback is on here: lightwalletd-dd proxies YellowbackStreamer. The YED personas and this
-# network's attestor set (T-19) are not a chart workload yet (plan §6.2 `attestor`, K7).
+# network's attestor set (T-19) are not a chart workload yet (plan §6.2 `attestor`, K7). Its set
+# (T-5): 7 house seats (the founding set); the seat keys live in the cluster's secret store, never in a repository.
 externalSecrets:
   ycashdRpc: ycash/testnet/yb-fast/ycashd-rpc             # infra/eks/module, networks = [..., "yb-fast"]
   yindexPostgres: ycash/testnet/yb-fast/yindex-postgres   # {url} to this network's database, yindex_yb_fast

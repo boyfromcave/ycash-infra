@@ -20,7 +20,7 @@ ycashd:
   extraArgs: "-dnsseed=0"
   confExtra: "testnetprofile=legacy"
 gateway:
-  host: legacy-lite.testnet.example.org
+  host: lite-legacy.example.org
 lightwalletd:
   yellowback: false
 # The control network: no Vault, YED off (T-19: no personas, no attestor set), so lightwalletd-dd

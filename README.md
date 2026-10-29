@@ -208,6 +208,7 @@ scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.s
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: module/ (VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons as helm_release; one namespace per network) and a thin example root
 infra/testnet-seeds/  Terraform: the seed hosts on EC2 + Elastic IPs (ips/, nodes/), every testnet on each host, seedctl (its README)
+keys/                 public keys only: ycash-release.pub, the owner's minisign key for release SHA256SUMS (its README)
 docs/eks-runbook.md   EKS: empty account → smoke green, cost, rollback, open decisions
 docs/try-it.md        the tester's guide to the demo kit (the wallet's screens, the walk, troubleshooting)
 docs/plans/           ycash-infra-plan.md (phases K0–K4, decisions, status)

@@ -51,7 +51,7 @@ provider "aws" { region = var.region }
 module "eks" {
   source         = "git::https://github.com/<owner>/ycash-infra.git//infra/eks/module?ref=<sha>"
   name           = "ycash-testnet"
-  domain         = "testnet.example.org"
+  domain         = "example.org"           # hosts lite-fast.example.org, … below it
   hosted_zone_id = "Z0123456789ABCDEFGHIJ"
   acme_email     = "ops@example.org"
   secrets_prefix = "ycash/testnet"
