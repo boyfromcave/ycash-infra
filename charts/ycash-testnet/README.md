@@ -145,11 +145,12 @@ node takes no inbound P2P (`-listen=0`) and its RPC only from the faucet pod (Ne
 `<release>-faucet-node`). Fund it by sending testnet YEC to its first Sapling address
 (`z_listaddresses` on the node); the faucet shields the wallet's coinbase first if a miner pays to it.
 
-**T-9.** `AGENTS.md` rule 4 says nothing in the cluster holds a spending key. Decision T-9 (plan §6.1,
-§8) would amend it for this chart (testnet-only keys, from External Secrets, no mainnet value set);
-it is recommended but not yet written into `AGENTS.md`. Until it is, the faucet (and the snapshotter's
-GitHub token) render only with `testnetKeys.allowed: true`, the deployer's statement that the
-amendment is in force; without it the render fails with the reason.
+**T-9.** `AGENTS.md` rule 4 says nothing in the cluster holds a spending key. Decision T-9 (owner,
+2026-10-29; plan §6.1, §8) amends it for this chart only: testnet-only keys (the faucet wallet's
+recovery phrase, the snapshotter's GitHub token), from External Secrets, never in a values file or
+git, never on mainnet. The faucet and the GitHub token still render only with
+`testnetKeys.allowed: true`, the deployer's explicit opt-in for that network; without it the render
+fails with the reason.
 
 The route: the faucet's own host (`faucet.route.host`, `faucet-fast.example.org` etc. in the network
 values, placeholders until T-3) on the lightwallet release's gateway in the same namespace
