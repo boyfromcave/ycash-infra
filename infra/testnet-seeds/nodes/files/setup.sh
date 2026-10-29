@@ -69,8 +69,8 @@ fi
 #    else and verifies every byte against the pinned SHA256SUMS; frame.py checks the blocks again).
 LOADBLOCK=""
 if [ "${PREFIX_ENABLED:-0}" = 1 ] && [ ! -e "$N/prefix/IMPORTED" ]; then
-  DATADIR="$N" PREFIX_BASE_URL="$PREFIX_BASE_URL" PREFIX_SUMS_SHA256="$PREFIX_SUMS_SHA256" \
-    PREFIX_LAST_HEIGHT="$PREFIX_LAST_HEIGHT" retry sh /opt/ycash-seed/prefix-restore.sh
+  export DATADIR="$N" PREFIX_BASE_URL PREFIX_SUMS_SHA256 PREFIX_LAST_HEIGHT
+  retry sh /opt/ycash-seed/prefix-restore.sh
   if [ -e "$N/prefix/VERIFIED" ] && [ ! -e "$N/prefix/FRAMED" ]; then
     rm -rf "$N/prefix/load"
     python3 -I /opt/ycash-seed/frame.py --prefix "$N/prefix" --out "$N/prefix/load" --magic "$PREFIX_MAGIC"
