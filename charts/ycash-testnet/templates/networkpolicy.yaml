@@ -3,7 +3,7 @@
 # The node pods: P2P from anywhere (they are the network's seeds), RPC only from this release's own
 # pods and networkPolicy.rpcFrom. The probes run ycash-cli inside the container (loopback), which a
 # NetworkPolicy does not see. Egress stays open: P2P to any peer, DNS, HTTPS for the prefix restore
-# and (ycash-dd) the parameter files.
+# and (ycash-dd) the parameter files (zcashParams.url, GitHub releases by default).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

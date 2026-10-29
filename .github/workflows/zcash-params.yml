@@ -1,0 +1,149 @@
+# zcash-params: mirror the three Zcash parameter files ycash-dd needs at start (sapling-spend.params,
+# sapling-output.params, sprout-groth16.params) as release zcash-params-v1 of this repository
+# (bundles/zcash-params/README.md; owner decision D3, 2026-10-28: on GitHub, under boyfromcave).
+#
+# In plain words: the ycash-dd node will not start without three large public files that Zcash
+# published years ago and still serves from download.z.cash. This job copies them, in public, onto
+# a GitHub release, so the Ycash testnet does not depend on Zcash's server staying up. It checks
+# each file against the fingerprint (SHA-256) that ycash-dd's own download script pins before it
+# publishes anything, and anyone who downloads them checks the same fingerprints, so the copy is
+# exactly as trustworthy as the original. It runs only when started by hand.
+#
+# Jobs:
+#   test     the offline tests (bundles/zcash-params/tests), seconds
+#   mirror   downloads each file from download.z.cash the way ycash-dd's zcutil/fetch-params.sh
+#            does (<name>.part.1 + <name>.part.2, concatenated), refuses unless all three match
+#            bundles/zcash-params/SHA256SUMS, uploads the artifact `zcash-params`
+#   publish  dispatch with publish=true from upgrade/vault only: re-verifies the artifact, attests
+#            build provenance for the three files, creates release zcash-params-v1 (refuses if it
+#            exists)
+name: zcash-params
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: publish release zcash-params-v1 (from upgrade/vault only)
+        type: boolean
+        default: false
+permissions: {}
+concurrency:
+  group: zcash-params-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  TAG: zcash-params-v1
+  # ycash-dd zcutil/fetch-params.sh DOWNLOAD_URL (line 20)
+  ORIGIN: https://download.z.cash/downloads
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - run: make zcash-params-test
+
+  mirror:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: download from download.z.cash (two parts per file, as fetch-params.sh)
+        run: |
+          set -euo pipefail
+          mkdir dist
+          while read -r _ f; do
+            for i in 1 2; do
+              # a part can be empty (zcash_proofs: "skip empty part.2 files"): create it first, so an
+              # empty body still leaves a file
+              : > "dist/$f.part.$i"
+              curl -fsSL --proto '=https' --tlsv1.2 --retry 5 --retry-delay 10 --retry-all-errors \
+                -o "dist/$f.part.$i" "$ORIGIN/$f.part.$i"
+            done
+            cat "dist/$f.part.1" "dist/$f.part.2" > "dist/$f"
+            rm "dist/$f.part.1" "dist/$f.part.2"
+          done < bundles/zcash-params/SHA256SUMS
+      - name: verify against bundles/zcash-params/SHA256SUMS (refuses on any mismatch)
+        run: |
+          set -euo pipefail
+          cp bundles/zcash-params/SHA256SUMS dist/SHA256SUMS
+          (cd dist && sha256sum -c --strict SHA256SUMS)
+          test "$(find dist -type f | wc -l)" -eq 4
+          # every release asset must be under GitHub's 2 GiB limit
+          for f in dist/*; do test "$(stat -c %s "$f")" -lt 2147483648; done
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo "## zcash-params: mirror of $ORIGIN"
+            echo '### SHA256SUMS'; echo '```'; cat bundles/zcash-params/SHA256SUMS; echo '```'
+            if [ -d dist ]; then echo '### Sizes (bytes)'; echo '```'; (cd dist && stat -c '%s %n' -- * | sort -k2); echo '```'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zcash-params
+          path: |
+            dist/*.params
+            dist/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    needs: mirror
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/upgrade/vault'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: zcash-params
+          path: dist
+      - name: verify the artifact before publishing
+        run: |
+          set -euo pipefail
+          cmp bundles/zcash-params/SHA256SUMS dist/SHA256SUMS
+          (cd dist && sha256sum -c --strict SHA256SUMS)
+          test "$(find dist -type f | wc -l)" -eq 4
+      - name: refuse an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG exists; the mirror is immutable (different files are a new tag)" >&2; exit 1
+          fi
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.params
+      - name: create release zcash-params-v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "A copy of the three Zcash parameter files the ycash-dd node needs at start."
+            echo
+            echo "In plain words: these are public files Zcash published for its shielded transactions. They"
+            echo "are copied here unchanged from $ORIGIN (each served there as two parts, joined), the"
+            echo "address ycash-dd's zcutil/fetch-params.sh uses, so the Ycash testnet does not depend on that"
+            echo "server. The host does not matter for trust: every file must match the SHA-256 below, which"
+            echo "is the one fetch-params.sh pins; a node or a person checks it before using the file."
+            echo
+            echo "Verify by hand: download the three files and SHA256SUMS, then run \`sha256sum -c SHA256SUMS\`."
+            echo "Provenance: \`gh attestation verify <file> -R $GITHUB_REPOSITORY\`."
+            echo "Details: bundles/zcash-params/README.md in this repository."
+            echo
+            echo '```'; cat dist/SHA256SUMS; echo '```'
+          } > notes.md
+          gh release create "$TAG" dist/*.params dist/SHA256SUMS -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG: Zcash parameter files (sapling-spend, sapling-output, sprout-groth16)" --notes-file notes.md

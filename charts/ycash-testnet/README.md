@@ -22,7 +22,7 @@ Plan: workspace `docs/plans/yellowback-testnet-plan.md` (§2.3 who runs what, §
 | Role | Kind | Image | Notes |
 |---|---|---|---|
 | `seed` | StatefulSet, 3 replicas | `ycash6` (`images.ycashd`) | `podAntiAffinity` by zone (required on EKS, preferred by hostname on kind); a PVC per pod; P2P 18833 through **one Service per pod** (`seed.p2pService`: an internet-facing NLB per seed on EKS, NodePort 31833–31835 on kind), not-ready pods still published |
-| `verifier-dd` | StatefulSet, 1 replica | `ycash-dd` (`images.ycashdLegacy`) | The cross-line verifier: syncs from the seeds over P2P. Its Sprout/Sapling parameter files on their own PVC (`verifierDd.zcashParams`) |
+| `verifier-dd` | StatefulSet, 1 replica | `ycash-dd` (`images.ycashdLegacy`) | The cross-line verifier: syncs from the seeds over P2P. Its Sprout/Sapling parameter files on their own PVC (`verifierDd.zcashParams`), filled by the `zcash-params` init container (below) |
 | `prefix-fetch`, `prefix-frame` | init containers on both, **off by default** | the node image; the future framer image | below |
 
 Both roles render from one template (`templates/node.yaml`); everything that differs is a value
@@ -55,6 +55,28 @@ The NetworkPolicy (`networkPolicy.enabled`, on by default) admits P2P from anywh
 from this release's pods and `networkPolicy.rpcFrom`; egress stays open. `charts/ycash-lightwallet`
 has no NetworkPolicy yet (its semgrep ledger records one as a hardening lead), so this is the first;
 it follows that chart's labels and port names.
+
+## The Zcash parameter files (the verifier)
+
+In plain words: ycash-dd will not start without three public Zcash files (about 777 MB). Before the
+verifier's node starts, a small init container downloads them once from this repository's GitHub
+release and checks each against a fingerprint written into the chart; a file that does not match
+is thrown away and the node does not start.
+
+Every role with `zcashParams.enabled` (by default only `verifierDd`; ycash6 compiles the parameters
+in) gets the `zcash-params` init container (`files/zcash-params.sh`, in the role's own image). It
+fetches `sapling-spend.params`, `sapling-output.params` and `sprout-groth16.params` whole from
+`zcashParams.url` (default
+`https://github.com/boyfromcave/ycash-infra/releases/download/zcash-params-v1`, the mirror
+`bundles/zcash-params/README.md` describes) into the params PVC, `https://` only, and refuses unless
+each matches `files/zcash-params.SHA256SUMS`: a byte-identical copy of
+`bundles/zcash-params/SHA256SUMS`, which copies the sums ycash-dd's `zcutil/fetch-params.sh:223-225`
+pins (`make zcash-params-test` checks both). A file already there that checks is kept; one that does
+not is fetched again. The image's entrypoint then finds the files and skips its own
+`fetch-params.sh` run. The container runs under the same hardening as the node (read-only root,
+the `/tmp`, `$HOME` and params mounts) with `zcashParams.resources`. `download.z.cash` serves each
+file as two parts, so it is not a drop-in `zcashParams.url`; any other host holding the three whole
+files is, since the sums, not the host, are what is trusted.
 
 ## The prefix restore (off by default)
 
