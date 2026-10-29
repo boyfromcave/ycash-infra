@@ -9,8 +9,9 @@
 # In plain words: the same light-wallet backend, pointed at one of the three practice networks.
 # What differs between them is the profile, its ports, the public host name and the secrets.
 #
-# The profile goes into ycash.conf (testnetprofile=slow beside testnet=1), so the node and every
-# ycash-cli call in the probes pick the same network. The seeds' addresses (infra/testnet-seeds,
+# The profile reaches the node image's entrypoint as YCASHD_TESTNET_PROFILE (slow), which writes
+# testnetprofile=slow beside testnet=1 into ycash.conf, so the node and every ycash-cli call in the
+# probes pick the same network. The seeds' addresses (infra/testnet-seeds,
 # port 18933) are added at deploy as addnode= lines (ycashd.confExtra). The host is a placeholder: the
 # real one is the operator's, under the domain the cluster's external-dns may write (infra/eks/module
 # var.domain).
@@ -18,7 +19,7 @@ ycashd:
   rpc: { port: 18932 }
   p2p: { port: 18933 }
   extraArgs: "-dnsseed=0"
-  confExtra: "testnetprofile=slow"
+  testnetProfile: slow
 gateway:
   host: lite-slow.example.org
 lightwalletd:

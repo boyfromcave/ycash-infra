@@ -92,6 +92,7 @@ render() { # net file
   mkdir -p "$R"
   cat > "$R/node.env" <<ENV
 YCASHD_NETWORK=$(cfg "$f" .network)
+YCASHD_TESTNET_PROFILE=$(cfg "$f" .profile)
 YCASHD_INSIGHT=0
 YCASHD_LISTEN=1
 YCASHD_RPC_BIND=127.0.0.1

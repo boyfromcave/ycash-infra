@@ -71,7 +71,7 @@ SLOW=$(conf yb-slow slow 18933 18932 f77962d4 | b64)
 env_fast="$O/net/yb-fast/node.env"
 grep -qx 'YCASHD_EXTRA_ARGS=-port=18833 -externalip=192.0.2.10 -testnet -testnetprofile=fast -dnsseed=0 -addnode=192.0.2.11:18833 -dbcache=256 -maxconnections=64 -loadblock=/var/lib/ycash/prefix/load/blk0.dat' "$env_fast" \
   || fail "fast's node arguments: $(grep EXTRA "$env_fast")"
-grep -qx 'YCASHD_RPC_PORT=18832' "$env_fast" && grep -qx 'YCASHD_NETWORK=testnet' "$env_fast" && grep -qx 'YCASHD_RPC_BIND=127.0.0.1' "$env_fast" || fail "fast's RPC settings"
+grep -qx 'YCASHD_RPC_PORT=18832' "$env_fast" && grep -qx 'YCASHD_NETWORK=testnet' "$env_fast" && grep -qx 'YCASHD_TESTNET_PROFILE=fast' "$env_fast" && grep -qx 'YCASHD_RPC_BIND=127.0.0.1' "$env_fast" || fail "fast's RPC settings"
 grep -q 'container_name: ycashd-yb-fast' "$O/net/yb-fast/compose.yaml" && grep -q 'image: ghcr.io/example/ycashd@sha256:0000' "$O/net/yb-fast/compose.yaml" || fail "fast's compose file"
 grep -q "\"$D/yb-fast/node:/var/lib/ycash\"" "$O/net/yb-fast/compose.yaml" || fail "fast's own datadir"
 [ "$(grep -c '^restore ' "$LOG")" = 1 ] && grep -q "^frame $D/prefix-cache/data/prefix f77962d3$" "$LOG" || fail "one fetch, framed with d3"

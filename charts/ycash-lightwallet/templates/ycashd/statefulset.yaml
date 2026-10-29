@@ -36,6 +36,9 @@ spec:
           {{- include "yc.containerSecurity" . | nindent 10 }}
           env:
             - { name: YCASHD_NETWORK, value: {{ .Values.ycashd.network | quote }} }
+            {{- with .Values.ycashd.testnetProfile }}
+            - { name: YCASHD_TESTNET_PROFILE, value: {{ . | quote }} }
+            {{- end }}
             - { name: YCASHD_RPC_PORT, value: {{ .Values.ycashd.rpc.port | quote }} }
             - { name: YCASHD_RPC_THREADS, value: {{ .Values.ycashd.rpc.threads | quote }} }
             - { name: YCASHD_RPC_WORKQUEUE, value: {{ .Values.ycashd.rpc.workqueue | quote }} }
