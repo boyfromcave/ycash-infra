@@ -1,0 +1,31 @@
+# The light-wallet endpoint of testnet-legacy (workspace docs/plans/yellowback-testnet-plan.md, Revision
+# 3, T-20): one release per network, each in its own namespace on the one testnet cluster, layered
+# over values-eks.yaml and values-testnet.yaml:
+#
+#   helm upgrade --install lite charts/ycash-lightwallet -n legacy --create-namespace \
+#     -f charts/ycash-lightwallet/values-eks.yaml -f charts/ycash-lightwallet/values-testnet.yaml \
+#     -f charts/ycash-lightwallet/values-legacy.yaml --set images.ycashd.digest=sha256:… …
+#
+# In plain words: the same light-wallet backend, pointed at one of the three practice networks.
+# What differs between them is the profile, its ports, the public host name and the secrets.
+#
+# The profile reaches the node image's entrypoint as YCASHD_TESTNET_PROFILE (legacy), which writes
+# testnetprofile=legacy beside testnet=1 into ycash.conf, so the node and every ycash-cli call in the
+# probes pick the same network. The seeds' addresses (infra/testnet-seeds,
+# port 19033) are added at deploy as addnode= lines (ycashd.confExtra). The host is a placeholder: the
+# real one is the operator's, under the domain the cluster's external-dns may write (infra/eks/module
+# var.domain).
+ycashd:
+  rpc: { port: 19032 }
+  p2p: { port: 19033 }
+  extraArgs: "-dnsseed=0"
+  testnetProfile: legacy
+gateway:
+  host: lite-legacy.example.org
+lightwalletd:
+  yellowback: false
+# The control network: no Vault, YED off (T-19: no personas, no attestor set), so lightwalletd-dd
+# serves the stock CompactTxStreamer only.
+externalSecrets:
+  ycashdRpc: ycash/testnet/legacy/ycashd-rpc             # infra/eks/module, networks = [..., "legacy"]
+  yindexPostgres: ycash/testnet/legacy/yindex-postgres   # {url} to this network's database, yindex_legacy

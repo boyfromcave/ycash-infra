@@ -1,5 +1,13 @@
 # EKS runbook — from an empty AWS account to smoke green on the public host
 
+## In plain words
+
+This is the step-by-step order for putting the light-wallet services on AWS: build the cloud
+pieces, put the program images where the cluster can fetch them, install the services, give them
+a public name and a certificate, and check that a wallet can talk to them. The same recipe runs
+from a laptop (`make eks-*`, below) or, for the testnets, from the operator's private repository
+by workflow buttons ([§10](#10-the-testnet-cluster-from-a-private-repository)).
+
 The chart on AWS (plan K2). Everything below is one `make` target or one command, in the order
 it has to happen: terraform → add-ons (terraform too) → ECR push → helm → DNS → smoke. Nothing
 here has been applied yet (no AWS credentials in the workspace, 2026-10-09): the terraform and
@@ -21,7 +29,8 @@ cp infra/eks/terraform.tfvars.example infra/eks/terraform.tfvars    # region, na
 make eks-up            # terraform init + apply, then `aws eks update-kubeconfig`
 ```
 
-`infra/eks` creates, in one apply (`main.tf`, `rds.tf`, `secrets.tf`, `addons.tf`):
+`infra/eks` (the example root around `infra/eks/module`) creates, in one apply (`module/main.tf`,
+`rds.tf`, `secrets.tf`, `networks.tf`, `addons.tf`):
 
 | | what | why |
 |---|---|---|
@@ -48,7 +57,7 @@ The ClusterIssuer solves ACME **DNS-01 via Route53**, not HTTP-01: the gateway s
 Gateway API solver is still experimental and would need an HTTP listener on the Gateway), the
 certificate can be issued before the NLB has an address, and the zone is already written by
 external-dns with the same kind of IRSA role. Switching is a one-file change
-(`infra/eks/charts/cluster-config/templates/clusterissuer.yaml`).
+(`infra/eks/module/charts/cluster-config/templates/clusterissuer.yaml`).
 
 Verify:
 
@@ -57,7 +66,7 @@ kubectl get nodes                                   # 3 Ready
 kubectl -n envoy-gateway-system get pods            # envoy-gateway Running
 kubectl get clusterissuer letsencrypt-prod          # READY True
 kubectl get clustersecretstore aws-secrets-manager  # READY True (the IRSA role works)
-terraform -chdir=infra/eks output                   # ecr_registry, rds_endpoint, secrets, kubeconfig_command
+terraform -chdir=infra/eks output                   # secrets, kubeconfig_command; ecr_registry and rds_endpoint show <sensitive> (they carry the account): -raw prints one
 ```
 
 ## 2. Images to ECR (`make eks-push`)
@@ -123,7 +132,7 @@ pointed at it. Then re-run `load/run.sh <domain>:443` for the plan §4 EKS row.
 
 - **Upgrade the chart:** `make images && make eks-push && make eks-deploy` — new revs, rolling
   update; the StatefulSet rolls one node at a time, the PDB keeps one ready.
-- **Rotate the RPC password:** `terraform -chdir=infra/eks taint random_password.ycashd_rpc && make eks-up`,
+- **Rotate the RPC password:** `terraform -chdir=infra/eks apply -replace='module.eks.random_password.ycashd_rpc[""]'` (with networks: `["yb-fast"]` etc.),
   then `kubectl -n ycash rollout restart statefulset/ycash-ycashd deployment/ycash-lightwalletd deployment/ycash-yindex deployment/ycash-yindex-ingest`
   (External Secrets refreshes the Secret within `refreshInterval: 1h`; `kubectl annotate externalsecret ycashd-rpc force-sync=$(date +%s)` forces it).
 - **Grafana:** `kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80` (admin password in Secret `kube-prometheus-stack-grafana`).
@@ -170,3 +179,34 @@ floor: `node_min = 2` keeps the cluster alive but not the three-node pool.
 | K2-2 | yindex's Postgres | **RDS** db.t4g.small (backups, patching and failover are AWS's; +26/month) | in-cluster StatefulSet on gp3 (`yindex.postgres.enabled=true`, as kind): −26/month, one more thing to operate; the index is derived state either way |
 | K2-3 | Availability zones | **single-AZ** RDS and NAT; the nodes themselves span 3 AZs (the node group's subnets) | multi-AZ RDS (+26) and three NAT gateways (+65): survives an AZ outage without a replay |
 | K2-4 | Which chain | the values say **mainnet** (`ycashd.network`) | testnet is unreachable (workspace AGENTS.md), and no public network has an activation height yet: the public host serves the stock service until one is set |
+
+## 10. The testnet cluster from a private repository
+
+The testnets (workspace testnet plan, Revision 3, T-20) use one cluster with a namespace per
+network (`yb-fast`, `yb-slow`, `legacy`). The operator's private repository holds a root that calls
+`infra/eks/module` at a pinned commit with `networks = ["yb-fast", "yb-slow", "legacy"]`, its own
+backend, domain, zone, ACME e-mail and sizes, and a workflow with buttons for the cluster
+(plan, apply, down) and per network (deploy, upgrade, reset, status). Per network it deploys:
+
+```bash
+helm upgrade --install lite    charts/ycash-lightwallet -n yb-fast --create-namespace \
+  -f charts/ycash-lightwallet/values-eks.yaml -f charts/ycash-lightwallet/values-testnet.yaml \
+  -f charts/ycash-lightwallet/values-yb-fast.yaml -f <private overlay: host, seeds, ECR images by digest>
+helm upgrade --install testnet charts/ycash-testnet    -n yb-fast \
+  -f charts/ycash-testnet/values-eks.yaml -f charts/ycash-testnet/values-yb-fast.yaml \
+  --set seed.enabled=false -f <private overlay: peers.addnode = the EC2 seeds, images by digest>
+```
+
+- The seeds stay on EC2 (`infra/testnet-seeds`), so the networks survive the cluster being down.
+  The cluster's nodes reach them as `addnode` peers on each network's port.
+- yindex: one RDS instance, one database per network (`yindex_yb_fast`, …), created by the
+  module's Job; every network's url uses the instance's one user (testnets of one operator, not
+  tenants). A removed network's database stays until dropped by hand
+  (`DROP DATABASE yindex_<network>` from a `psql` pod with the admin url in Secret
+  `kube-system/yindex-db-admin`).
+- A network's reset (its chain started over) also clears its index: drop and recreate the
+  `public` schema of that network's database (§7, "yindex's index is wrong"), then redeploy.
+- Images by digest from ghcr.io, mirrored into ECR (T-12) before the deploy; the ECR registry
+  name carries the account id and is masked in the workflow's logs.
+- Up for test campaigns and the rc soak, down otherwise (`eks-down`): §8 is its cost while up,
+  plus one NLB per network's gateway (≈ $16–20 each, so ≈ +$35 for three over §8's one).

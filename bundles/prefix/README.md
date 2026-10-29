@@ -96,6 +96,19 @@ For a published release, also check where the files came from:
 `gh attestation verify <file> -R boyfromcave/ycash-infra` (GitHub build provenance, made by the
 workflow's `publish` job).
 
+### Check the owner's signature
+
+In plain words: the signature proves the release owner published this exact checksum file; the
+checksum file then vouches for every chunk.
+
+```bash
+minisign -Vm SHA256SUMS -P RWQYr5PFpiPJAigk86vf89bPYrJCXj5tskgRAPRYFsEXyciZo8dveOGQ    # SHA256SUMS.minisig beside it; or -p keys/ycash-release.pub
+sha256sum -c SHA256SUMS
+```
+
+`keys/ycash-release.pub` (key id `02C923A6C593AF18`, `keys/README.md`) is the owner's minisign key
+(T-6). The signature is added after the release is published, by the owner's signing workflow.
+
 ## The anchors
 
 The prefix is pinned to Zcash testnet by things outside this repository:

@@ -16,6 +16,14 @@ nameOverride: ""
 # yt.network): the chart is the testnet's, never mainnet's (plan §6.1).
 network: testnet
 
+# Which of the three testnets (workspace plan Revision 3, decision T-14): fast | slow | legacy. It is
+# written into ycash.conf as `testnetprofile=<p>` beside `testnet=1`, so ycashd and every ycash-cli
+# call (the probes) select the same network; its ports and prefix magic come with it from
+# values-yb-fast.yaml, values-yb-slow.yaml or values-legacy.yaml (one release per network, layered
+# over values-kind.yaml or values-eks.yaml). Empty = a node build from before the profiles, which
+# knows one testnet only.
+testnetProfile: ""
+
 images:
   # ycash6 (the release line): `make image-ycashd` on kind; the release image by digest on EKS (T-12)
   ycashd:       { repository: ycash/ycashd,        tag: local, digest: "", pullPolicy: IfNotPresent }

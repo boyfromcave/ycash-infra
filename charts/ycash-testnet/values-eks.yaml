@@ -38,4 +38,4 @@ verifierDd:
 externalSecrets:
   enabled: true
   storeRef: aws-secrets-manager
-  ycashdRpc: ycash/testnet/ycashd-rpc   # {rpcuser, rpcpassword}; not yet in infra/eks secrets.tf (K7)
+  ycashdRpc: ycash/testnet/ycashd-rpc   # {rpcuser, rpcpassword}; per network (values-<network>.yaml): infra/eks/module with networks

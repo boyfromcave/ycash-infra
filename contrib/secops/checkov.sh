@@ -3,7 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://www.opensource.org/licenses/mit-license.php .
 #
-# Checkov over everything this repository deploys: infra/eks (Terraform); the lightwallet chart rendered
+# Checkov over everything this repository deploys: infra/eks and infra/testnet-seeds (Terraform); the lightwallet chart rendered
 # for kind, for EKS and for the testnet (values-testnet.yaml over EKS); charts/ycash-testnet rendered for
 # kind and EKS; images/*/Dockerfile and bundles/*/Dockerfile. Policy: .checkov.yaml. Report only (exit 0
 # unless checkov itself fails); contrib/secops/checkov-gate.py decides what fails a PR.
@@ -47,7 +47,9 @@ fi
 # images/ and bundles/ (the prefix pack image); checkov ignores -f beside -d, so whole directories
 dockerfiles=(-d images)
 if [ -d bundles ]; then dockerfiles+=(-d bundles); fi
+terraform_dirs=(-d infra/eks)
+if [ -d infra/testnet-seeds ]; then terraform_dirs+=(-d infra/testnet-seeds); fi
 export BC_SKIP_MAPPING=TRUE   # no call to the Bridgecrew/Prisma API for guideline links
-checkov --config-file .checkov.yaml -d infra/eks -d "$out/rendered" "${dockerfiles[@]}" \
+checkov --config-file .checkov.yaml "${terraform_dirs[@]}" -d "$out/rendered" "${dockerfiles[@]}" \
   --soft-fail -o cli -o json -o sarif --output-file-path "$out" > "$out/checkov.txt"
 grep -E "scan results|Passed checks" "$out/results_cli.txt" || true

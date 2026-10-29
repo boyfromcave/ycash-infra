@@ -1,0 +1,32 @@
+# The light-wallet endpoint of testnet-yb-fast (workspace docs/plans/yellowback-testnet-plan.md, Revision
+# 3, T-20): one release per network, each in its own namespace on the one testnet cluster, layered
+# over values-eks.yaml and values-testnet.yaml:
+#
+#   helm upgrade --install lite charts/ycash-lightwallet -n yb-fast --create-namespace \
+#     -f charts/ycash-lightwallet/values-eks.yaml -f charts/ycash-lightwallet/values-testnet.yaml \
+#     -f charts/ycash-lightwallet/values-yb-fast.yaml --set images.ycashd.digest=sha256:… …
+#
+# In plain words: the same light-wallet backend, pointed at one of the three practice networks.
+# What differs between them is the profile, its ports, the public host name and the secrets.
+#
+# The profile reaches the node image's entrypoint as YCASHD_TESTNET_PROFILE (fast), which writes
+# testnetprofile=fast beside testnet=1 into ycash.conf, so the node and every ycash-cli call in the
+# probes pick the same network. The seeds' addresses (infra/testnet-seeds,
+# port 18833) are added at deploy as addnode= lines (ycashd.confExtra). The host is a placeholder: the
+# real one is the operator's, under the domain the cluster's external-dns may write (infra/eks/module
+# var.domain).
+ycashd:
+  rpc: { port: 18832 }
+  p2p: { port: 18833 }
+  extraArgs: "-dnsseed=0"
+  testnetProfile: fast
+gateway:
+  host: lite-fast.example.org
+lightwalletd:
+  yellowback: true
+# Yellowback is on here: lightwalletd-dd proxies YellowbackStreamer. The YED personas and this
+# network's attestor set (T-19) are not a chart workload yet (plan §6.2 `attestor`, K7). Its set
+# (T-5): 7 house seats (the founding set); the seat keys live in the cluster's secret store, never in a repository.
+externalSecrets:
+  ycashdRpc: ycash/testnet/yb-fast/ycashd-rpc             # infra/eks/module, networks = [..., "yb-fast"]
+  yindexPostgres: ycash/testnet/yb-fast/yindex-postgres   # {url} to this network's database, yindex_yb_fast

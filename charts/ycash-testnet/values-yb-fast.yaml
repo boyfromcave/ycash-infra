@@ -1,0 +1,15 @@
+# testnet-yb-fast (workspace docs/plans/yellowback-testnet-plan.md, Revision 3): one release per network,
+# layered over values-kind.yaml or values-eks.yaml, e.g.
+#   helm upgrade --install yb-fast charts/ycash-testnet -n yb-fast -f charts/ycash-testnet/values-eks.yaml -f charts/ycash-testnet/values-yb-fast.yaml
+# What differs between the three testnets is only this: the profile, its ports and its magic. On the
+# testnet cluster the seeds run on EC2 (infra/testnet-seeds, on the same ports): the deployment sets
+# seed.enabled=false and peers.addnode to them.
+testnetProfile: fast
+rpc: { port: 18832 }
+p2p: { port: 18833 }
+prefixRestore:
+  magic: f77962d3                # the prefix is shared (magic-neutral); framed with this network's magic
+seed:
+  p2pService: { nodePortBase: 31833 }   # kind (NodePort) only: 31833.. per seed, so the three releases fit one kind cluster
+externalSecrets:
+  ycashdRpc: ycash/testnet/yb-fast/ycashd-rpc   # infra/eks/module, networks = [..., "yb-fast"]: {rpcuser, rpcpassword}

@@ -1,4 +1,4 @@
-# ACME DNS-01 via Route53 with cert-manager's IRSA role (infra/eks main.tf cert_manager_irsa).
+# ACME DNS-01 via Route53 with cert-manager's IRSA role (infra/eks/module main.tf cert_manager_irsa).
 # DNS-01, not HTTP-01: the gateway serves gRPC on 443 only and has no port-80 listener for a
 # solver to answer on, the certificate can be issued before the NLB exists, and the zone is
 # already written by external-dns with the same kind of role. (HTTP-01 would need an HTTP

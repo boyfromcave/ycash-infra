@@ -57,7 +57,7 @@ resource "helm_release" "lb_controller" {
   }
   set {
     name  = "region"
-    value = var.region
+    value = local.region
   }
   set {
     name  = "vpcId"
@@ -193,7 +193,7 @@ resource "helm_release" "cluster_config" {
   }
   set {
     name  = "region"
-    value = var.region
+    value = local.region
   }
   set {
     name  = "hostedZoneId"

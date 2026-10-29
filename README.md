@@ -201,12 +201,14 @@ images/yindex/        Dockerfile for yindex
 images/web/           Dockerfile + nginx.conf for the yew/web bundle (K4)
 images/faucet/        the regtest faucet: faucet.py (JSON-RPC, the page, /params/), fetch-params.py (the init container)
 yindex/               Go: the address index (ingester, Postgres store, gRPC server for the three address methods)
-charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml, values-testnet.yaml (over values-eks.yaml)
-charts/ycash-testnet/       the testnet's network roles: ycash6 seeds, the ycash-dd verifier, the prefix restore; no keys; render-only until N1 (its README)
+charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml, values-testnet.yaml (over values-eks.yaml), values-{yb-fast,yb-slow,legacy}.yaml (one release per testnet)
+charts/ycash-testnet/       the testnet's network roles: ycash6 seeds, the ycash-dd verifier, the prefix restore; values-{yb-fast,yb-slow,legacy}.yaml; no keys; render-only until N1 (its README)
 kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host)
 scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), kind-personas.py (K0c), wait-for.sh
 load/                 ghz scenarios (plan K1)
-infra/eks/            Terraform: VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons (helm_release)
+infra/eks/            Terraform: module/ (VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons as helm_release; one namespace per network) and a thin example root
+infra/testnet-seeds/  Terraform: the seed hosts on EC2 + Elastic IPs (ips/, nodes/), every testnet on each host, seedctl (its README)
+keys/                 public keys only: ycash-release.pub, the owner's minisign key for release SHA256SUMS (its README)
 docs/eks-runbook.md   EKS: empty account → smoke green, cost, rollback, open decisions
 docs/try-it.md        the tester's guide to the demo kit (the wallet's screens, the walk, troubleshooting)
 docs/plans/           ycash-infra-plan.md (phases K0–K4, decisions, status)

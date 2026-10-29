@@ -1,0 +1,276 @@
+#!/bin/bash
+# seedctl: per-network operations on one seed host. Installed by setup.sh (first boot) and again
+# by the operator's deploy workflow before every run (so a new version needs no new instance).
+#
+# In plain words: one seed machine runs several Ycash networks side by side (for example the three
+# testnets), each in its own container, on its own port, with its own data folder. This script
+# starts, upgrades, wipes or reports on ONE of those networks without touching the others. The
+# deploy workflow runs it on every seed machine through AWS Systems Manager (no SSH).
+#
+# Commands (NET is a network key such as yb-fast; CONFIG is the base64 JSON the Terraform module
+# outputs for that network, `network_configs`; ALL is the base64 JSON of the whole map):
+#   seedctl apply NET CONFIG   deploy or upgrade NET to CONFIG; bootstraps an empty datadir from
+#                              the prefix (when CONFIG has one); waits until RPC answers
+#   seedctl reset NET CONFIG   stop NET, delete its chain, then apply (the prefix comes from the
+#                              host's verified cache, so a reset downloads nothing twice)
+#   seedctl stop NET           stop NET's container; its data stays
+#   seedctl sync ALL           apply every network in ALL, stop every applied network not in it
+#   seedctl status [NET]       one JSON line per network: container, image, chain, height, peers
+#   seedctl boot               start every applied network from its last applied config (a new
+#                              instance on an old data volume); systemd runs it at boot
+#   seedctl prefix-check       once a network holds the whole prefix, drop its -loadblock flags
+#                              and the framed copies (a systemd timer runs it every 10 minutes)
+#
+# Layout: /srv/ycash-data (the data volume) holds per network NET/node (the datadir, mounted at
+# /var/lib/ycash), NET/rpc.env (its RPC credential, made here, never leaves the host) and
+# NET/applied.json (the config it last applied), plus prefix-cache/ (the verified prefix, shared).
+# /opt/ycash-seed/net/NET holds the rendered compose file and environment (root disk, re-rendered).
+set -euo pipefail
+R=${SEEDCTL_ROOT:-}          # empty on a host; a scratch directory in the offline test (tests/seedctl.sh)
+D=$R/srv/ycash-data
+O=$R/opt/ycash-seed
+# shellcheck source=/dev/null
+. "$O/seed.env"              # SEED_NAME, EXTERNAL_IP
+UID_NODE=2001                # the image's user (contrib/docker/ycashd/Dockerfile: useradd --uid 2001)
+log() { echo "seedctl[$SEED_NAME]: $*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+retry() { local n=0; until "$@"; do n=$((n + 1)); [ "$n" -ge 20 ] && return 1; sleep 10; done; }
+
+valid_name() { [[ "$1" =~ ^[a-z][a-z0-9-]{0,15}$ ]] || die "bad network name: $1"; }
+
+# The config is checked again here (the module validates it too): every value lands in an env file
+# or a command line, so nothing may carry a quote, a newline or a shell character.
+check_config() { # file name
+  jq -e --arg n "$2" '
+    (.name == $n)
+    and (.network == "testnet" or .network == "mainnet")
+    and (.image | test("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$"))
+    and (.p2p_port | type == "number") and (.rpc_port | type == "number")
+    and (.node_args | test("^[A-Za-z0-9=:._ -]*$"))
+    and (.extra_args | test("^[A-Za-z0-9=:._,/ +-]*$"))
+    and (.dnsseed | type == "boolean")
+    and (.peers | all(test("^[0-9.]+:[0-9]+$")))
+    and (.prefix == null or (
+      (.prefix.base_url | test("^https://[A-Za-z0-9._~/%-]+$"))
+      and (.prefix.sums_sha256 | test("^[0-9a-f]{64}$"))
+      and (.prefix.magic | test("^[0-9a-f]{8}$"))
+      and (.prefix.last_height | type == "number")))
+  ' "$1" >/dev/null || die "config for $2 is not valid"
+}
+
+decode_to() { # base64 file
+  printf '%s' "$1" | base64 -d > "$2" 2>/dev/null || die "config is not base64"
+  jq -e . "$2" >/dev/null || die "config is not JSON"
+}
+
+cfg() { jq -r "$2" "$1"; }   # file filter
+
+cli() { # net args...: ycash-cli in the network's container, against its own RPC port
+  local net=$1; shift
+  local a; a=$(cfg "$D/$net/applied.json" .node_args 2>/dev/null || true)
+  # shellcheck disable=SC2086
+  docker exec "ycashd-$net" ycash-cli -datadir=/var/lib/ycash -conf=/var/lib/ycash/ycash.conf $a "$@"
+}
+
+# Write /opt/ycash-seed/net/NET/{node.env,compose.yaml} from a config file. The -loadblock flags
+# are added while a framed prefix waits to be imported.
+render() { # net file
+  local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1"
+  local p2p rpc args p lb=""
+  p2p=$(cfg "$f" .p2p_port); rpc=$(cfg "$f" .rpc_port)
+  args="-port=$p2p -externalip=$EXTERNAL_IP $(cfg "$f" .node_args)"
+  [ "$(cfg "$f" .dnsseed)" = true ] || args="$args -dnsseed=0"
+  for p in $(cfg "$f" '.peers[]'); do
+    [ "$p" = "$EXTERNAL_IP:$p2p" ] || args="$args -addnode=$p"
+  done
+  args="$args $(cfg "$f" .extra_args)"
+  if [ -e "$N/prefix/FRAMED" ] && [ ! -e "$N/prefix/IMPORTED" ]; then
+    for p in "$N"/prefix/load/*.dat; do
+      [ -e "$p" ] && lb="$lb -loadblock=/var/lib/ycash/prefix/load/${p##*/}"
+    done
+  fi
+  mkdir -p "$R"
+  cat > "$R/node.env" <<ENV
+YCASHD_NETWORK=$(cfg "$f" .network)
+YCASHD_TESTNET_PROFILE=$(cfg "$f" .profile)
+YCASHD_INSIGHT=0
+YCASHD_LISTEN=1
+YCASHD_RPC_BIND=127.0.0.1
+YCASHD_RPC_ALLOWIP=127.0.0.1
+YCASHD_RPC_PORT=$rpc
+YCASHD_RPC_THREADS=4
+YCASHD_RPC_WORKQUEUE=16
+YCASHD_EXTRA_ARGS=$(echo "$args$lb" | tr -s ' ' | sed 's/^ //;s/ $//')
+ENV
+  cat > "$R/compose.yaml" <<YAML
+name: ycash-$net
+services:
+  ycashd:
+    image: $(cfg "$f" .image)
+    container_name: ycashd-$net
+    restart: unless-stopped
+    network_mode: host
+    env_file: [$D/$net/rpc.env, $R/node.env]
+    volumes: ["$N:/var/lib/ycash"]
+    stop_grace_period: 180s
+    logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
+YAML
+}
+
+compose() { local net=$1; shift; docker compose -f "$O/net/$net/compose.yaml" "$@"; }
+
+# An empty datadir only: fetch and verify the prefix once per host into prefix-cache (the chart's
+# prefix-restore.sh: SHA256SUMS against the pin, every file against SHA256SUMS), then frame it with
+# this network's magic into NET/node/prefix/load (frame.py checks every block again).
+bootstrap() { # net file
+  local net=$1 f=$2 N="$D/$1/node" C="$D/prefix-cache" pin other x
+  [ "$(cfg "$f" .prefix)" != null ] || return 0
+  if [ -e "$N/prefix/IMPORTED" ] || [ -e "$N/prefix/FRAMED" ]; then return 0; fi
+  other=""
+  for x in "$N"/* "$N"/.[!.]*; do
+    [ -e "$x" ] || continue
+    [ "${x##*/}" = prefix ] || other="$other ${x##*/}"
+  done
+  if [ -n "$other" ]; then log "$net: datadir holds a chain:$other; no bootstrap"; return 0; fi
+  pin=$(cfg "$f" .prefix.sums_sha256)
+  if [ "$(cat "$C/PIN" 2>/dev/null || true)" != "$pin" ]; then
+    log "prefix cache: new pin $pin, fetching"
+    rm -rf "$C"; mkdir -p "$C/data"; echo "$pin" > "$C/PIN"
+  fi
+  if [ ! -e "$C/data/prefix/VERIFIED" ]; then
+    DATADIR="$C/data" PREFIX_BASE_URL=$(cfg "$f" .prefix.base_url) PREFIX_SUMS_SHA256="$pin" \
+      PREFIX_LAST_HEIGHT=$(cfg "$f" .prefix.last_height) retry sh "$O/prefix-restore.sh"
+    [ -e "$C/data/prefix/VERIFIED" ] || die "the prefix was refused (see above); $net not started"
+  fi
+  log "$net: framing the prefix with magic $(cfg "$f" .prefix.magic)"
+  rm -rf "$N/prefix"; mkdir -p "$N/prefix"
+  python3 -I "$O/frame.py" --prefix "$C/data/prefix" --out "$N/prefix/load" --magic "$(cfg "$f" .prefix.magic)"
+  cfg "$f" .prefix.last_height > "$N/prefix/LAST_HEIGHT"
+  touch "$N/prefix/FRAMED"
+}
+
+wait_rpc() { # net seconds
+  local i=0
+  while [ "$i" -lt "$2" ]; do
+    cli "$1" getblockcount >/dev/null 2>&1 && return 0
+    sleep 5; i=$((i + 5))
+  done
+  return 1
+}
+
+apply() { # net config-b64 | net - (the config is already in NET/desired.json)
+  local net=$1 N="$D/$1/node" tmp
+  valid_name "$net"
+  mkdir -p "$D/$net"
+  tmp="$D/$net/desired.json"
+  [ "$2" = - ] || decode_to "$2" "$tmp"
+  check_config "$tmp" "$net"
+  mkdir -p "$N"
+  if [ ! -s "$D/$net/rpc.env" ]; then
+    (umask 077; printf 'YCASHD_RPC_USER=seed\nYCASHD_RPC_PASSWORD=%s\n' "$(openssl rand -hex 24)" > "$D/$net/rpc.env")
+  fi
+  bootstrap "$net" "$tmp"
+  if [ "$(id -u)" = 0 ]; then chown -R "$UID_NODE:$UID_NODE" "$N"; fi
+  render "$net" "$tmp"
+  retry compose "$net" pull -q
+  compose "$net" up -d
+  mv "$tmp" "$D/$net/applied.json"
+  if wait_rpc "$net" 900; then
+    log "$net up: $(cfg "$D/$net/applied.json" .image), $EXTERNAL_IP:$(cfg "$D/$net/applied.json" .p2p_port)"
+  else
+    die "$net: RPC did not answer within 15 minutes (docker logs ycashd-$net)"
+  fi
+}
+
+reset() { # net config-b64
+  local net=$1
+  valid_name "$net"
+  log "$net: RESET: stopping and deleting its chain"
+  if [ -e "$O/net/$net/compose.yaml" ]; then compose "$net" down --timeout 180 || true; fi
+  docker rm -f "ycashd-$net" >/dev/null 2>&1 || true
+  rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json"
+  apply "$net" "$2"
+}
+
+stop() { # net
+  valid_name "$1"
+  if [ -e "$D/$1/applied.json" ] && [ ! -e "$O/net/$1/compose.yaml" ]; then render "$1" "$D/$1/applied.json"; fi
+  if [ -e "$O/net/$1/compose.yaml" ]; then compose "$1" down --timeout 180; fi
+  log "$1 stopped (data kept)"
+}
+
+applied_nets() { local f; for f in "$D"/*/applied.json; do [ -e "$f" ] && basename "$(dirname "$f")"; done; }
+
+sync_all() { # all-b64
+  local all net keep
+  all=$(printf '%s' "$1" | base64 -d) || die "ALL is not base64"
+  for net in $(jq -r 'keys[]' <<<"$all"); do
+    valid_name "$net"
+    mkdir -p "$D/$net"
+    jq --arg n "$net" '.[$n]' <<<"$all" > "$D/$net/desired.json"
+    apply "$net" -
+  done
+  for net in $(applied_nets); do
+    keep=$(jq -r --arg n "$net" 'has($n)' <<<"$all")
+    [ "$keep" = true ] || { log "$net is no longer configured: stopping it (data kept)"; stop "$net"; }
+  done
+}
+
+boot() {
+  local net
+  for net in $(applied_nets); do
+    render "$net" "$D/$net/applied.json"
+    compose "$net" up -d || log "$net: did not start"
+  done
+}
+
+status() { # [net]
+  local nets net st img info peers
+  nets=${1:-$(applied_nets)}
+  for net in $nets; do
+    valid_name "$net"
+    st=$(docker inspect -f '{{.State.Status}}' "ycashd-$net" 2>/dev/null || echo absent)
+    img=$(docker inspect -f '{{.Config.Image}}' "ycashd-$net" 2>/dev/null || echo -)
+    info=$(cli "$net" getblockchaininfo 2>/dev/null | jq -c '{chain, blocks, headers, progress: .verificationprogress}' || echo '{}')
+    peers=$(cli "$net" getpeerinfo 2>/dev/null | jq -c '{peers: length, inbound: (map(select(.inbound)) | length)}' || echo '{}')
+    jq -cn --arg host "$SEED_NAME" --arg ip "$EXTERNAL_IP" --arg net "$net" --arg st "$st" --arg img "$img" \
+      --argjson info "$info" --argjson peers "$peers" \
+      '{host: $host, ip: $ip, network: $net, container: $st, image: $img} + $info + $peers'
+  done
+}
+
+prefix_check() {
+  local net N h last
+  for net in $(applied_nets); do
+    N="$D/$net/node"
+    if [ ! -d "$N/prefix/load" ] || [ ! -e "$N/prefix/FRAMED" ]; then continue; fi
+    last=$(cat "$N/prefix/LAST_HEIGHT" 2>/dev/null || echo 0)
+    h=$(cli "$net" getblockcount 2>/dev/null) || continue
+    [ "$h" -ge "$last" ] || { log "$net: prefix import at $h of $last"; continue; }
+    touch "$N/prefix/IMPORTED"
+    render "$net" "$D/$net/applied.json"
+    compose "$net" up -d
+    rm -rf "$N/prefix/load"
+    log "$net: prefix imported (height $h); -loadblock retired"
+  done
+}
+
+cmd=${1:-}
+[ -n "$cmd" ] || { sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d'; exit 2; }
+shift
+# One change at a time per host: the timer, a boot and a workflow run never interleave.
+if [ "$cmd" != status ]; then
+  mkdir -p "$R/run"
+  exec 9>"$R/run/ycash-seedctl.lock"
+  if [ "$cmd" = prefix-check ]; then flock -n 9 || exit 0; else flock -w 3600 9; fi
+fi
+case "$cmd" in
+  apply)        [ $# -eq 2 ] || die "usage: seedctl apply NET CONFIG"; apply "$1" "$2" ;;
+  reset)        [ $# -eq 2 ] || die "usage: seedctl reset NET CONFIG"; reset "$1" "$2" ;;
+  stop)         [ $# -eq 1 ] || die "usage: seedctl stop NET"; stop "$1" ;;
+  sync)         [ $# -eq 1 ] || die "usage: seedctl sync ALL"; sync_all "$1" ;;
+  status)       status "${1:-}" ;;
+  boot)         boot ;;
+  prefix-check) prefix_check ;;
+  *)            die "unknown command $cmd" ;;
+esac

@@ -30,7 +30,9 @@ jobs:
       - run: make zcash-params-test
       - run: cd yindex && go vet ./... && go test ./... && go build ./...
   eks:
-    # offline: terraform fmt/validate for infra/eks and the chart's EKS values through kubeconform with the CRD schemas
+    # offline: terraform fmt/validate for infra/eks (the example root and the module), the module's terraform test
+    # (mocked providers), the chart's EKS values through kubeconform with the CRD schemas; infra/testnet-seeds (ips,
+    # nodes): fmt/validate, terraform test, shellcheck, the seedctl test. No AWS credentials, no plan: deploys run elsewhere.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -48,6 +50,7 @@ jobs:
           cache: false
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
       - run: make eks-validate
+      - run: make seeds-validate
   yindex-image:
     runs-on: ubuntu-latest
     timeout-minutes: 20
