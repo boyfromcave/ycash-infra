@@ -66,6 +66,8 @@ module "eks" {
       max_size       = var.node_max
       desired_size   = var.node_desired
       disk_size      = 100
+      # the node role is named after the cluster, so a deploy role can be scoped to <name>-*
+      iam_role_name = "${var.name}-nodes"
     }
   }
 }
@@ -79,6 +81,7 @@ module "ebs_csi_irsa" {
   source = "git::https://github.com/terraform-aws-modules/terraform-aws-iam.git//modules/iam-role-for-service-accounts-eks?ref=c29ec1ed409683086f63f83ff5b10a6f3c296ef2" # v5.60.0
 
   role_name             = "${var.name}-ebs-csi"
+  policy_name_prefix    = "${var.name}-"
   attach_ebs_csi_policy = true
   oidc_providers        = { main = { provider_arn = module.eks.oidc_provider_arn, namespace_service_accounts = ["kube-system:ebs-csi-controller-sa"] } }
 }
@@ -87,6 +90,7 @@ module "lb_controller_irsa" {
   source = "git::https://github.com/terraform-aws-modules/terraform-aws-iam.git//modules/iam-role-for-service-accounts-eks?ref=c29ec1ed409683086f63f83ff5b10a6f3c296ef2" # v5.60.0
 
   role_name                              = "${var.name}-lb-controller"
+  policy_name_prefix                     = "${var.name}-"
   attach_load_balancer_controller_policy = true
   oidc_providers                         = { main = { provider_arn = module.eks.oidc_provider_arn, namespace_service_accounts = ["kube-system:aws-load-balancer-controller"] } }
 }
@@ -95,6 +99,7 @@ module "external_secrets_irsa" {
   source = "git::https://github.com/terraform-aws-modules/terraform-aws-iam.git//modules/iam-role-for-service-accounts-eks?ref=c29ec1ed409683086f63f83ff5b10a6f3c296ef2" # v5.60.0
 
   role_name                             = "${var.name}-external-secrets"
+  policy_name_prefix                    = "${var.name}-"
   attach_external_secrets_policy        = true
   external_secrets_secrets_manager_arns = ["arn:${local.partition}:secretsmanager:${local.region}:${data.aws_caller_identity.current.account_id}:secret:${var.secrets_prefix}/*"]
   oidc_providers                        = { main = { provider_arn = module.eks.oidc_provider_arn, namespace_service_accounts = ["external-secrets:external-secrets"] } }
@@ -104,6 +109,7 @@ module "external_dns_irsa" {
   source = "git::https://github.com/terraform-aws-modules/terraform-aws-iam.git//modules/iam-role-for-service-accounts-eks?ref=c29ec1ed409683086f63f83ff5b10a6f3c296ef2" # v5.60.0
 
   role_name                     = "${var.name}-external-dns"
+  policy_name_prefix            = "${var.name}-"
   attach_external_dns_policy    = true
   external_dns_hosted_zone_arns = [local.hosted_zone_arn]
   oidc_providers                = { main = { provider_arn = module.eks.oidc_provider_arn, namespace_service_accounts = ["external-dns:external-dns"] } }
@@ -114,6 +120,7 @@ module "cert_manager_irsa" {
   source = "git::https://github.com/terraform-aws-modules/terraform-aws-iam.git//modules/iam-role-for-service-accounts-eks?ref=c29ec1ed409683086f63f83ff5b10a6f3c296ef2" # v5.60.0
 
   role_name                     = "${var.name}-cert-manager"
+  policy_name_prefix            = "${var.name}-"
   attach_cert_manager_policy    = true
   cert_manager_hosted_zone_arns = [local.hosted_zone_arn]
   oidc_providers                = { main = { provider_arn = module.eks.oidc_provider_arn, namespace_service_accounts = ["cert-manager:cert-manager"] } }
