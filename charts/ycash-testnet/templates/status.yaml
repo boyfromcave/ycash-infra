@@ -1,0 +1,190 @@
+{{- $root := . }}
+{{- $fn := include "yt.fullname" . }}
+{{- $net := include "yt.networkName" . }}
+{{- if .Values.probe.enabled }}
+{{- $p := .Values.probe }}
+{{- $nodes := list }}
+{{- range $key := list "seed" "verifierDd" }}
+{{- $r := index $root.Values $key }}
+{{- if $r.enabled }}
+{{- $role := include "yt.roleName" $key }}
+{{- range $i := until (int $r.replicas) }}
+{{- $nodes = append $nodes (dict "name" (printf "%s-%s-%d" $fn $role $i) "line" (ternary "ycash-dd" "ycash6" (eq $key "verifierDd")) "url" (printf "http://%s-%s-%d.%s-%s-headless.%s.svc.cluster.local:%d/" $fn $role $i $fn $role $root.Release.Namespace (int $root.Values.rpc.port))) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- with $p.lightwallet.release }}
+{{- range $i := until (int $p.lightwallet.replicas) }}
+{{- $nodes = append $nodes (dict "name" (printf "%s-ycashd-%d" $p.lightwallet.release $i) "line" "ycash6" "url" (printf "http://%s-ycashd-%d.%s-ycashd-headless.%s.svc.cluster.local:%d/" $p.lightwallet.release $i $p.lightwallet.release $root.Release.Namespace (int $root.Values.rpc.port))) }}
+{{- end }}
+{{- end }}
+{{- range $p.extraNodes }}{{ $nodes = append $nodes . }}{{ end }}
+{{- $seeds := $p.seeds }}
+{{- if and (not $seeds) .Values.seed.enabled }}
+{{- range $i := until (int .Values.seed.replicas) }}
+{{- $seeds = append $seeds (printf "%s-seed-%d.%s-seed-headless.%s.svc.cluster.local:%d" $fn $i $fn $root.Release.Namespace (int $root.Values.p2p.port)) }}
+{{- end }}
+{{- end }}
+# The probe (images/testnet-status probe.py; plan §6.4): this network's nodes over RPC, its seeds over
+# P2P, the latest bundle's manifest; /metrics for the alerts, /status.json for the status page.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-probe
+  labels: {{- include "yt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: probe }
+  template:
+    metadata:
+      labels: {{- include "yt.labels" . | nindent 8 }}
+        app.kubernetes.io/component: probe
+    spec:
+      automountServiceAccountToken: false
+      {{- include "yt.serviceSecurity" . | nindent 6 }}
+      containers:
+        - name: probe
+          image: {{ include "yt.image" (dict "image" .Values.images.status "key" "status") }}
+          imagePullPolicy: {{ .Values.images.status.pullPolicy }}
+          args: [/app/probe.py]
+          {{- include "yt.containerSecurity" . | nindent 10 }}
+          env:
+            - { name: NETWORK_NAME, value: {{ $net | quote }} }
+            - { name: PROFILE, value: {{ include "yt.profile" . | quote }} }
+            - { name: NODES, value: {{ toJson $nodes | quote }} }
+            - { name: SEEDS, value: {{ join " " $seeds | quote }} }
+            - { name: MAGIC, value: {{ .Values.prefixRestore.magic | quote }} }
+            - { name: BUNDLE_MANIFEST_URL, value: {{ $p.bundleManifestUrl | quote }} }
+            - { name: INTERVAL, value: {{ $p.interval | quote }} }
+            - { name: PORT, value: "9100" }
+            - name: RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yt.rpcSecret" . }}, key: rpcuser } }
+            - name: RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yt.rpcSecret" . }}, key: rpcpassword } }
+          ports: [{ name: http, containerPort: 9100 }]
+          readinessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 15 }
+          livenessProbe: { tcpSocket: { port: http }, periodSeconds: 30 }
+          resources: {{- toYaml $p.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-probe
+  labels: {{- include "yt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: probe
+spec:
+  selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: probe }
+  ports: [{ name: http, port: 9100, targetPort: http }]
+{{- if .Values.networkPolicy.enabled }}
+---
+# The probe names the nodes and holds the RPC credential: /metrics and /status.json only to the
+# status page and to networkPolicy.metricsFrom (Prometheus).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fn }}-probe
+  labels: {{- include "yt.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: probe }
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{ protocol: TCP, port: 9100 }]
+      from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: status }
+        {{- with .Values.networkPolicy.metricsFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.status.enabled }}
+{{- if not .Values.probe.enabled }}{{ fail "status.enabled needs probe.enabled (the page shows the probe's summary)" }}{{ end }}
+{{- $s := .Values.status }}
+---
+# The public status page (images/testnet-status status.py; plan §6.2 `status`): no secret, no node
+# access; the probe's summary, the release and the notices (templates/status-notices.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-status
+  labels: {{- include "yt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: status
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: status }
+  template:
+    metadata:
+      labels: {{- include "yt.labels" . | nindent 8 }}
+        app.kubernetes.io/component: status
+      annotations:
+        checksum/notices: {{ include (print $root.Template.BasePath "/status-notices.yaml") $root | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      {{- include "yt.serviceSecurity" . | nindent 6 }}
+      containers:
+        - name: status
+          image: {{ include "yt.image" (dict "image" .Values.images.status "key" "status") }}
+          imagePullPolicy: {{ .Values.images.status.pullPolicy }}
+          args: [/app/status.py]
+          {{- include "yt.containerSecurity" . | nindent 10 }}
+          env:
+            - { name: PROBE_URL, value: "http://{{ $fn }}-probe:9100/status.json" }
+            - { name: NOTICES_FILE, value: /etc/status/notices.json }
+            - { name: RELEASE, value: {{ $s.release | quote }} }
+            - { name: PORT, value: "8080" }
+          ports: [{ name: http, containerPort: 8080 }]
+          volumeMounts: [{ name: notices, mountPath: /etc/status, readOnly: true }]
+          readinessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 15 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 30 }
+          resources: {{- toYaml $s.resources | nindent 12 }}
+      volumes:
+        - name: notices
+          configMap: { name: {{ $fn }}-status-notices }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-status
+  labels: {{- include "yt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: status
+spec:
+  selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: status }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fn }}-status
+  labels: {{- include "yt.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: status }
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{ protocol: TCP, port: 8080 }]
+{{- end }}
+{{- if $s.route.enabled }}
+---
+# The status host on the lightwallet release's Gateway (charts/ycash-lightwallet gateway.extraListeners
+# name "status"); the page's paths only.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fn }}-status
+  labels: {{- include "yt.labels" . | nindent 4 }}
+spec:
+  parentRefs: [{ name: {{ $s.route.gateway }}, sectionName: {{ $s.route.sectionName }} }]
+  hostnames: [{{ $s.route.host | quote }}]
+  rules:
+    - matches:
+        {{- range list "/" "/index.html" "/status.js" "/status.json" }}
+        - path: { type: Exact, value: {{ . }} }
+        {{- end }}
+      backendRefs: [{ name: {{ $fn }}-status, port: 8080 }]
+{{- end }}
+{{- end }}

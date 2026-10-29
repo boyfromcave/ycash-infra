@@ -1,0 +1,178 @@
+{{- if .Values.faucet.enabled }}
+{{- include "yt.keys" (dict "root" . "what" "the faucet (its wallet node spends a testnet wallet)") }}
+{{- $fn := include "yt.fullname" . }}
+{{- $f := .Values.faucet }}
+{{- $profile := include "yt.profile" . }}
+{{- if not $f.wallet.existingSecret }}{{ fail "faucet.wallet.existingSecret: the Secret with the faucet wallet's recovery phrase" }}{{ end }}
+# The testnet faucet (images/faucet, FAUCET_MODE=testnet; plan §6.2 `faucet`): pays a fixed amount of
+# testnet YEC from the Sapling address of its wallet node (<release>-faucet-node, templates/node.yaml),
+# rate-limited per IP and per address with a daily cap. It speaks JSON-RPC to the wallet node only.
+{{- if $f.params.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fn }}-faucet-params
+  labels: {{- include "yt.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with $f.params.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources: { requests: { storage: {{ $f.params.size }} } }
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-faucet
+  labels: {{- include "yt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: faucet
+spec:
+  replicas: 1                     # the limits are in memory: one replica keeps one view of them
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: faucet }
+  template:
+    metadata:
+      labels: {{- include "yt.labels" . | nindent 8 }}
+        app.kubernetes.io/component: faucet
+    spec:
+      automountServiceAccountToken: false
+      {{- include "yt.serviceSecurity" . | nindent 6 }}
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        {{- if $f.params.enabled }}
+        - name: params
+          persistentVolumeClaim: { claimName: {{ $fn }}-faucet-params }
+        {{- end }}
+      {{- if $f.params.enabled }}
+      initContainers:
+        - name: fetch-params
+          image: {{ include "yt.image" (dict "image" .Values.images.faucet "key" "faucet") }}
+          imagePullPolicy: {{ .Values.images.faucet.pullPolicy }}
+          {{- include "yt.containerSecurity" . | nindent 10 }}
+          resources: {{- toYaml $f.resources | nindent 12 }}
+          command: [python3, -I, /app/fetch-params.py]
+          env:
+            - { name: PARAMS_DIR, value: /params }
+            - { name: PARAMS_URL, value: {{ $f.params.url | quote }} }
+          volumeMounts: [{ name: params, mountPath: /params }, { name: tmp, mountPath: /tmp }]
+      {{- end }}
+      containers:
+        - name: faucet
+          image: {{ include "yt.image" (dict "image" .Values.images.faucet "key" "faucet") }}
+          imagePullPolicy: {{ .Values.images.faucet.pullPolicy }}
+          {{- include "yt.containerSecurity" . | nindent 10 }}
+          env:
+            - { name: FAUCET_MODE, value: testnet }
+            - { name: NETWORK_NAME, value: {{ include "yt.networkName" . | quote }} }
+            {{- with $profile }}
+            - { name: FAUCET_PROFILE, value: {{ . | quote }} }
+            {{- end }}
+            - { name: RPC_URL, value: {{ include "yt.rpcUrl" (dict "root" . "role" "faucet-node") | quote }} }
+            - name: RPC_USER
+              valueFrom: { secretKeyRef: { name: {{ include "yt.rpcSecret" . }}, key: rpcuser } }
+            - name: RPC_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "yt.rpcSecret" . }}, key: rpcpassword } }
+            - { name: AMOUNT_ZAT, value: {{ int64 $f.amountZat | quote }} }
+            - { name: PER_IP_LIMIT, value: {{ $f.perIp.limit | quote }} }
+            - { name: PER_IP_WINDOW, value: {{ $f.perIp.windowSeconds | quote }} }
+            - { name: PER_ADDR_LIMIT, value: {{ $f.perAddress.limit | quote }} }
+            - { name: PER_ADDR_WINDOW, value: {{ $f.perAddress.windowSeconds | quote }} }
+            - { name: DAILY_CAP_ZAT, value: {{ int64 $f.dailyCapZat | quote }} }
+            - { name: POW_BITS, value: {{ $f.powBits | quote }} }
+            - { name: RATE_SECONDS, value: {{ $f.rateSeconds | quote }} }
+            - { name: TRUSTED_PROXY_HOPS, value: {{ $f.trustedProxyHops | quote }} }
+            - { name: FAUCET_FROM, value: {{ $f.wallet.from | quote }} }
+            - { name: PARAMS_ENABLED, value: {{ ternary "1" "0" $f.params.enabled | quote }} }
+            - { name: PARAMS_DIR, value: /params }
+          ports: [{ name: http, containerPort: 8080 }]
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            {{- if $f.params.enabled }}
+            - { name: params, mountPath: /params, readOnly: true }
+            {{- end }}
+          readinessProbe: { httpGet: { path: /info, port: http }, periodSeconds: 15, timeoutSeconds: 10 }
+          # liveness only checks the server answers: /info also asks the node
+          livenessProbe: { tcpSocket: { port: http }, periodSeconds: 30 }
+          resources: {{- toYaml $f.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-faucet
+  labels: {{- include "yt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: faucet
+spec:
+  selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: faucet }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+{{- if .Values.networkPolicy.enabled }}
+---
+# The wallet node: RPC from the faucet pod only; no inbound P2P (it runs -listen=0 and dials out).
+# Every other node pod is under <release>-nodes (templates/networkpolicy.yaml), which this one is not.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fn }}-faucet-node
+  labels: {{- include "yt.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: faucet-node }
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{ protocol: TCP, port: {{ .Values.rpc.port }} }]
+      from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: faucet }
+---
+# The faucet: its page and /send from anywhere (the gateway's proxies run in their own namespace);
+# what is public is decided by the route, which passes the page's paths only (not /metrics).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fn }}-faucet
+  labels: {{- include "yt.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: faucet }
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{ protocol: TCP, port: 8080 }]
+{{- end }}
+{{- if $f.route.enabled }}
+---
+# The faucet's own host on the lightwallet release's Gateway (a listener for faucet.route.host:
+# charts/ycash-lightwallet gateway.extraListeners). Exact paths only: /metrics stays inside.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fn }}-faucet
+  labels: {{- include "yt.labels" . | nindent 4 }}
+spec:
+  parentRefs: [{ name: {{ $f.route.gateway }}, sectionName: {{ $f.route.sectionName }} }]
+  hostnames: [{{ $f.route.host | quote }}]
+  rules:
+    - matches:
+        {{- range list "/" "/index.html" "/testnet.js" "/info" "/challenge" "/send" }}
+        - path: { type: Exact, value: {{ . }} }
+        {{- end }}
+        {{- if $f.params.enabled }}
+        - path: { type: PathPrefix, value: /params/ }
+        {{- end }}
+      backendRefs: [{ name: {{ $fn }}-faucet, port: 8080 }]
+      timeouts: { request: 600s }    # a payment may shield new funds first and wait for a block
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ $fn }}-faucet
+  labels: {{- include "yt.labels" . | nindent 4 }}
+spec:
+  targetRef: { group: gateway.networking.k8s.io, kind: HTTPRoute, name: {{ $fn }}-faucet }
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - limit: { requests: {{ $f.route.requestsPerSecond }}, unit: Second }
+{{- end }}
+{{- end }}

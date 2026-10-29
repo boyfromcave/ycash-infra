@@ -1,0 +1,12 @@
+{{- if .Values.snapshotter.enabled }}
+# The snapshotter's steps (templates/snapshotter.yaml; bundles/state/FORMAT.md), apart from the nodes'
+# scripts so that a change here does not restart the nodes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yt.fullname" . }}-snapshot-scripts
+  labels: {{- include "yt.labels" . | nindent 4 }}
+data:
+  snapshot.sh: |
+    {{- .Files.Get "files/snapshot.sh" | nindent 4 }}
+{{- end }}

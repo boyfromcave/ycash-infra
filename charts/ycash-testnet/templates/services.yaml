@@ -1,14 +1,15 @@
 {{- $root := . -}}
 {{- $_ := include "yt.network" . -}}
 {{- $fn := include "yt.fullname" . -}}
-{{- range $key := list "seed" "verifierDd" }}
-{{- $r := index $root.Values $key }}
+{{- range $entry := include "yt.roles" $root | fromJsonArray }}
+{{- $key := index $entry 0 }}
+{{- $r := index $entry 1 }}
 {{- if $r.enabled }}
 {{- $role := include "yt.roleName" $key }}
 {{- $name := printf "%s-%s" $fn $role }}
 ---
 # RPC, cluster-internal only (ClusterIP; NetworkPolicy limits who reaches it): the ready nodes of
-# this role, for in-cluster tools (monitoring, the bundle verifier jobs once they exist).
+# this role, for in-cluster tools (the probe, the snapshotter, the faucet for its wallet node).
 apiVersion: v1
 kind: Service
 metadata:
@@ -39,7 +40,8 @@ spec:
   ports:
     - { name: p2p, port: {{ $root.Values.p2p.port }}, targetPort: p2p }
 {{- $svc := $r.p2pService }}
-{{- range $i := until (int $r.replicas) }}
+{{- /* the faucet's wallet node takes no inbound P2P: no per-pod P2P Service */ -}}
+{{- range $i := until (ternary 0 (int $r.replicas) (default false $r.wallet)) }}
 ---
 # P2P for pod {{ $name }}-{{ $i }} alone: a stable address per node (plan §6.2)
 apiVersion: v1

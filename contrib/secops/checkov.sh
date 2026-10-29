@@ -12,7 +12,7 @@
 # (the PR gate runs this script on the base too) is skipped.
 # Usage: contrib/secops/checkov.sh OUTDIR    (needs checkov and helm on PATH; run from anywhere)
 #   -> OUTDIR/results_json.json, OUTDIR/results_sarif.sarif,
-#      OUTDIR/rendered/{kind,eks,lightwallet-testnet,testnet-kind,testnet-eks}.yaml
+#      OUTDIR/rendered/{kind,eks,lightwallet-testnet,testnet-kind,testnet-eks,testnet-services-kind,testnet-services-eks}.yaml
 set -euo pipefail
 out=$(realpath -m "${1:?usage: checkov.sh OUTDIR}")
 cd "$(dirname "$0")/../.."
@@ -43,6 +43,16 @@ if [ -d $TESTNET ]; then
     --set "prefixRestore.sha256sums=${PLACEHOLDER#sha256:}" \
     --set images.prefixFrame.repository=ghcr.io/example/prefix-frame --set "images.prefixFrame.digest=$PLACEHOLDER" \
     > "$out/rendered/testnet-eks.yaml"
+  # every testnet service on (the faucet and its wallet node, the probe, the status page, the snapshotter
+  # with both publish steps, the alerts), for testnet-yb-fast over kind and EKS; placeholders throughout
+  if [ -f $TESTNET/ci/services-values.yaml ]; then
+    helm template t $TESTNET -f $TESTNET/values-kind.yaml -f $TESTNET/values-yb-fast.yaml \
+      -f $TESTNET/ci/services-values.yaml > "$out/rendered/testnet-services-kind.yaml"
+    helm template t $TESTNET -f $TESTNET/values-eks.yaml -f $TESTNET/values-yb-fast.yaml -f $TESTNET/ci/services-values.yaml \
+      --set "images.ycashd.digest=$PLACEHOLDER" --set "images.ycashdLegacy.digest=$PLACEHOLDER" \
+      --set "images.faucet.digest=$PLACEHOLDER" --set "images.status.digest=$PLACEHOLDER" \
+      > "$out/rendered/testnet-services-eks.yaml"
+  fi
 fi
 # images/ and bundles/ (the prefix pack image); checkov ignores -f beside -d, so whole directories
 dockerfiles=(-d images)

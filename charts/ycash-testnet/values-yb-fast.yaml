@@ -13,3 +13,11 @@ seed:
   p2pService: { nodePortBase: 31833 }   # kind (NodePort) only: 31833.. per seed, so the three releases fit one kind cluster
 externalSecrets:
   ycashdRpc: ycash/testnet/yb-fast/ycashd-rpc   # infra/eks/module, networks = [..., "yb-fast"]: {rpcuser, rpcpassword}
+# The services (plan §6.2, T-19), off on EKS until the deployment turns them on (README "The services"):
+# the hosts are placeholders (T-3); the lightwallet release's gateway needs listeners for them
+# (charts/ycash-lightwallet gateway.extraListeners, faucet and status).
+faucet:
+  wallet: { remoteKey: ycash/testnet/yb-fast/faucet-wallet }   # {mnemonic}, created by hand in the secret store (never by Terraform)
+  route: { host: faucet-fast.example.org }
+status:
+  route: { host: status-fast.example.org }
