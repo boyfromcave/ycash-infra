@@ -52,8 +52,29 @@ spec:
           {{- else }}
           preferredDuringSchedulingIgnoredDuringExecution: {{- list (dict "weight" 100 "podAffinityTerm" $term) | toYaml | nindent 12 }}
           {{- end }}
-      {{- if $pr.enabled }}
+      {{- if or $pr.enabled $r.zcashParams.enabled }}
       initContainers:
+      {{- end }}
+      {{- if $r.zcashParams.enabled }}
+        # zcash-params: the three parameter files ycash-dd needs at start, from zcashParams.url, each
+        # checked against the chart's SHA256SUMS; refuses on a mismatch (files/zcash-params.sh)
+        - name: zcash-params
+          image: {{ include "yt.image" (dict "image" $img "key" $r.image) }}
+          imagePullPolicy: {{ $img.pullPolicy }}
+          command: [sh, /opt/ycash/zcash-params.sh]
+          env:
+            - { name: ZCASH_PARAMS_URL, value: {{ required "zcashParams.url is required when a role has zcashParams.enabled" $root.Values.zcashParams.url | quote }} }
+            - { name: ZCASH_PARAMS_SUMS, value: /opt/ycash/zcash-params.SHA256SUMS }
+            - { name: PARAMS_DIR, value: /srv/ycash/.zcash-params }
+          {{- include "yt.containerSecurity" $root | nindent 10 }}
+          volumeMounts:
+            - { name: scripts, mountPath: /opt/ycash, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            - { name: home, mountPath: /srv/ycash }
+            - { name: params, mountPath: /srv/ycash/.zcash-params }
+          resources: {{- toYaml $root.Values.zcashParams.resources | nindent 12 }}
+      {{- end }}
+      {{- if $pr.enabled }}
         # prefix-fetch: SHA256SUMS against the pinned sha256, every file against SHA256SUMS, the
         # manifest's format/network/heights; an empty datadir only (files/prefix-restore.sh)
         - name: prefix-fetch

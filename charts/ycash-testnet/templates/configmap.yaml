@@ -15,3 +15,9 @@ data:
   # the prefix-fetch init container (prefixRestore in values.yaml)
   prefix-restore.sh: |
     {{- .Files.Get "files/prefix-restore.sh" | nindent 4 }}
+  # the zcash-params init container (zcashParams in values.yaml; ycash-dd only) and the sums it
+  # checks: a copy of bundles/zcash-params/SHA256SUMS (bundles/zcash-params/tests asserts they match)
+  zcash-params.sh: |
+    {{- .Files.Get "files/zcash-params.sh" | nindent 4 }}
+  zcash-params.SHA256SUMS: |
+    {{- .Files.Get "files/zcash-params.SHA256SUMS" | nindent 4 }}
