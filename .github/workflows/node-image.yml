@@ -94,10 +94,15 @@ jobs:
           provenance: false
           tags: ${{ steps.meta.outputs.tag }}
           # the package is linked to this repository (the builder); the node source is in the labels
+          # The package page on GitHub shows the description; documentation links to the image's own
+          # README (the page otherwise shows only this repository's README).
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ inputs.ref }}
             org.opencontainers.image.title=ycashd (${{ inputs.line }})
+            org.opencontainers.image.description=The Ycash full node (ycashd) for the Ycash testnets (testnet-yb-fast, testnet-yb-slow, testnet-legacy). A development build, not a release; Yellowback is not active on mainnet in it.
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/upgrade/vault/images/ycashd/README.md
+            org.opencontainers.image.licenses=MIT
             org.ycash.node.repository=https://github.com/${{ steps.meta.outputs.repo }}
             org.ycash.node.revision=${{ inputs.ref }}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

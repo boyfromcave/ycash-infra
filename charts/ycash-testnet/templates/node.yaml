@@ -126,6 +126,9 @@ spec:
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - { name: YCASHD_NETWORK, value: {{ $net | quote }} }
+            {{- with $profile }}
+            - { name: YCASHD_TESTNET_PROFILE, value: {{ . | quote }} }
+            {{- end }}
             - { name: YCASHD_RPC_PORT, value: {{ $root.Values.rpc.port | quote }} }
             - { name: YCASHD_RPC_THREADS, value: {{ $root.Values.rpc.threads | quote }} }
             - { name: YCASHD_RPC_WORKQUEUE, value: {{ $root.Values.rpc.workqueue | quote }} }
@@ -136,7 +139,6 @@ spec:
             {{- with $r.extraArgs }}{{ $args = append $args . }}{{ end }}
             - { name: YCASHD_EXTRA_ARGS, value: {{ join " " $args | quote }} }
             {{- $conf := list }}
-            {{- with $profile }}{{ $conf = append $conf (printf "testnetprofile=%s" .) }}{{ end }}
             {{- range $root.Values.peers.addnode }}{{ $conf = append $conf (printf "addnode=%s" .) }}{{ end }}
             {{- with $r.confExtra }}{{ $conf = append $conf . }}{{ end }}
             - { name: YCASHD_CONF_EXTRA, value: {{ join "\n" $conf | quote }} }
