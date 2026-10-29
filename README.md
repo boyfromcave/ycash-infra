@@ -13,6 +13,40 @@ Design and decisions: [docs/plans/ycash-infra-plan.md](docs/plans/ycash-infra-pl
 `ideation/web-wallet`). Working rules: [AGENTS.md](AGENTS.md). Part of
 [Ycash vaults and Yellowback](https://github.com/boyfromcave/yellowback).
 
+## In plain words
+
+This repository holds the recipes for running Ycash's public services: the light-wallet backend
+(the servers a phone or browser wallet talks to), the three Ycash **testnets** that rehearse the
+Ycash Yellowback (YED) vault upgrade, and the build of the Ycash node's container image. Everything
+here is generic: no account, domain or key that identifies an operator is in it. An operator's own
+settings live in a separate, private deployment repository that uses these recipes.
+
+| What | Where | For whom |
+|---|---|---|
+| The Ycash node container image, `ghcr.io/boyfromcave/ycashd` | [images/ycashd/README.md](images/ycashd/README.md) (what it is, how to run and verify it), built by `node-image` | anyone running a testnet node |
+| The three testnets: testnet-yb-fast, testnet-yb-slow, testnet-legacy | [The testnets](#the-testnets) below | testers, operators |
+| The light-wallet backend on Kubernetes (kind on a laptop, EKS on AWS) | [Quick start (kind)](#quick-start-kind), [Promotion to AWS (EKS)](#promotion-to-aws-eks) | developers, operators |
+| Published bundles: the Zcash testnet history (`testnet-prefix-v1`) and the Zcash parameters (`zcash-params-v1`) | [Releases](https://github.com/boyfromcave/ycash-infra/releases), `bundles/` | node operators |
+| The owner's public signing key for release checksums | [keys/README.md](keys/README.md) | anyone verifying a download |
+
+## The testnets
+
+Three practice networks with worthless coins, all built from Zcash's testnet history up to block
+510,247 (harvested and published reproducibly by `testnet-prefix.yml`) and split at block 510,248,
+where Ycash itself forked:
+
+| Testnet | Rehearses | Node flag | P2P / RPC ports |
+|---|---|---|---|
+| testnet-yb-fast | Yellowback with its waiting periods shortened (set and bond maturity 48 blocks) | `-testnet -testnetprofile=fast` | 18833 / 18832 |
+| testnet-yb-slow | Yellowback with mainnet's values; the activation itself is rehearsed live | `-testnet -testnetprofile=slow` | 18933 / 18932 |
+| testnet-legacy | today's Ycash rules, no upgrade: the control network | `-testnet -testnetprofile=legacy` | 19033 / 19032 |
+
+- **Seed nodes** (always on, fixed addresses): `infra/testnet-seeds`, Terraform for EC2 + Elastic
+  IPs. Each host serves all three networks; deploy, upgrade, reset and status per network.
+- **Services** (light-wallet backend per network, on demand): `infra/eks/module` plus
+  `charts/ycash-lightwallet` and `charts/ycash-testnet`, one namespace per network.
+- **The plan:** workspace `docs/plans/yellowback-testnet-plan.md`.
+
 ## Node line: `upgrade/vault`, post-quantum
 
 The `ycashd` image is built from the workspace's `ycash6` tree as checked out, which is
@@ -100,8 +134,8 @@ parameters assume exactly that chain) and Falcon admitted from it (`-pqfalcon=1`
 miner Deployment that keeps mining one block every few seconds, and (`regtest.armYellowback`)
 the arming Job: the devnet's `up` recipe for one node — `set_create` the YED attestor set from
 the node's wallet (OPEN, 15 seats, maturity = the YED module's `BOND_MATURITY`: 8 on regtest,
-16,128 on mainnet/testnet — the post-quantum line refuses a set below 2 / 16,128, D-Q-31, and the
-module adopts only that value; `regtest.attestorSet.maturity` overrides and the render fails on
+48 on testnet-yb-fast, 16,128 on mainnet and testnet-yb-slow — the node refuses a set below its
+network's minimum (2 on regtest), D-Q-31, and the module adopts only that value; `regtest.attestorSet.maturity` overrides and the render fails on
 either mistake), mine it, record its id in ConfigMap `ycash-yellowback-set` (the StatefulSet's
 `YCASHD_YELLOWBACK_ATTESTOR_SET`) and one attestor key in Secret `ycash-yellowback-attestor`,
 restart the node, wait for `yed_getinfo` and check its `rpcversion` against `ycashd.rpcVersion`, roll lightwalletd (it probes `yed_getinfo` at startup).
@@ -196,18 +230,21 @@ second endpoint until the owner says otherwise.
 ## Layout
 
 ```
-images/ycashd/        Dockerfile (from the ycash6 source tree) + Dockerfile.release (from a release tarball) + entrypoint
+images/ycashd/        the published ycashd image's page (README); the image is built from the node tree's own contrib/docker/ycashd/Dockerfile
 images/yindex/        Dockerfile for yindex
 images/web/           Dockerfile + nginx.conf for the yew/web bundle (K4)
 images/faucet/        the regtest faucet: faucet.py (JSON-RPC, the page, /params/), fetch-params.py (the init container)
 yindex/               Go: the address index (ingester, Postgres store, gRPC server for the three address methods)
 charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml, values-testnet.yaml (over values-eks.yaml), values-{yb-fast,yb-slow,legacy}.yaml (one release per testnet)
-charts/ycash-testnet/       the testnet's network roles: ycash6 seeds, the ycash-dd verifier, the prefix restore; values-{yb-fast,yb-slow,legacy}.yaml; no keys; render-only until N1 (its README)
+charts/ycash-testnet/       the testnets' network roles: ycash6 seeds, the ycash-dd verifier, the prefix restore; values-{yb-fast,yb-slow,legacy}.yaml; no keys; not yet run on a cluster (its README)
 kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host)
 scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), kind-personas.py (K0c), wait-for.sh
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: module/ (VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons as helm_release; one namespace per network) and a thin example root
 infra/testnet-seeds/  Terraform: the seed hosts on EC2 + Elastic IPs (ips/, nodes/), every testnet on each host, seedctl (its README)
+bundles/prefix/       the Zcash testnet history bundle: format (FORMAT.md), harvest, import checks (testnet-prefix*.yml)
+bundles/zcash-params/ the mirrored Zcash parameter files' checksums (zcash-params.yml)
+.github/workflows/    ci, the security scans, node-image (the ycashd image), testnet-prefix(-import), zcash-params
 keys/                 public keys only: ycash-release.pub, the owner's minisign key for release SHA256SUMS (its README)
 docs/eks-runbook.md   EKS: empty account → smoke green, cost, rollback, open decisions
 docs/try-it.md        the tester's guide to the demo kit (the wallet's screens, the walk, troubleshooting)

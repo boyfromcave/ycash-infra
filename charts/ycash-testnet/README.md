@@ -9,10 +9,10 @@ and someone running the older Ycash node software alongside, to prove that both 
 every block ("the cross-line verifier"). This chart describes those computers for Kubernetes, so
 they can be started the same way on a laptop (kind) and in the cloud (AWS EKS).
 
-**Today it is a scaffold.** The testnet settings built into today's node programs describe Ycash's
-old testnet, which nobody can reach any more. Until the new settings land (step N1 of the testnet
-plan), this chart can be checked and rendered, but the nodes it starts would have nobody to talk
-to. It holds no keys of any kind.
+There are three testnets (testnet-yb-fast, testnet-yb-slow, testnet-legacy), and this chart is
+installed once per network (`values-{yb-fast,yb-slow,legacy}.yaml`). The node programs know all
+three since the testnet profiles merged (N1). The chart is checked and rendered in CI but has not
+yet run on a cluster. It holds no keys of any kind.
 
 Plan: workspace `docs/plans/yellowback-testnet-plan.md` (§2.3 who runs what, §4.0 the prefix,
 §6 this environment); this repository's `docs/plans/ycash-infra-plan.md` K5–K7.
@@ -28,15 +28,17 @@ Plan: workspace `docs/plans/yellowback-testnet-plan.md` (§2.3 who runs what, §
 Both roles render from one template (`templates/node.yaml`); everything that differs is a value
 (AGENTS.md rule 2). Each pod:
 - writes `ycash.conf` through the node image's own entrypoint (`contrib/docker/ycashd/entrypoint.sh`
-  in both node trees) with `testnet=1`;
+  in both node trees) with `testnet=1` and `testnetprofile=<p>` (the chart passes the profile as
+  `YCASHD_TESTNET_PROFILE`, which the entrypoint requires on testnet);
 - answers RPC on 18832 with the release's own credentials (Secret, or an ExternalSecret on EKS),
   reachable only inside the cluster through `<release>-<role>-rpc` (ClusterIP);
 - gets its per-pod arguments from `files/run.sh`: its `-externalip` by ordinal
   (`<role>.externalAddresses`), `-addnode` for the other seeds by their headless-Service names
   (`peers.inCluster`), and the prefix's `-loadblock` files until the import is done.
 
-`peers.addnode` (written as `addnode=` lines) and `peers.dnsseed` stay empty / off until T-3 (the
-seed hostnames) and N1 (the new magic and `pnSeed6_test`).
+`peers.addnode` (written as `addnode=` lines) holds the EC2 seed hosts' addresses
+(`infra/testnet-seeds`) when the operator's deployment sets it; `peers.dnsseed` stays off: the
+testnets have no DNS seed, only fixed seeds (decision D1).
 
 `network` must be `testnet`: any other value fails the render (plan §6.1).
 
