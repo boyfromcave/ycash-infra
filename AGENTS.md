@@ -21,7 +21,10 @@ yellowback-workspace (`../AGENTS.md`), on `upgrade/vault` like the other clients
    node's.
 5. **Images are built from the workspace trees at their pinned commits** (`images/*/Dockerfile`
    read `../ycash6`, `../lightwalletd-dd`); the Makefile records the commit in the tag.
-   Never copy node or lightwalletd source into this repo.
+   Never copy node or lightwalletd source into this repo. The published `ycashd` image
+   (`.github/workflows/node-image.yml`, for `infra/testnet-seeds`) follows the same rule in CI: the
+   node repository checked out at one commit on its `upgrade/vault`, built with that tree's own
+   Dockerfile, tagged `<line>-<sha12>`.
 6. **Naming:** Yellowback is the thing, YED is the unit (workspace rule 6). No `DigiDollar`.
 7. **Secrets never in git.** `values-eks.yaml` references External Secrets; `values-kind.yaml`
    uses the regtest default credentials, which are not secrets.

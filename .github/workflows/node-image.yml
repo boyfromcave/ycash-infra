@@ -1,0 +1,121 @@
+# node-image: build the ycashd image from a node tree at one commit and push it to
+# ghcr.io/<owner>/ycashd:<line>-<sha12>, with build provenance.
+#
+# In plain words: the testnet seed machines (infra/testnet-seeds) run the Ycash node from a ready
+# made Docker image. This job makes that image, in public, from one exact commit of the node's
+# source code, and publishes it on GitHub's container registry. It also publishes a signed record
+# of how it was built, so anyone can check that the image came from that commit. It runs only when
+# started by hand, from upgrade/vault.
+#
+# AGENTS.md rule 5: the image is built from a workspace node tree (ycash6 or ycash-dd) at a pinned
+# commit, with that tree's own contrib/docker/ycashd/Dockerfile; no node source is copied here.
+# The commit must be on the tree's upgrade/vault (checked through the GitHub API before the build).
+#
+# linux/amd64 only: the Dockerfile runs the full depends build (zcutil/build.sh), 1-2 h natively on
+# a 4-core runner; under QEMU emulation an arm64 build would not fit the 6 h job limit. An arm64
+# seed (t4g) needs a native arm64 runner and a second job; not done.
+#
+# The package must be made public once (package settings) so the seeds can pull it without
+# credentials. Deploys happen elsewhere; this job only publishes the image and prints its digest.
+name: node-image
+on:
+  workflow_dispatch:
+    inputs:
+      line:
+        description: node line (repository under the owner)
+        type: choice
+        options: [ycash6, ycash-dd]
+        default: ycash6
+      ref:
+        description: full 40-hex commit SHA on that repository's upgrade/vault
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: node-image-${{ inputs.line }}-${{ inputs.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/upgrade/vault'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      LINE: ${{ inputs.line }}
+      REF: ${{ inputs.ref }}
+      REPO_OWNER: ${{ github.repository_owner }}
+    steps:
+      - name: check the inputs and that the commit is on upgrade/vault
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$LINE" in ycash6|ycash-dd) ;; *) echo "line: ycash6 or ycash-dd" >&2; exit 1 ;; esac
+          echo "$REF" | grep -qxE '[0-9a-f]{40}' || { echo "ref must be a full 40-hex commit SHA" >&2; exit 1; }
+          owner=$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          # compare REF...upgrade/vault: "identical" or "ahead" means REF is an ancestor of the branch
+          status=$(gh api "repos/$owner/$LINE/compare/$REF...upgrade/vault" --jq .status)
+          case "$status" in identical|ahead) ;; *) echo "$REF is not on $owner/$LINE upgrade/vault ($status)" >&2; exit 1 ;; esac
+          {
+            echo "image=ghcr.io/$owner/ycashd"
+            echo "tag=ghcr.io/$owner/ycashd:$LINE-${REF:0:12}"
+            echo "repo=$owner/$LINE"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ steps.meta.outputs.repo }}
+          ref: ${{ inputs.ref }}
+          path: src
+          persist-credentials: false
+      - name: free runner disk (the depends build needs more than the runner leaves free)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: build and push
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: src
+          file: src/contrib/docker/ycashd/Dockerfile
+          platforms: linux/amd64
+          build-args: JOBS=4
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tag }}
+          # the package is linked to this repository (the builder); the node source is in the labels
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ inputs.ref }}
+            org.opencontainers.image.title=ycashd (${{ inputs.line }})
+            org.ycash.node.repository=https://github.com/${{ steps.meta.outputs.repo }}
+            org.ycash.node.revision=${{ inputs.ref }}
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: digest
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "image: $IMAGE@$DIGEST"
+          {
+            echo "## node-image: $LINE at $REF"
+            echo
+            echo "- tag: \`$TAG\`"
+            echo "- by digest (what infra/testnet-seeds takes as \`image\`): \`$IMAGE@$DIGEST\`"
+            echo "- verify: \`gh attestation verify oci://$IMAGE@$DIGEST -R $GITHUB_REPOSITORY\`"
+          } >> "$GITHUB_STEP_SUMMARY"
