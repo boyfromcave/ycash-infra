@@ -1,0 +1,30 @@
+{
+ "bucket": "low",
+ "sla_days": 180,
+ "findings": [
+  {
+   "fingerprint": "ba2071e94710b231",
+   "rule": "terraform.aws.security.aws-secretsmanager-secret-unencrypted",
+   "path": "infra/eks/module/secrets.tf",
+   "line": 18,
+   "first_seen": "2026-10-29",
+   "due": "2027-04-27"
+  },
+  {
+   "fingerprint": "9512e3888c6f9dd0",
+   "rule": "terraform.aws.security.aws-secretsmanager-secret-unencrypted",
+   "path": "infra/eks/module/secrets.tf",
+   "line": 33,
+   "first_seen": "2026-10-29",
+   "due": "2027-04-27"
+  },
+  {
+   "fingerprint": "e3d6a74a4d05859e",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "infra/eks/module/tests/networks.tftest.hcl",
+   "line": 37,
+   "first_seen": "2026-10-29",
+   "due": "2027-04-27"
+  }
+ ]
+}
