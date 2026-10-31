@@ -127,17 +127,18 @@ class RunLocalMainnet(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         out = os.path.join(self.work, "out")
         m = H.verify_dir(out, log=lambda *a: None)
-        # tip 20, MIN_DEPTH 5, SPLIT_STEP 10: the default rule gives 10
+        # tip 20, MIN_DEPTH 5, SPLIT_STEP 10: the default rule (k*10 - 1) gives 9
         self.assertEqual(m["network"], "ycash-mainnet")
-        self.assertEqual(m["last_height"], 10)
-        self.assertEqual(m["split"]["hash"], H.display(H.parse_block(mainnet_blocks()[10])[0]))
-        self.assertEqual(m["split"]["chaintx"], 11)
+        self.assertEqual(m["last_height"], 9)
+        self.assertEqual([c["blocks"] for c in m["chunks"]], [10])
+        self.assertEqual(m["split"]["hash"], H.display(H.parse_block(mainnet_blocks()[9])[0]))
+        self.assertEqual(m["split"]["chaintx"], 10)
         self.assertEqual(m["crosscheck"], {})
         with open(os.path.join(self.work, "split-height")) as fh:
-            self.assertEqual(fh.read().strip(), "10")
+            self.assertEqual(fh.read().strip(), "9")
         with open(os.path.join(self.work, "harvest-report.json")) as fh:
             rep = json.load(fh)
-        self.assertEqual((rep["split_height"], rep["crosscheck"], rep["node_tip_at_split"]), (10, "sync", 20))
+        self.assertEqual((rep["split_height"], rep["crosscheck"], rep["node_tip_at_split"]), (9, "sync", 20))
         # the main node: first with the network, then restarted offline for the export
         a = self.history("mainnet-ycashd")
         self.assertEqual([h["network"] for h in a], ["bridge", "none"])
@@ -162,7 +163,7 @@ class RunLocalMainnet(unittest.TestCase):
     def test_crosscheck_node_disagrees(self):
         r = self.run_local(FAKE_TREESTATE_SKEW="1")
         self.assertNotEqual(r.returncode, 0, r.stdout)
-        self.assertIn("z_gettreestate at 10 differs", r.stdout)
+        self.assertIn("z_gettreestate at 9 differs", r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.work, "out", "SHA256SUMS")))
 
     def test_bad_inputs(self):

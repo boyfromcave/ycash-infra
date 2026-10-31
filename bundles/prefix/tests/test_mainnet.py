@@ -163,16 +163,21 @@ class CTestNetParams : public CChainParams {
 
 class SplitHeight(unittest.TestCase):
     def test_default_rule(self):
-        self.assertEqual(H.default_split_height(3091234), 3090000)
-        self.assertEqual(H.default_split_height(3091000), 3090000)
-        self.assertEqual(H.default_split_height(3090999), 3080000)
-        self.assertEqual(H.default_split_height(1000), 0)
+        self.assertEqual(H.default_split_height(3091234), 3089999)
+        self.assertEqual(H.default_split_height(3090999), 3089999)   # exactly 1,000 deep
+        self.assertEqual(H.default_split_height(3090998), 3079999)
+        self.assertEqual(H.default_split_height(10999), 9999)
         with self.assertRaises(ValueError):
-            H.default_split_height(999)
-        self.assertEqual(H.default_split_height(20, min_depth=5, step=10), 10)
+            H.default_split_height(10998)
+        self.assertEqual(H.default_split_height(20, min_depth=5, step=10), 9)
+        # the default always fills every chunk
+        for tip in (11000, 2345678, 3091234):
+            hs = H.default_split_height(tip)
+            self.assertEqual((hs + 1) % 10000, 0)
+            self.assertTrue(all(l - f + 1 == 10000 for f, l in H.chunk_ranges(hs, H.MAINNET)))
 
     def test_chosen_height(self):
-        self.assertEqual(H.check_split_height(3090000, 3091000), 3090000)
+        self.assertEqual(H.check_split_height(3090000, 3091000), 3090000)  # an explicit height: any value
         with self.assertRaisesRegex(ValueError, "at least 1000"):
             H.check_split_height(3090001, 3091000)
 
@@ -183,19 +188,21 @@ class SplitHeight(unittest.TestCase):
     def test_crosscheck_heights(self):
         self.assertEqual(H.crosscheck_heights(2250000, H.MAINNET), [])
         self.assertEqual(H.crosscheck_heights(2250001, H.MAINNET), [2250001])
-        self.assertEqual(H.crosscheck_heights(3090000, H.MAINNET),
-                         [2300000, 2400000, 2500000, 2600000, 2700000, 2800000, 2900000, 3000000, 3090000])
+        self.assertEqual(H.crosscheck_heights(3089999, H.MAINNET),
+                         [2300000, 2400000, 2500000, 2600000, 2700000, 2800000, 2900000, 3000000, 3089999])
         self.assertEqual(H.crosscheck_heights(3100000, H.MAINNET)[-2:], [3000000, 3100000])
         self.assertEqual(H.crosscheck_heights(510247), [])  # zcash-testnet: none
 
 
 class Chunks(unittest.TestCase):
     def test_mainnet_chunking(self):
-        r = H.chunk_ranges(3090000, H.MAINNET)
-        self.assertEqual(len(r), 310)
+        r = H.chunk_ranges(3089999, H.MAINNET)   # the default rule's shape: every chunk full
+        self.assertEqual(len(r), 309)
         self.assertEqual(r[0], (0, 9999))
-        self.assertEqual(r[-1], (3090000, 3090000))  # a split height on a multiple of 10,000: a one-block last chunk
-        self.assertEqual(H.chunk_name(*r[-2], net=H.MAINNET), "ycash-mainnet-prefix-v1-3080000-3089999.blocks.gz")
+        self.assertEqual(r[-1], (3080000, 3089999))
+        self.assertEqual(H.chunk_name(*r[-1], net=H.MAINNET), "ycash-mainnet-prefix-v1-3080000-3089999.blocks.gz")
+        # an explicit split height on a multiple of 10,000 is still accepted: a one-block last chunk
+        self.assertEqual(H.chunk_ranges(3090000, H.MAINNET)[-1], (3090000, 3090000))
 
     def test_solution_sizes(self):
         self.assertEqual(H.MAINNET.solution_bytes(569999), 1344)

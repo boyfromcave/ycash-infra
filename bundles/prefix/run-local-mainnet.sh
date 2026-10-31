@@ -11,8 +11,9 @@
 # two machines, and the SHA256SUMS files come out identical (README.md, "Mainnet history").
 #
 # Usage:  bundles/prefix/run-local-mainnet.sh [H_S|auto]     (default auto)
-#   auto: H_S is the most recent multiple of SPLIT_STEP (10,000) at least MIN_DEPTH (1,000) blocks
-#         below the synced tip. A number: that height, once the node is MIN_DEPTH blocks above it.
+#   auto: H_S is the most recent height of the form k*SPLIT_STEP - 1 (SPLIT_STEP 10,000, so e.g.
+#         3,089,999) at least MIN_DEPTH (1,000) blocks below the synced tip: every chunk then holds
+#         exactly 10,000 blocks and the testnet's first own block is the round k*10,000. A number: that height, once the node is MIN_DEPTH blocks above it.
 # Env:    WORK=<dir>             work directory (default ./mainnet-work): state/ and state-b/ (the two
 #                                node datadirs, kept between runs so a rerun syncs only the delta),
 #                                raw/, out/, timings.txt, harvest-report.json

@@ -94,11 +94,13 @@ Everything in "Contract" above applies, with `zcash-testnet` read as `ycash-main
 differences:
 
 - **Range.** Heights **0..H_S inclusive**. H_S, the split height, is the last copied block and the
-  manifest's `last_height`. It is chosen when the harvest runs: by default the most recent multiple
-  of 10,000 that is at least 1,000 blocks below the synced tip. Any H_S ≥ 0 is valid; one above
+  manifest's `last_height`. It is chosen when the harvest runs: by default the most recent height
+  of the form k·10,000 − 1 that is at least 1,000 blocks below the synced tip (for example
+  3,089,999), so every chunk holds exactly 10,000 blocks and the shadow testnets' first own block
+  (H_S + 1) is the round k·10,000. Any H_S ≥ 0 is valid when given explicitly; one above
   2,250,000 needs the cross-check below.
-- **Chunks.** Chunk k covers heights [10,000·k, min(10,000·k + 9,999, H_S)]. An H_S on a multiple
-  of 10,000 makes the last chunk a single block. Every chunk file must be under 2 GiB
+- **Chunks.** Chunk k covers heights [10,000·k, min(10,000·k + 9,999, H_S)]. With the default H_S every
+  chunk is full; an explicit H_S that is not k·10,000 − 1 leaves a shorter last chunk. Every chunk file must be under 2 GiB
   (2,147,483,647 bytes); the packer refuses a bigger one.
 - **Chunk file.** `ycash-mainnet-prefix-v1-<first:07d>-<last:07d>.blocks.gz`, the same payload and
   `gzip -n -9` as above.

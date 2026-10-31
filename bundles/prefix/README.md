@@ -183,7 +183,9 @@ bundle: a new mainnet node can load them instead of downloading every block from
    loopback with cookie auth, and (with `CROSSCHECK=sync`, the default) a second ycashd with its
    own datadir and, if `CROSSCHECK_CONNECT` names them, its own peers only. It waits until H_S is
    1,000 blocks deep: with `auto`, until the initial block download is complete, then H_S is the
-   most recent multiple of 10,000 at least 1,000 blocks below the tip.
+   most recent height of the form k·10,000 − 1 at least 1,000 blocks below the tip (for example
+   3,089,999), so every chunk holds exactly 10,000 blocks and the testnets' first own block is the
+   round k·10,000. An explicit number is accepted as before.
 2. **Export.** Restarts the main node with no network, so the chain cannot move, and copies blocks
    0..H_S with `getblockhash` / `getblock <hash> 0`, checking each one. Writes `z_gettreestate H_S`.
    Asks the second node for the cross-check hashes and its tree state, which must be identical.
@@ -231,7 +233,7 @@ On a push or a pull request the workflow only runs the tests and a smoke harvest
 
 The owner's estimate for the mainnet datadir is 60 to 90 GB. The blocks themselves are a part of
 that: Zcash's history up to the 2019 fork is the bulk, and Ycash's blocks since are mostly small.
-Expect about 310 chunk files for H_S near 3,100,000, each well under the 2 GiB limit, and gzip to
+Expect 309 chunk files for H_S = 3,089,999, each well under the 2 GiB limit, and gzip to
 save little (proofs and ciphertexts do not compress). Disk at the peak: two node datadirs plus the
 raw copy plus the packed copy (`KEEP_RAW=0`, the default, frees each raw chunk as it is packed), so
 plan on 300 to 400 GB; with `CROSSCHECK=rpc` one datadir less.

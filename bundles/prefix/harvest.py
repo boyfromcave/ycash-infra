@@ -113,7 +113,9 @@ YCASH_MAIN_ACTIVATIONS = {
     419200: "00000000025a57200d898ac7f21e26bf29028bbe96ec46e05b2c17cc9db9e4f3",
     570000: "0000014fbc5917ba8bcacf3336faf588d86b32443aa3a490a587af5750c77ec5",
 }
-# The default split height: the most recent multiple of SPLIT_STEP at least SPLIT_MIN_DEPTH blocks
+# The default split height: the most recent height of the form k*SPLIT_STEP - 1 at least
+# SPLIT_MIN_DEPTH blocks below the synced tip, so every chunk holds exactly 10,000 blocks and the
+# block after the split is a round k*10,000
 # below the synced tip (testnet plan Revision 4, N3-S).
 SPLIT_STEP = 10000
 SPLIT_MIN_DEPTH = 1000
@@ -308,10 +310,12 @@ NETWORKS = {n.name: n for n in (TESTNET, MAINNET)}
 
 
 def default_split_height(tip, min_depth=SPLIT_MIN_DEPTH, step=SPLIT_STEP):
-    """The most recent multiple of `step` at least `min_depth` blocks below `tip`."""
-    if tip - min_depth < 0:
-        raise ValueError("tip %d is less than %d blocks above the genesis" % (tip, min_depth))
-    return (tip - min_depth) // step * step
+    """The most recent height of the form k*`step` - 1 (k >= 1) at least `min_depth` blocks below
+    `tip`: 3,089,999 for a tip of 3,091,234. Chunks of `step` blocks then all come out full."""
+    hs = (tip - min_depth + 1) // step * step - 1
+    if hs < 0:
+        raise ValueError("tip %d is too low: no height k*%d - 1 is %d blocks below it" % (tip, step, min_depth))
+    return hs
 
 
 def check_split_height(hs, tip, min_depth=SPLIT_MIN_DEPTH):
