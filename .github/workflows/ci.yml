@@ -35,7 +35,8 @@ jobs:
   eks:
     # offline: terraform fmt/validate for infra/eks (the example root and the module), the module's terraform test
     # (mocked providers), the chart's EKS values through kubeconform with the CRD schemas; infra/testnet-seeds (ips,
-    # nodes): fmt/validate, terraform test, shellcheck, the seedctl test. No AWS credentials, no plan: deploys run elsewhere.
+    # nodes): fmt/validate, terraform test, shellcheck, the seedctl test; infra/mainnet-harvest: the same, and the boot
+    # script's offline test. No AWS credentials, no plan: deploys run elsewhere.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -54,6 +55,7 @@ jobs:
       - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
       - run: make eks-validate
       - run: make seeds-validate
+      - run: make harvest-validate
   yindex-image:
     runs-on: ubuntu-latest
     timeout-minutes: 20

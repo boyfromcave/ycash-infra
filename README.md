@@ -247,6 +247,7 @@ scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.s
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: module/ (VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons as helm_release; one namespace per network) and a thin example root
 infra/testnet-seeds/  Terraform: the seed hosts on EC2 + Elastic IPs (ips/, nodes/), every testnet on each host, seedctl (its README)
+infra/mainnet-harvest/ Terraform: the mainnet history harvest on a one-shot EC2 instance (results bucket, launch template; its README)
 bundles/prefix/       the Zcash testnet history bundle: format (FORMAT.md), harvest, import checks (testnet-prefix*.yml)
 bundles/state/        the testnet state bundle: format (FORMAT.md, ycash-state/1), verify.py, the snapshotter's offline tests
 bundles/zcash-params/ the mirrored Zcash parameter files' checksums (zcash-params.yml)

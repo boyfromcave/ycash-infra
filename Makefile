@@ -42,7 +42,7 @@ DOMAIN      ?= lite.example.org
 # to roll out before the target fails (scripts/kind-check-release.sh)
 ROLLOUT_TIMEOUT ?= 10m
 
-.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test
+.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -212,6 +212,14 @@ seeds-validate: ## offline: terraform fmt/validate for infra/testnet-seeds (ips,
 	terraform -chdir=infra/testnet-seeds/nodes test
 	shellcheck infra/testnet-seeds/nodes/files/*.sh infra/testnet-seeds/nodes/files/seedctl infra/testnet-seeds/nodes/tests/*.sh
 	infra/testnet-seeds/nodes/tests/seedctl.sh
+
+harvest-validate: ## offline: terraform fmt/validate/test for infra/mainnet-harvest (mocked AWS), shellcheck and the boot script's offline test; no credentials, no plan
+	terraform fmt -check -recursive infra/mainnet-harvest
+	terraform -chdir=infra/mainnet-harvest init -backend=false -input=false >/dev/null
+	terraform -chdir=infra/mainnet-harvest validate
+	terraform -chdir=infra/mainnet-harvest test
+	shellcheck infra/mainnet-harvest/files/*.sh infra/mainnet-harvest/tests/*.sh
+	infra/mainnet-harvest/tests/harvest-run.sh
 
 EKS_LINT_SET := --set gateway.host=lite.example.org \
   --set images.ycashd.repository=0.dkr.ecr.us-east-1.amazonaws.com/ycash/ycashd --set images.ycashd.tag=rev \
