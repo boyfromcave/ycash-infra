@@ -10,3 +10,10 @@ zebra-test/src/vectors/ at commit e8db87eb69254e0d4eedd058eadd48bdfa09065a (tag 
 
 SHA256SUMS in this directory lists their sha256. To re-check against upstream:
   curl -sS https://raw.githubusercontent.com/ZcashFoundation/zebra/e8db87eb69254e0d4eedd058eadd48bdfa09065a/zebra-test/src/vectors/block-test-0-000-001.txt | sha256sum
+
+ycash-mainnet-blocks-0-20.hex: Ycash mainnet blocks 0..20, one hex block per line. Below the Ycash
+fork at 570,000 Ycash mainnet history is Zcash mainnet history, so these are Zcash mainnet's genesis
+and the next twenty blocks. Copied unchanged from boyfromcave/lightwalletd testdata/mainnet_genesis
+at commit a1d141e37776dcfb0e4be023661d59508ab5b616 (the file is upstream zcash/lightwalletd's).
+Block 0 hashes to the mainnet genesis compiled into ycash6 (src/chainparams.cpp:236):
+  curl -sS https://raw.githubusercontent.com/boyfromcave/lightwalletd/a1d141e37776dcfb0e4be023661d59508ab5b616/testdata/mainnet_genesis | sha256sum

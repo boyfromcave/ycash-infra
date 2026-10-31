@@ -386,7 +386,7 @@ class Pins(unittest.TestCase):
             if not os.path.exists(p):
                 continue
             for d in re.findall(r"sha256:[0-9a-f]{64}", self.read(p)):
-                self.assertIn(d, (H.ZEBRA_IMAGE + H.PACK_IMAGE), "%s pins %s" % (p, d))
+                self.assertIn(d, (H.ZEBRA_IMAGE + H.PACK_IMAGE + H.YCASHD_IMAGE), "%s pins %s" % (p, d))
 
     def test_pins_shape(self):
         self.assertRegex(H.ZEBRA_IMAGE, r"^docker\.io/zfnd/zebra:[0-9.]+@sha256:[0-9a-f]{64}$")
