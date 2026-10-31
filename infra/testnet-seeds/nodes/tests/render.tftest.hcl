@@ -94,7 +94,7 @@ run "per_network_image_and_args" {
     error_message = "a network's image overrides the default for that network only"
   }
   assert {
-    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args == "-dbcache=256 -maxconnections=64 -debug=net" && jsondecode(base64decode(output.network_configs["yb-fast"])).prefix.magic == "fa1af9bf" && jsondecode(base64decode(output.network_configs["yb-slow"])).prefix == null
+    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args == "-maxtipage=999999999 -dbcache=256 -maxconnections=64 -debug=net" && jsondecode(base64decode(output.network_configs["yb-fast"])).prefix.magic == "fa1af9bf" && jsondecode(base64decode(output.network_configs["yb-slow"])).prefix == null
     error_message = "extra_args stack; the magic override; bootstrap off"
   }
   assert {

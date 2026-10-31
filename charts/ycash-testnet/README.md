@@ -35,6 +35,9 @@ Both roles render from one template (`templates/node.yaml`); everything that dif
 - gets its per-pod arguments from `files/run.sh`: its `-externalip` by ordinal
   (`<role>.externalAddresses`), `-addnode` for the other seeds by their headless-Service names
   (`peers.inCluster`), and the prefix's `-loadblock` files until the import is done.
+- runs with `-maxtipage=999999999` on a testnet, so a pod restarted while the chain has been
+  quiet for over a day still serves headers and block templates (`images/ycashd/README.md`,
+  "Keeping a quiet testnet alive").
 
 `peers.addnode` (written as `addnode=` lines) holds the EC2 seed hosts' addresses
 (`infra/testnet-seeds`) when the operator's deployment sets it; `peers.dnsseed` stays off: the

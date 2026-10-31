@@ -36,6 +36,7 @@ docker run -d --name ycashd-fast \
   -e YCASHD_NETWORK=testnet -e YCASHD_TESTNET_PROFILE=fast \
   -e YCASHD_RPC_USER=me -e YCASHD_RPC_PASSWORD="$(openssl rand -hex 16)" \
   -e YCASHD_RPC_BIND=127.0.0.1 \
+  -e YCASHD_EXTRA_ARGS="-maxtipage=999999999" \
   -p 18833:18833 \
   -v ycash-fast:/var/lib/ycash \
   ghcr.io/boyfromcave/ycashd@sha256:<digest>
@@ -45,6 +46,8 @@ docker run -d --name ycashd-fast \
   the source commit and the node line, but only a digest is immutable.
 - `YCASHD_NETWORK` is `mainnet` (the default), `testnet` or `regtest`. With `testnet`,
   `YCASHD_TESTNET_PROFILE` is required: the node refuses to start without knowing which testnet.
+- **On a testnet, always pass `-maxtipage=999999999`** (as above; see "Keeping a quiet testnet
+  alive" below). Never on mainnet.
 - The chain data lives in `/var/lib/ycash`; mount a volume there.
 - **Peers:** the testnets have no DNS seed; their seed nodes' fixed addresses are compiled into
   each testnet release candidate. Until then, add peers with `-e YCASHD_EXTRA_ARGS="-addnode=<host>:<port>"`.
@@ -55,6 +58,27 @@ docker run -d --name ycashd-fast \
   release.
 - Every setting the entrypoint reads (RPC, listening, the address index, extra `ycash.conf` lines):
   `contrib/docker/ycashd/README.md` in the node's source repository, at the image's commit.
+
+## Keeping a quiet testnet alive: `-maxtipage`
+
+**In plain words:** a testnet has few miners, and its difficulty can be high for the hardware
+pointed at it, so it may go hours or days without a block. That is fine: the chain does not die,
+and anyone can resume mining later. But a node judges whether it is "still catching up" by the age
+of the newest block. If that block is more than a day old (`-maxtipage`, default 86,400 seconds),
+a node that has just started believes it is still syncing, and then:
+
+- it refuses `getblocktemplate` ("Ycash is downloading blocks..."), so a miner cannot restart the chain;
+- it ignores other nodes' requests for block headers, so newcomers cannot sync from it.
+
+`-maxtipage=999999999` (about 31 years) switches that judgement off. It changes no consensus rule:
+the blocks a node accepts are the same with or without it. Every node we run on the testnets sets it
+(the seeds, `charts/ycash-testnet`, the lightwallet chart's testnet values); set it on yours too,
+above all on the node a miner or pool (yolo) talks to. On mainnet leave the default.
+
+The flag does not lower the difficulty. Each testnet also has the standard testnet rule: when no
+block has come for six block intervals, the next block may be mined at the network's minimum
+difficulty. On testnet-yb-slow and testnet-legacy that minimum is mainnet's, so they need a GPU
+miner (through yolo) even then.
 
 ## Check what you pulled
 
