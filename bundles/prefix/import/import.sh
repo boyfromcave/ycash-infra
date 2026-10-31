@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Import a Zcash-testnet prefix (format v1) into a fresh ycashd testnet datadir and record the result.
+# Import a prefix (format v1) into a fresh ycashd datadir and record the result: the Zcash-testnet
+# prefix under testnet parameters, or the Ycash-mainnet history under mainnet parameters.
 #
 # In plain words: this takes the published copy of Zcash's old testnet history, hands it to a Ycash
 # node as if it were a block file on disk, and checks that the node accepts every block and ends on
@@ -10,14 +11,18 @@
 #   import.sh --bin DIR --prefix DIR --mode checkpoints|full --work DIR --out FILE [options]
 #
 #   --bin DIR            directory holding ycashd and ycash-cli
-#   --prefix DIR         the prefix: manifest.json, SHA256SUMS, zcash-testnet-prefix-v1-*.blocks.gz
+#   --prefix DIR         the prefix: manifest.json, SHA256SUMS, the *.blocks.gz chunks (and treestate.json)
+#   --network NAME       zcash-testnet (default: ycashd -testnet) or ycash-mainnet (ycashd on mainnet
+#                        parameters, magic 24e92764; also checks z_gettreestate at the last height)
 #   --mode MODE          checkpoints (the node's defaults) or full (-checkpoints=0: every proof and
 #                        script below the compiled checkpoints is verified too)
 #   --work DIR           scratch directory; must not exist or be empty (framed files, datadir)
 #   --out FILE           the result JSON
 #   --line NAME          label for the result (ycash6, ycash-dd); default: unnamed
 #   --node-sha SHA       the node commit, recorded in the result
-#   --magic HEX          network magic for the framing (default fa1af9bf, both lines' testnet)
+#   --magic HEX          network magic for the framing (default: fa1af9bf for zcash-testnet, the
+#                        old testnet magic; 24e92764 for ycash-mainnet)
+#   --chain-arg ARG      an extra ycashd/ycash-cli chain argument (e.g. -testnetprofile=fast); repeatable
 #   --paramsdir DIR      zk parameter directory, passed as -paramsdir (ycash-dd needs
 #                        sapling-spend.params, sapling-output.params, sprout-groth16.params; ycash6
 #                        needs none). Default: the node's own default (~/.zcash-params).
@@ -34,7 +39,9 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-MAGIC=fa1af9bf
+MAGIC=
+NETWORK=zcash-testnet
+EXTRA_CHAIN=()
 DBCACHE=2048
 STALL=1800
 MAX_WAIT=21000
@@ -53,6 +60,14 @@ COMPILED=(
   207500:0000257c4331b098045023fcfbfa2474681f4564ab483f84e4e1ad078e4acf44
   280000:000420e7fcc3a49d729479fb0b560dd7b8617b178a08e9e389620a9d1dd6361a
 )
+# Ycash mainnet: the compiled activation hashes (ycash6 src/chainparams.cpp:123-132, ycash-dd :121-130:
+# Overwinter, Sapling, the Ycash fork block at 570,000) plus every compiled checkpoint, read from the
+# vendored, sha256-pinned ../data/ycash-main-checkpoints.txt (identical on both lines).
+COMPILED_MAIN=(
+  347500:0000000003761c0d0c3974b54bdb425613bbb1eaadd6e70b764de82f195ea243
+  419200:00000000025a57200d898ac7f21e26bf29028bbe96ec46e05b2c17cc9db9e4f3
+  570000:0000014fbc5917ba8bcacf3336faf588d86b32443aa3a490a587af5750c77ec5
+)
 
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
 die() { echo "import.sh: $*" >&2; exit 2; }
@@ -68,6 +83,8 @@ while [ $# -gt 0 ]; do
     --line) LINE=$2; shift 2 ;;
     --node-sha) NODE_SHA=$2; shift 2 ;;
     --magic) MAGIC=$2; shift 2 ;;
+    --network) NETWORK=$2; shift 2 ;;
+    --chain-arg) EXTRA_CHAIN+=("$2"); shift 2 ;;
     --paramsdir) PARAMSDIR=$2; shift 2 ;;
     --dbcache) DBCACHE=$2; shift 2 ;;
     --stall-timeout) STALL=$2; shift 2 ;;
@@ -81,6 +98,19 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$BIN" ] && [ -n "$PREFIX" ] && [ -n "$MODE" ] && [ -n "$WORK" ] && [ -n "$OUT" ] || usage
 case "$MODE" in checkpoints|full) ;; *) die "--mode is checkpoints or full" ;; esac
+case "$NETWORK" in
+  zcash-testnet) CHAIN=(-testnet); MAGIC=${MAGIC:-fa1af9bf} ;;
+  ycash-mainnet) CHAIN=(); MAGIC=${MAGIC:-24e92764}
+    COMPILED=("${COMPILED_MAIN[@]}")
+    while read -r h x; do COMPILED+=("$h:$x"); done < <(python3 -I -c '
+import sys; sys.path.insert(0, sys.argv[1]); import harvest
+for h, x in sorted(harvest.load_main_checkpoints().items()): print(h, x)' "$HERE/..") ;;
+  *) die "--network is zcash-testnet or ycash-mainnet" ;;
+esac
+for a in "${EXTRA_CHAIN[@]}"; do
+  [[ $a =~ ^-[a-z]+(=[A-Za-z0-9._:-]+)?$ ]] || die "--chain-arg $a: -name or -name=value, plain characters"
+  CHAIN+=("$a")
+done
 case "$LINE" in *[!A-Za-z0-9._-]*|'') die "--line: letters, digits, . _ - only" ;; esac
 case "$NODE_SHA" in *[!0-9a-f]*) die "--node-sha is a hex commit" ;; esac
 for n in "$DBCACHE" "$STALL" "$MAX_WAIT" "$DONE_GRACE" "$POLL"; do case "$n" in *[!0-9]*|'') die "not a number: $n" ;; esac; done
@@ -99,7 +129,7 @@ NODE_PID=
 T0=$(date +%s)
 T_FRAMED=$T0; T_IMPORTED=$T0
 
-cli() { timeout 600 "$CLI" -testnet -datadir="$DD" "$@"; }
+cli() { timeout 600 "$CLI" "${CHAIN[@]}" -datadir="$DD" "$@"; }
 
 debug_log() { find "$DD" -maxdepth 2 -name debug.log -print -quit; }
 
@@ -170,6 +200,8 @@ result = {
         "raw_bytes": summary.get("raw_bytes"),
         "magic": summary.get("magic"),
         "sources": summary.get("sources"),
+        "network": summary.get("network"),
+        "split": summary.get("split"),
     },
     "hash_checks": checks,
     "seconds": {"frame": tf - t0, "import": max(ti - tf, 0), "total": te - t0},
@@ -207,7 +239,7 @@ log "node: $(cat "$STATE/version")"
 expect=()
 for e in "${COMPILED[@]}"; do expect+=(--expect "$e"); done
 log "checking SHA256SUMS and the manifest, framing with magic $MAGIC"
-python3 -I "$HERE/frame.py" --prefix "$PREFIX" --out "$FRAMED" --magic "$MAGIC" "${expect[@]}" \
+python3 -I "$HERE/frame.py" --prefix "$PREFIX" --out "$FRAMED" --network "$NETWORK" --magic "$MAGIC" "${expect[@]}" \
   --summary "$STATE/summary.json" || fail "the prefix failed its checks (frame.py)"
 T_FRAMED=$(date +%s)
 mapfile -t FILES < <(python3 -I -c 'import json,sys; [print(p) for p in json.load(open(sys.argv[1]))["files"]]' "$STATE/summary.json")
@@ -225,7 +257,7 @@ port=$((20000 + RANDOM % 20000))
   echo "rpcbind=127.0.0.1"
   echo "rpcallowip=127.0.0.1"
 } > "$DD/ycash.conf"
-args=(-testnet -datadir="$DD" -server=1 -connect=0 -listen=0 -dnsseed=0 -discover=0 -disablewallet=1
+args=("${CHAIN[@]}" -datadir="$DD" -server=1 -connect=0 -listen=0 -dnsseed=0 -discover=0 -disablewallet=1
       -printtoconsole=0 -dbcache="$DBCACHE")
 [ "$MODE" = full ] && args+=(-checkpoints=0)
 [ -n "$PARAMSDIR" ] && args+=(-paramsdir="$PARAMSDIR")
@@ -285,6 +317,22 @@ while read -r h want; do
 done < "$STATE/hash_heights"
 best=$(cli getbestblockhash)
 [ "$best" = "$TIP" ] || echo "best $TIP $best" >> "$STATE/mismatches"
+if [ "$NETWORK" = ycash-mainnet ]; then
+  # the published z_gettreestate at the split height must be what this node computes
+  cli z_gettreestate "$LAST" > "$STATE/treestate-node.json" 2>&1 || true
+  python3 -I -c '
+import json, sys
+def canon(p):
+    with open(p) as f:
+        return json.dumps(json.load(f), sort_keys=True)
+try:
+    same = canon(sys.argv[1]) == canon(sys.argv[2])
+except (OSError, ValueError):
+    same = False
+sys.exit(0 if same else 1)' "$STATE/treestate-node.json" "$PREFIX/treestate.json" \
+    || echo "treestate $LAST published-treestate.json differs-from-node" >> "$STATE/mismatches"
+  checked=$((checked + 1))
+fi
 python3 -I -c '
 import json, sys
 mm = [dict(zip(("height", "expected", "got"), l.split(" ", 2))) for l in open(sys.argv[1]).read().splitlines()]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Frame a Zcash-testnet prefix (format v1) for `ycashd -loadblock`.
+"""Frame a prefix (format v1: Zcash-testnet or Ycash-mainnet history) for `ycashd -loadblock`.
 
 Reads the prefix directory (`manifest.json`, `SHA256SUMS`, the `.blocks.gz` chunks), checks it as
 data, and writes one `-loadblock` file per chunk. Each block becomes one record
@@ -13,7 +13,9 @@ The prefix is untrusted input. Nothing in it is executed; this script only reads
 anything is written it checks:
   * `SHA256SUMS` names exactly `manifest.json` and the manifest's chunks, each file name matches
     the v1 pattern, and every sha256 matches the file;
-  * the manifest: format, network, contiguous chunks cut by the v1 rule, gz sizes and sha256s;
+  * the manifest: format, network (the one asked for with --network), contiguous chunks cut by the
+    v1 rule for that network, gz sizes and sha256s; for ycash-mainnet also the split block's hash
+    and the cross-check hashes against the chain, and treestate.json against the split block;
 while streaming each chunk it checks the decompressed size and sha256, the block count, every
 block's length, the hash chain, the genesis hash, every height listed in the manifest's `hashes`
 and every `--expect HEIGHT:HASH`. Any failure removes the partial output and exits 2.
@@ -38,6 +40,16 @@ CHUNK_SPAN = 50_000
 TESTNET_GENESIS = "05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38"
 # Ycash testnet magic on both node lines (ycash6 src/chainparams.cpp:539-542, ycash-dd :480-483).
 TESTNET_MAGIC = "fa1af9bf"
+TREESTATE_FILE = "treestate.json"
+# The two networks the format carries (FORMAT.md, "Networks"). ycash-mainnet: genesis ycash6
+# src/chainparams.cpp:236 (ycash-dd :221), magic :223-226 (ycash-dd 24 e9 27 64 as well).
+NETWORKS = {
+    "zcash-testnet": {"file_prefix": "zcash-testnet-prefix-v1", "chunk_span": CHUNK_SPAN,
+                      "genesis": TESTNET_GENESIS, "magic": TESTNET_MAGIC, "extra_files": []},
+    "ycash-mainnet": {"file_prefix": "ycash-mainnet-prefix-v1", "chunk_span": 10_000,
+                      "genesis": "00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08",
+                      "magic": "24e92764", "extra_files": [TREESTATE_FILE]},
+}
 # LoadExternalBlockFile skips a record whose length is < 80 or > MAX_BLOCK_SIZE (2,000,000 on
 # both lines): refuse such a block here instead of letting the node skip it silently.
 MIN_BLOCK = 80
@@ -46,6 +58,10 @@ MAX_BLOCK_SIZE = 2_000_000
 HEADER_FIXED = 140
 
 CHUNK_RE = re.compile(r"^zcash-testnet-prefix-v1-(\d{7})-(\d{7})\.blocks\.gz$")
+
+
+def chunk_re(network):
+    return re.compile(r"^%s-(\d{7})-(\d{7})\.blocks\.gz$" % re.escape(NETWORKS[network]["file_prefix"]))
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 READ_SIZE = 1 << 20
 
@@ -67,8 +83,8 @@ def sha256_file(path):
     return h.hexdigest(), size
 
 
-def chunk_name(first, last):
-    return "zcash-testnet-prefix-v1-%07d-%07d.blocks.gz" % (first, last)
+def chunk_name(first, last, network=NETWORK):
+    return "%s-%07d-%07d.blocks.gz" % (NETWORKS[network]["file_prefix"], first, last)
 
 
 def block_hash(block):
@@ -112,7 +128,7 @@ def parse_expect(items):
     return out
 
 
-def load_manifest(prefix_dir, chunk_span):
+def load_manifest(prefix_dir, chunk_span, network=NETWORK):
     path = os.path.join(prefix_dir, "manifest.json")
     try:
         with open(path, "rb") as f:
@@ -123,8 +139,8 @@ def load_manifest(prefix_dir, chunk_span):
         raise FrameError("manifest.json is not an object")
     if m.get("format") != FORMAT:
         raise FrameError("manifest format %r, expected %r" % (m.get("format"), FORMAT))
-    if m.get("network") != NETWORK:
-        raise FrameError("manifest network %r, expected %r" % (m.get("network"), NETWORK))
+    if m.get("network") != network:
+        raise FrameError("manifest network %r, expected %r" % (m.get("network"), network))
     first, last = m.get("first_height"), m.get("last_height")
     if not (type(first) is int and type(last) is int and first == 0 and last >= 0):
         raise FrameError("manifest first_height must be 0 and last_height an integer >= 0")
@@ -149,8 +165,8 @@ def load_manifest(prefix_dir, chunk_span):
                              % (k, c["first_height"], c["last_height"], cf, cl))
         if c["blocks"] != cl - cf + 1:
             raise FrameError("chunk %d: blocks %d, its range holds %d" % (k, c["blocks"], cl - cf + 1))
-        if c.get("file") != chunk_name(cf, cl):
-            raise FrameError("chunk %d: file %r, expected %r" % (k, c.get("file"), chunk_name(cf, cl)))
+        if c.get("file") != chunk_name(cf, cl, network):
+            raise FrameError("chunk %d: file %r, expected %r" % (k, c.get("file"), chunk_name(cf, cl, network)))
     hashes = m.get("hashes")
     if not isinstance(hashes, dict):
         raise FrameError("manifest hashes is not an object")
@@ -165,11 +181,25 @@ def load_manifest(prefix_dir, chunk_span):
     want = set(range(0, last + 1, 10_000)) | {last}
     if not want <= set(checked):
         raise FrameError("manifest hashes lack heights %s" % sorted(want - set(checked))[:5])
+    if network == "ycash-mainnet":
+        split, xc, ts = m.get("split"), m.get("crosscheck"), m.get("treestate")
+        if not (isinstance(split, dict) and split.get("height") == last and isinstance(split.get("hash"), str)
+                and HEX64_RE.match(split["hash"]) and type(split.get("time")) is int and type(split.get("chaintx")) is int):
+            raise FrameError("manifest split is not {height: last_height, hash, time, chaintx}")
+        if checked.get(last) != split["hash"]:
+            raise FrameError("manifest split hash and hashes[last_height] disagree")
+        if not isinstance(xc, dict) or not all(re.fullmatch(r"[1-9]\d*", k) and int(k) <= last and isinstance(v, str)
+                                               and HEX64_RE.match(v) for k, v in xc.items()):
+            raise FrameError("manifest crosscheck is not {height: hash}")
+        if not (isinstance(ts, dict) and ts.get("file") == TREESTATE_FILE and isinstance(ts.get("sha256"), str)
+                and HEX64_RE.match(ts["sha256"])):
+            raise FrameError("manifest treestate is not {file: treestate.json, sha256}")
+        m["_crosscheck"] = {int(k): v for k, v in xc.items()}
     m["_hashes"] = checked
     return m
 
 
-def check_sums(prefix_dir, manifest):
+def check_sums(prefix_dir, manifest, network=NETWORK):
     path = os.path.join(prefix_dir, "SHA256SUMS")
     try:
         with open(path, "rb") as f:
@@ -182,13 +212,14 @@ def check_sums(prefix_dir, manifest):
         if not m:
             raise FrameError("SHA256SUMS line is not '<sha256>  <name>': %r" % line[:120])
         name = m.group(2)
-        if name != "manifest.json" and not CHUNK_RE.match(name):
+        extra = NETWORKS[network]["extra_files"]
+        if name != "manifest.json" and name not in extra and not chunk_re(network).match(name):
             raise FrameError("SHA256SUMS names an unexpected file %r" % name)
         if name in sums:
             raise FrameError("SHA256SUMS names %s twice" % name)
         sums[name] = m.group(1)
     names = sorted(sums)
-    expected = sorted(["manifest.json"] + [c["file"] for c in manifest["chunks"]])
+    expected = sorted(["manifest.json"] + NETWORKS[network]["extra_files"] + [c["file"] for c in manifest["chunks"]])
     if names != expected:
         raise FrameError("SHA256SUMS names %s, the manifest needs %s" % (names, expected))
     if list(sums) != names:
@@ -197,6 +228,8 @@ def check_sums(prefix_dir, manifest):
         got, size = sha256_file(os.path.join(prefix_dir, name))
         if got != want:
             raise FrameError("%s: sha256 %s, SHA256SUMS says %s" % (name, got, want))
+    if network == "ycash-mainnet" and sums[TREESTATE_FILE] != manifest["treestate"]["sha256"]:
+        raise FrameError("treestate.json: SHA256SUMS and manifest treestate sha256 disagree")
     for c in manifest["chunks"]:
         if sums[c["file"]] != c["gz_sha256"]:
             raise FrameError("%s: SHA256SUMS and manifest gz_sha256 disagree" % c["file"])
@@ -263,12 +296,29 @@ def frame_chunk(prefix_dir, chunk, out_path, magic, state, expect):
     return raw_bytes
 
 
-def frame_prefix(prefix_dir, out_dir, magic=None, chunk_span=CHUNK_SPAN, genesis=TESTNET_GENESIS, expect=None):
+def frame_prefix(prefix_dir, out_dir, magic=None, chunk_span=None, genesis=None, expect=None, network=NETWORK):
     """Check the prefix and write the -loadblock files. Returns a summary dict."""
-    magic = magic if magic is not None else bytes.fromhex(TESTNET_MAGIC)
+    net = NETWORKS[network]
+    magic = magic if magic is not None else bytes.fromhex(net["magic"])
+    chunk_span = chunk_span or net["chunk_span"]
+    genesis = genesis or net["genesis"]
     expect = dict(expect or {})
-    manifest = load_manifest(prefix_dir, chunk_span)
-    check_sums(prefix_dir, manifest)
+    manifest = load_manifest(prefix_dir, chunk_span, network)
+    check_sums(prefix_dir, manifest, network)
+    treestate = None
+    if network == "ycash-mainnet":
+        try:
+            with open(os.path.join(prefix_dir, TREESTATE_FILE), "rb") as f:
+                treestate = json.loads(f.read().decode("utf-8"))
+        except (OSError, ValueError) as e:
+            raise FrameError("treestate.json unreadable: %s" % e)
+        sp = manifest["split"]
+        if not isinstance(treestate, dict) or any(treestate.get(k) != sp[k] for k in ("height", "hash", "time")):
+            raise FrameError("treestate.json is not for the split block %d %s" % (sp["height"], sp["hash"]))
+        for h, v in manifest["_crosscheck"].items():  # the chain must carry the cross-checked hashes too
+            if h in expect and expect[h] != v:
+                raise FrameError("height %d: --expect %s, manifest crosscheck %s" % (h, expect[h], v))
+            expect[h] = v
     last = manifest["last_height"]
     for h in list(expect):
         if h > last:
@@ -307,6 +357,9 @@ def frame_prefix(prefix_dir, out_dir, magic=None, chunk_span=CHUNK_SPAN, genesis
         "hash_heights": sorted(set(manifest["_hashes"]) | set(expect)),
         "hashes": {str(h): v for h, v in sorted({**manifest["_hashes"], **expect}.items())},
         "sources": manifest.get("sources", {}),
+        "network_name": network,
+        "split": manifest.get("split"),
+        "treestate": treestate,
     }
 
 
@@ -314,20 +367,21 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--prefix", required=True, help="prefix directory (manifest.json, SHA256SUMS, chunks)")
     ap.add_argument("--out", required=True, help="directory for the framed -loadblock files")
-    ap.add_argument("--magic", default=TESTNET_MAGIC, help="network magic, 8 hex digits (default %(default)s)")
-    ap.add_argument("--genesis", default=TESTNET_GENESIS, help="expected hash at height 0")
+    ap.add_argument("--network", choices=sorted(NETWORKS), default=NETWORK, help="the manifest's network (default %(default)s)")
+    ap.add_argument("--magic", help="network magic, 8 hex digits (default: the network's: fa1af9bf testnet, 24e92764 mainnet)")
+    ap.add_argument("--genesis", help="expected hash at height 0 (default: the network's)")
     ap.add_argument("--expect", action="append", metavar="HEIGHT:HASH",
                     help="an extra hash the prefix must carry (ignored above last_height)")
-    ap.add_argument("--chunk-span", type=int, default=CHUNK_SPAN, help=argparse.SUPPRESS)
+    ap.add_argument("--chunk-span", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--summary", help="write the summary JSON here")
     a = ap.parse_args(argv)
     try:
-        magic = parse_magic(a.magic)
+        magic = parse_magic(a.magic or NETWORKS[a.network]["magic"])
         expect = parse_expect(a.expect)
     except ValueError as e:
         ap.error(str(e))
     try:
-        s = frame_prefix(a.prefix, a.out, magic, a.chunk_span, a.genesis.lower(), expect)
+        s = frame_prefix(a.prefix, a.out, magic, a.chunk_span, a.genesis.lower() if a.genesis else None, expect, a.network)
     except FrameError as e:
         print("frame.py: refused: %s" % e, file=sys.stderr)
         return 2

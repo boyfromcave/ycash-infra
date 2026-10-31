@@ -14,6 +14,11 @@ how much disk it used.
 
 Nothing in the copy is ever run as a program. It is only read and checked.
 
+The same check works for the Ycash mainnet history bundle (`--network ycash-mainnet`): the node then
+runs on mainnet settings (magic `24e92764`, no `-testnet`), must end on the split height H_S with
+the bundle's hash, and must compute the same shielded tree state at H_S as the published
+`treestate.json`. CI: `.github/workflows/mainnet-prefix-import.yml`.
+
 ## Files
 
 | File | What it does |
