@@ -12,7 +12,7 @@ name: secops
 #   govulncheck    yindex, reachability-aware (stdlib of the Go toolchain included). Fails on a reachable vuln.
 #   gosec          yindex, SARIF of every finding (report only); a pull_request fails on a HIGH finding (none
 #                  open: a HIGH is new by definition; accepted ones carry `#nosec <rule> -- <reason>`).
-#   checkov        infra/eks and infra/testnet-seeds (Terraform), the lightwallet chart rendered for kind, EKS and the testnet,
+#   checkov        infra/eks, infra/testnet-seeds and infra/mainnet-harvest (Terraform), the lightwallet chart rendered for kind, EKS and the testnet,
 #                  charts/ycash-testnet rendered for kind and EKS, images/*/ and bundles/*/Dockerfile
 #                  (contrib/secops/checkov.sh, policy .checkov.yaml). SARIF of every failing check; a
 #                  pull_request fails when it adds a failing check its base lacks (contrib/secops/checkov-gate.py:
