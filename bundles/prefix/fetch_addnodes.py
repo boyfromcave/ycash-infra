@@ -30,13 +30,18 @@ MAX_BYTES = 2_000_000
 
 # `addnode=1.2.3.4`, `addnode=1.2.3.4:8833`, `addnode=[::1]:8833`
 ADDNODE_RE = re.compile(r"addnode\s*=\s*(\[[0-9A-Fa-f:]+\](?::\d{1,5})?|[0-9]{1,3}(?:\.[0-9]{1,3}){3}(?::\d{1,5})?)")
-# getpeerinfo-shaped JSON: "addr": "1.2.3.4:8833"
-ADDR_JSON_RE = re.compile(r'"addr"\s*:\s*"(\[[0-9A-Fa-f:]+\]:\d{1,5}|[0-9]{1,3}(?:\.[0-9]{1,3}){3}:\d{1,5})"')
+# getpeerinfo-shaped JSON: "addr": "1.2.3.4:8833" (or an API's own key: "ip", "address", "host")
+ADDR_JSON_RE = re.compile(
+    r'"(?:addr|ip|address|host|node)"\s*:\s*"(\[[0-9A-Fa-f:]+\](?::\d{1,5})?|[0-9]{1,3}(?:\.[0-9]{1,3}){3}(?::\d{1,5})?)"', re.I)
 # a table of peers: `1.2.3.4:8833`, or `<td>1.2.3.4</td>`
 HOSTPORT_RE = re.compile(r"(?<![0-9.])([0-9]{1,3}(?:\.[0-9]{1,3}){3}:\d{1,5})(?![0-9.])")
 CELL_RE = re.compile(r"<td[^>]*>\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})\s*</td>", re.I)
 LINK_RE = re.compile(r"""(?:href|src)\s*=\s*["']([^"'#]+)["']""", re.I)
 LINK_HINT_RE = re.compile(r"addnode|peer|node|network|conf", re.I)
+# inside a script: quoted paths or same-site URLs, e.g. fetch('/api/getpeerinfo')
+JS_URL_RE = re.compile(r"""["'`]((?:https://[A-Za-z0-9.-]+)?/[A-Za-z0-9_./?=&-]*)["'`]""")
+JS_HINT_RE = re.compile(r"addnode|peer|connection|network", re.I)
+MAX_FETCHES = 16
 
 
 def fetch(url):
@@ -73,8 +78,17 @@ def extract(text, port):
     return []
 
 
+def same_site(u, base):
+    """https, and the page's host or another host under the same domain (api.example for
+    explorer.example's example)."""
+    s = urllib.parse.urlsplit(u)
+    site = ".".join(base.hostname.split(".")[-2:])
+    return s.scheme == "https" and s.hostname is not None and (s.hostname == site or s.hostname.endswith("." + site))
+
+
 def peers_from(url, port):
-    """The page's own peers, plus those of same-site links that look like the peer download."""
+    """The page's own peers; those of same-site links that look like the peer download; and, for a
+    page that loads its peer list with JavaScript, those of the API paths its scripts name."""
     page = fetch(url)
     peers = extract(page, port)
     base = urllib.parse.urlsplit(url)
@@ -82,14 +96,28 @@ def peers_from(url, port):
     for href in LINK_RE.findall(page):
         u = urllib.parse.urljoin(url, html.unescape(href))
         s = urllib.parse.urlsplit(u)
-        if s.scheme == "https" and s.netloc == base.netloc and u != url and LINK_HINT_RE.search(s.path + "?" + s.query):
+        if same_site(u, base) and u != url and LINK_HINT_RE.search(s.path + "?" + s.query):
             links.append(u)
-    for u in dict.fromkeys(links):
+    seen = {url}
+    queue = list(dict.fromkeys(links))
+    while queue and len(seen) <= MAX_FETCHES:
+        u = queue.pop(0)
+        if u in seen:
+            continue
+        seen.add(u)
         try:
-            peers += extract(fetch(u), port)
+            body = fetch(u)
         except OSError as e:
-            print(f"fetch_addnodes: skipped a link ({type(e).__name__})", file=sys.stderr)
-    return list(dict.fromkeys(peers)), links
+            print(f"fetch_addnodes: skipped {u} ({type(e).__name__})", file=sys.stderr)
+            continue
+        peers += extract(body, port)
+        if urllib.parse.urlsplit(u).path.endswith(".js"):
+            for ref in JS_URL_RE.findall(body):
+                v = urllib.parse.urljoin(url, ref)
+                if same_site(v, base) and v not in seen and JS_HINT_RE.search(ref) and not v.endswith((".js", ".css", ".html", ".png", ".svg")):
+                    queue.append(v)
+                    links.append(v)
+    return list(dict.fromkeys(peers)), list(dict.fromkeys(links))
 
 
 def main(argv=None):

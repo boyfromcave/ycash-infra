@@ -70,6 +70,30 @@ class PeersFrom(unittest.TestCase):
         self.assertEqual(peers, ["192.0.2.40:8833", "192.0.2.41:8833"])
         self.assertEqual(links, ["https://explorer.example/download/addnodes.txt"])
 
+    def test_follows_the_api_a_script_names(self):
+        pages = {
+            "https://explorer.example/network.html": '<script src="/js/network.js"></script><div id="peers"></div>',
+            "https://explorer.example/js/network.js": "fetch('/api/getpeerinfo').then(r => r.json()); const other = '/api/getblockcount'; const x = 'https://elsewhere.test/api/peers';",
+            "https://explorer.example/api/getpeerinfo": '[{"addr":"192.0.2.50:8833"},{"ip":"192.0.2.51"}]',
+        }
+
+        def fetch(url):
+            if url not in pages:
+                raise AssertionError(f"fetched an unexpected URL: {url}")
+            return pages[url]
+
+        with mock.patch.object(F, "fetch", fetch):
+            peers, links = F.peers_from("https://explorer.example/network.html", 8833)
+        self.assertEqual(peers, ["192.0.2.50:8833", "192.0.2.51:8833"])
+        self.assertEqual(links, ["https://explorer.example/js/network.js", "https://explorer.example/api/getpeerinfo"])
+
+    def test_same_site(self):
+        base = F.urllib.parse.urlsplit("https://explorer.example.org/network.html")
+        self.assertTrue(F.same_site("https://api.example.org/peers", base))
+        self.assertTrue(F.same_site("https://example.org/peers", base))
+        self.assertFalse(F.same_site("https://example.org.evil.test/peers", base))
+        self.assertFalse(F.same_site("http://explorer.example.org/peers", base))
+
     def test_main_writes_the_file_and_never_prints_addresses(self):
         import io
         import tempfile
