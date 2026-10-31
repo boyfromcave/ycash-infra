@@ -203,7 +203,12 @@ accepted for an H_S at or below 2,250,000.
 A GitHub-hosted job, larger runners included, stops after 6 hours, and a mainnet sync takes
 longer, so the full harvest runs on a machine you control:
 
-- **EC2, by hand** (the expected path, from the private deployment repository later): an
+- **EC2, automated** (the expected path): `infra/mainnet-harvest` is a bucket plus a launch
+  template for a one-shot instance that runs this script, uploads the bundle with `publish-s3.sh`,
+  reads it back, reports its status into the bucket and terminates itself (a lifetime cap stops a
+  stuck run). The operator's private workflow launches it and watches the bucket; see
+  [its README](../../infra/mainnet-harvest/README.md), which starts "In plain words".
+- **EC2, by hand**: an
   Ubuntu 22.04 or 24.04 instance with Docker, 4 to 8 vCPUs, 16 GB of memory or more, and a 500 GB
   gp3 volume; outbound TCP 8833 to Ycash peers. Then, in `tmux`:
 
