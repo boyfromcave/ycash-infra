@@ -18,7 +18,7 @@
 ycashd:
   rpc: { port: 18832 }
   p2p: { port: 18833 }
-  extraArgs: "-dnsseed=0"
+  extraArgs: "-dnsseed=0 -maxtipage=999999999"   # -maxtipage: a testnet can sit unmined for days; see charts/ycash-testnet/README.md
   testnetProfile: fast
 gateway:
   host: lite-fast.example.org

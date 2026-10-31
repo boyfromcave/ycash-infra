@@ -20,6 +20,10 @@ locals {
   # What seedctl applies for each network (files/seedctl, check_config): the same document on every
   # host; each host drops its own address from `peers`. It reaches the hosts through the deploy
   # workflow (SSM Run Command), never through user_data, so a change here replaces no instance.
+  # Testnets get -maxtipage=999999999 first in extra_args: a testnet can stall for days when no one
+  # mines, and a node restarted after a day without blocks would think it is still syncing; it then
+  # ignores peers' getheaders and refuses getblocktemplate, so no one can join and no miner can
+  # restart the chain.
   network_config = { for k, n in local.enabled : k => {
     name       = k
     profile    = n.profile
@@ -29,7 +33,7 @@ locals {
     rpc_port   = n.rpc_port
     node_args  = n.testnet ? "-testnet -testnetprofile=${n.profile}" : ""
     dnsseed    = !n.testnet
-    extra_args = trimspace(join(" ", [var.extra_args, n.extra_args]))
+    extra_args = trimspace(join(" ", compact([n.testnet ? "-maxtipage=999999999" : "", var.extra_args, n.extra_args])))
     peers      = [for s in local.seed_keys : format("%s:%d", var.seeds[s].public_ip, n.p2p_port)]
     prefix = n.testnet && n.bootstrap && var.prefix != null ? {
       base_url    = var.prefix.base_url
