@@ -36,6 +36,28 @@ spec:
     {{- end }}
 ---
 {{- end }}
+{{- /* gateway.extraListeners: one HTTPS listener per extra host (a testnet's faucet and status page,
+charts/ycash-testnet), each with its own certificate, so one host's failed issuance never touches the
+light-wallet host's. Routes from other releases in this namespace attach by sectionName https-<name>. */ -}}
+{{- range .Values.gateway.extraListeners }}
+{{- if eq $.Values.gateway.tls.mode "certmanager" }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: { name: {{ $fn }}-{{ .name }}-tls }
+spec:
+  secretName: {{ $fn }}-{{ .name }}-tls
+  dnsNames: [{{ .host | quote }}]
+  issuerRef:
+    {{- if $.Values.gateway.tls.issuer }}
+    kind: ClusterIssuer
+    name: {{ $.Values.gateway.tls.issuer }}
+    {{- else }}
+    kind: Issuer
+    name: {{ $fn }}-selfsigned
+    {{- end }}
+---
+{{- end }}
+{{- end }}
 # Envoy proxy settings: the Service type/annotations (NLB on EKS, NodePort on kind).
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
@@ -48,7 +70,9 @@ spec:
         type: {{ .Values.gateway.service.type }}
         {{- $ann := .Values.gateway.service.annotations }}
         {{- if .Values.gateway.service.externalDns }}
-        {{- $ann = merge (dict "external-dns.alpha.kubernetes.io/hostname" .Values.gateway.host) $ann }}
+        {{- $hosts := list .Values.gateway.host }}
+        {{- range .Values.gateway.extraListeners }}{{ $hosts = append $hosts .host }}{{ end }}
+        {{- $ann = merge (dict "external-dns.alpha.kubernetes.io/hostname" (join "," $hosts)) $ann }}
         {{- end }}
         {{- with $ann }}
         annotations: {{- toYaml . | nindent 10 }}
@@ -84,6 +108,17 @@ spec:
         certificateRefs:
           - { kind: Secret, name: {{ if eq .Values.gateway.tls.mode "existing" }}{{ .Values.gateway.tls.secretName }}{{ else }}{{ $fn }}-tls{{ end }} }
       allowedRoutes: { namespaces: { from: Same } }
+    {{- range .Values.gateway.extraListeners }}
+    - name: https-{{ required "gateway.extraListeners[].name" .name }}
+      protocol: HTTPS
+      port: 443
+      hostname: {{ required "gateway.extraListeners[].host" .host | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - { kind: Secret, name: {{ if eq $.Values.gateway.tls.mode "existing" }}{{ required "gateway.extraListeners[].secretName (tls.mode existing)" .secretName }}{{ else }}{{ $fn }}-{{ .name }}-tls{{ end }} }
+      allowedRoutes: { namespaces: { from: Same } }
+    {{- end }}
     {{- if .Values.gateway.plaintextGrpc }}
     - name: grpc
       protocol: HTTP

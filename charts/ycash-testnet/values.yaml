@@ -2,14 +2,14 @@
 # cloud", only on these values (AGENTS.md rule 2). README.md beside this file says what the chart
 # runs today and what it deliberately leaves out.
 #
-# SCAFFOLD, RENDER-ONLY. The testnet parameters compiled into ycash6 and ycash-dd today are the
-# old, unreachable Ycash testnet (workspace docs/plans/yellowback-testnet-plan.md §1.1): its
-# activation hashes and minimum chain work pin a chain nobody holds, the DNS seed does not answer,
-# and UPGRADE_VAULT has no testnet height. Until N1 lands the new parameters (plan §2.1) this chart
-# can be rendered and validated, not usefully run.
+# NOT YET RUN ON A CLUSTER. The node lines know the three testnets since N1 merged
+# (-testnet -testnetprofile=fast|slow|legacy); this chart is rendered and validated in CI
+# (make lint-testnet, kubeconform, Checkov) but no release of it has run yet.
 #
-# NO KEYS. Nothing here holds a seed, a spending key or a payout address (AGENTS.md rule 4). The
-# key-holding roles (miner, faucet, attestors) wait for the owner's T-9 (plan §6.1, §8).
+# KEYS ONLY BEHIND T-9. By default nothing here holds a seed, a spending key or a payout address
+# (AGENTS.md rule 4). The faucet (below) spends a testnet wallet: it renders only with
+# testnetKeys.allowed, the deployer's opt-in under the owner's T-9 amendment of rule 4 (AGENTS.md; plan §6.1,
+# §8): set it per network when that network should run the faucet or publish to GitHub.
 nameOverride: ""
 
 # The only value this chart renders. Anything else fails the render (templates/_helpers.tpl
@@ -34,6 +34,12 @@ images:
   # `<magic><LE u32 len><block>` records for -loadblock). NOT BUILT YET: empty until it exists; the
   # render fails if prefixRestore.enabled is set without it.
   prefixFrame:  { repository: "", tag: "", digest: "", pullPolicy: IfNotPresent }
+  # images/faucet (`make image-faucet`): the faucet in FAUCET_MODE=testnet
+  faucet:       { repository: ycash/faucet,         tag: local, digest: "", pullPolicy: IfNotPresent }
+  # images/testnet-status (`make image-testnet-status`): the probe (probe.py) and the status page (status.py)
+  status:       { repository: ycash/testnet-status, tag: local, digest: "", pullPolicy: IfNotPresent }
+  # the snapshotter's S3 upload (snapshotter.publish.s3); the official AWS CLI image, by digest
+  awsCli:       { repository: amazon/aws-cli, tag: "2.27.50", digest: "sha256:48c3d4212e2f5b0e24bdc6af7708f9412ce65425a79575e0f78b8f8c0dcd70ab", pullPolicy: IfNotPresent }
 
 # ---- hardening (every container; Checkov CKV_K8S_20/22/28/30/37), as charts/ycash-lightwallet ------
 # Each node pod runs non-root with the node images' UID and RuntimeDefault seccomp
@@ -42,6 +48,9 @@ images:
 # /tmp (emptyDir: ycash-dd's zcutil/fetch-params.sh keeps its lock there, if it ever runs), $HOME /srv/ycash
 # (emptyDir: ycash-cli and wget write dotfiles there) and, for ycash-dd, $HOME/.zcash-params (PVC).
 podUid: 2001                  # ycash6 and ycash-dd contrib/docker/ycashd/Dockerfile: useradd --uid 2001
+# The Python services (faucet, probe, status) run as these UIDs: any UID works (their images keep /app
+# world-readable and write only /tmp), so they sit above 10,000 (Checkov CKV_K8S_40).
+serviceUid: 10004
 containerSecurityContext:
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
@@ -173,12 +182,183 @@ prefixRestore:
 # ---- NetworkPolicy ----------------------------------------------------------------------------
 # Ingress to the node pods: P2P from anywhere; RPC only from this release's own pods and from the
 # peers listed in rpcFrom (NetworkPolicyPeer objects, e.g. the monitoring namespace). Egress open:
-# P2P to the world, DNS, and HTTPS for the prefix and the parameter files.
+# P2P to the world, DNS, and HTTPS for the prefix and the parameter files. The faucet's wallet node
+# takes RPC from the faucet pod only; the probe's /metrics from the status page and metricsFrom.
 networkPolicy:
   enabled: true
   rpcFrom: []
+  metricsFrom:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
 
 externalSecrets:
   enabled: false
   storeRef: ""
   ycashdRpc: ""               # the secret store's name holding {rpcuser, rpcpassword}
+  # faucet.wallet.remoteKey and snapshotter.publish.github.remoteKey name the key-holding ones (T-9)
+
+# ---- T-9: keys in this chart ------------------------------------------------------------------
+# AGENTS.md rule 4 says nothing in the cluster holds a seed or a spending key. Decision T-9 (plan
+# §6.1, §8; recommended, not yet in AGENTS.md) amends it for this chart: testnet-only miner payout,
+# faucet and house-attestor keys, from External Secrets, never in a values file, and no mainnet value
+# set (yt.network refuses one). `allowed: true` is the deployer saying the amendment is in force;
+# every role that holds a key (today: the faucet's wallet, the snapshotter's GitHub token) refuses to
+# render without it.
+testnetKeys:
+  allowed: false
+
+# ---- the faucet (plan §6.2 `faucet`; images/faucet in FAUCET_MODE=testnet): OFF BY DEFAULT ----
+# Pays a fixed amount of testnet YEC (never YED) to a transparent or Sapling address, from the first
+# Sapling address of its own wallet node (`<release>-faucet-node`, ycash6, one replica, nodes.yaml):
+# that node restores its wallet from the recovery phrase in a Secret, mounted as a file and passed as
+# -mnemonicfile (the node image's YCASHD_MNEMONIC_FILE); the faucet process never sees the phrase.
+# Fund it by sending testnet YEC to that address (or, later, by a miner paying to it). Limits: per
+# client IP (IPv6 per /64, the address the gateway writes into X-Forwarded-For), per recipient address,
+# a rolling 24 h cap, one payment at a time, an optional proof-of-work challenge. No mining, no reorg,
+# no free amount. Needs testnetKeys.allowed (T-9), a wallet Secret and the lightwallet release's
+# gateway with a listener for route.host (charts/ycash-lightwallet gateway.extraListeners).
+faucet:
+  enabled: false
+  amountZat: 100000000        # 1 YEC a payment
+  perIp:      { limit: 1, windowSeconds: 86400 }
+  perAddress: { limit: 1, windowSeconds: 86400 }
+  dailyCapZat: 10000000000    # 100 YEC in any 24 h
+  powBits: 16                 # the page solves SHA-256 with this many leading zero bits (about 65,000 tries); 0 = off
+  rateSeconds: 5              # at least this long between two payments
+  trustedProxyHops: 1         # the gateway appends the client's address to X-Forwarded-For (charts/ycash-lightwallet routes.yaml)
+  # The Sapling proving files at /params/ (as the kind demo's faucet): only for a wallet that needs this
+  # copy; off on the testnets, where wallets fetch them from their usual source.
+  params: { enabled: false, url: "https://download.z.cash/downloads/", storageClassName: "", size: 1Gi }
+  wallet:
+    # The Secret holding the recovery phrase (key `secretKey`): the phrase on one line, or a
+    # z_exportwallet file's recovery_phrase= and language= lines (ycash6 -mnemonicfile). Never in git.
+    existingSecret: faucet-wallet
+    secretKey: mnemonic
+    # With externalSecrets.enabled: the secret store's name of {mnemonic}; an ExternalSecret writes
+    # existingSecret from it (infra/eks: create it by hand per network, never from Terraform state).
+    remoteKey: ""
+    from: ""                  # pay from this Sapling address instead of the wallet's first
+  route:
+    enabled: true
+    gateway: lite             # the lightwallet release's Gateway in this namespace (its release name)
+    sectionName: https-faucet # its listener for host (charts/ycash-lightwallet gateway.extraListeners name "faucet")
+    host: faucet.example.org  # T-3: faucet-fast. / faucet-slow. / faucet-legacy.<domain> (values-<network>.yaml)
+    requestsPerSecond: 10     # an Envoy local limit on the route, all clients together, before the faucet's own
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+  # The wallet node: a role of templates/node.yaml (same keys as seed). No inbound P2P (-listen=0); its
+  # RPC is reachable from the faucet pod only (templates/faucet.yaml NetworkPolicy).
+  node:
+    image: ycashd
+    replicas: 1
+    extraArgs: ""
+    confExtra: ""
+    insight: false
+    externalAddresses: []
+    antiAffinity: { topologyKey: kubernetes.io/hostname, required: false }
+    p2pService: { type: ClusterIP, annotations: {}, externalTrafficPolicy: Local, nodePortBase: 0, loadBalancerSourceRanges: [] }
+    storage: { className: "", size: 50Gi }
+    zcashParams: { enabled: false, className: "", size: 2Gi }
+    resources:
+      requests: { cpu: 500m, memory: 2Gi }
+      limits:   { memory: 6Gi }
+    readinessLagBlocks: 1
+    startupProbeFailureThreshold: 720
+    podDisruptionBudget: { enabled: false, minAvailable: 1 }
+
+# ---- the probe and the status page (plan §6.2 `status`, §6.4) ---------------------------------
+# probe (images/testnet-status probe.py): asks every node of this network over RPC (this release's
+# seeds and verifier, plus the lightwallet release's nodes below), compares their tips and state hashes
+# (vault_getinfo.statehash, yed_getstatehash; the cross-line check), checks each seed with a P2P
+# version message in this network's magic, and reads the latest state bundle's manifest. It serves
+# /metrics (the alerts below) and a public summary inside the cluster. It holds the release's RPC
+# credential; nothing outside the cluster reaches it.
+probe:
+  enabled: true
+  interval: 30
+  # host:port of the seeds to check over P2P, e.g. the EC2 seed hosts (infra/testnet-seeds) on this
+  # network's port; empty = the in-cluster seeds (seed.enabled) only
+  seeds: []
+  # the lightwallet release in this namespace whose nodes are probed too (empty = none)
+  lightwallet: { release: lite, replicas: 3 }
+  extraNodes: []              # [{name, url, line}] any other node of this network (url http://host:port/)
+  bundleManifestUrl: ""       # the latest state bundle's manifest.json (snapshotter.publish: <base>/<network>/latest/manifest.json)
+  resources:
+    requests: { cpu: 20m, memory: 48Mi }
+    limits:   { cpu: 250m, memory: 128Mi }
+# status (images/testnet-status status.py): the public page. It holds no secret and reaches no node,
+# only the probe's summary; notices and the current release candidate are values.
+status:
+  enabled: true
+  release: ""                 # the current rc, e.g. 6.22.0-rc1 (shown as is)
+  notices: []                 # [{date: "2026-11-02", text: "testnet-yb-fast resets at rc2 ..."}] (reset notices, plan §6.5)
+  route:
+    enabled: false            # needs the lightwallet release's gateway listener for host
+    gateway: lite
+    sectionName: https-status
+    host: status.example.org  # T-3: status-fast. / status-slow. / status-legacy.<domain> (values-<network>.yaml)
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits:   { cpu: 200m, memory: 96Mi }
+
+# ---- the snapshotter and bundle verifier (plan §4.1-§4.3; bundles/state/FORMAT.md): OFF BY DEFAULT ----
+# A CronJob whose pod runs, in order (init containers; any failure stops it):
+#   pick           H_B = the last multiple of `every` at least `depth` blocks below the reference node's
+#                  tip (or `height`); nothing to do when H_B is not above the last bundle's height
+#   zcash-params   the ycash-dd verifier's parameter files (as verifierDd's)
+#   produce        a ycash6 node on its own volume syncs from peers with -stopatheight=H_B and stops
+#                  there; its datadir is packed per bundles/state/FORMAT.md (sorted tar, fixed mtimes and
+#                  owners, gzip -n)
+#   restore-check  the tarball is extracted into an empty datadir and started offline (-connect=0): the
+#                  tarball's own state at H_B gives the ycash6 statement
+#   verify-dd      a ycash-dd node on its own volume syncs from peers to H_B (-stopatheight) and is
+#                  queried offline: the independent statement (plan §4.2)
+#   finalize       the statements must be byte-identical; manifest.json and SHA256SUMS are written
+# then the publish containers (off by default). Each node volume keeps its chain between runs, so a
+# run after the first syncs only the new blocks.
+snapshotter:
+  enabled: false
+  schedule: "41 3 * * *"      # daily; a new H_B comes every 1,440 blocks (about 30 h at 75 s)
+  every: 1440                 # H_B is a multiple of this (plan §4.3)
+  depth: 1000                 # ... at least this many blocks below the tip
+  minHeight: 510248           # never below the fork: the history before it is the prefix bundle's
+  height: ""                  # a fixed H_B for a manual run before an rc (kubectl create job --from=cronjob/...)
+  force: false                # pack again at a height already bundled
+  flavour: full               # full | full-insight (blocks/insight-index too: the producer node runs -insightexplorer)
+  version: ""                 # the release named in the manifest; empty = from the node's getnetworkinfo subversion
+  # the node whose tip picks H_B; empty = this release's verifier-dd RPC Service
+  referenceRpc: ""
+  # Statement fields (plan §4.2). Every statement the run produces has exactly these, and they must be
+  # byte-identical across the legs.
+  statementFields: [network, height, blockhash, chainwork, utxo_hash_serialized, vault_statehash, yed_statehash]
+  activeDeadlineSeconds: 43200   # a first run syncs the whole chain twice (ycash6 and ycash-dd)
+  storage:
+    src:  { className: "", size: 60Gi }    # the producer's ycash6 datadir (kept)
+    dd:   { className: "", size: 60Gi }    # the verifier's ycash-dd datadir (kept)
+    work: { className: "", size: 40Gi }    # the tarball and its extracted copy (an ephemeral volume per run)
+  verifierDd: { enabled: true }            # the independent ycash-dd leg (plan §4.2: at least one verifier runs ycash-dd)
+  resources:
+    requests: { cpu: "1", memory: 2Gi }
+    limits:   { memory: 6Gi }
+  publish:
+    # to an object store (plan §4.3: S3 + CloudFront): s3://<bucket>/<prefix>/<network>/<H_B>/ and
+    # <network>/latest/manifest.json. Credentials by IRSA (the ServiceAccount's role, roleArn); no secret.
+    s3: { enabled: false, bucket: "", prefix: "state", roleArn: "", region: "" }
+    # a GitHub release (draft by default) with manifest.json, SHA256SUMS and the statements; the tarball
+    # too when it is under GitHub's 2 GiB asset limit and uploadTarball. The token is a secret: a
+    # Secret (key `secretKey`) or, with externalSecrets.enabled, remoteKey; it needs testnetKeys.allowed.
+    github: { enabled: false, repository: "", draft: true, uploadTarball: false, existingSecret: snapshotter-github, secretKey: gh-token, remoteKey: "", tarballUrl: "" }
+
+# ---- monitoring: kube-prometheus-stack (plan §6.4) ----------------------------------------------
+monitoring:
+  serviceMonitor: false       # scrape the probe and the faucet (needs the ServiceMonitor CRD)
+  alerts:
+    enabled: false            # a PrometheusRule per network (needs the CRD)
+    # the label kube-prometheus-stack's ruleSelector matches (its default: release=<its release name>)
+    labels: { release: kube-prometheus-stack }
+    tipAgeSeconds: 900        # tip older than 15 min
+    minPeers: 4               # fewer peers on any node
+    forkBlocks: 2             # a side branch near the tip longer than this
+    bundleMaxAgeSeconds: 259200   # the latest bundle (or the snapshotter's last success) older than 3 days
+    diskFreeRatio: 0.15       # a volume in this namespace with less free
+    faucetMinBalanceZat: 1000000000   # 10 YEC

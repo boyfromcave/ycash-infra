@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ycash testnet faucet</title>
+<style>
+  :root { color-scheme: light dark; --line: #8884; --note: #1d4ed8; --notebg: #dbeafe; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 0 auto; padding: 1rem 16px 3rem; }
+  .banner { background: var(--notebg); color: var(--note); border: 1px solid var(--note); border-radius: .5rem; padding: .5rem .75rem; font-weight: 600; }
+  @media (prefers-color-scheme: dark) { .banner { background: #172554; color: #bfdbfe; } }
+  .card { border: 1px solid var(--line); border-radius: .75rem; padding: 1rem; margin: 1rem 0; }
+  h1 { font-size: 1.4rem; margin: .5rem 0; } h2 { font-size: 1.05rem; margin: 0 0 .5rem; }
+  input[type=text] { width: 100%; box-sizing: border-box; font: inherit; font-family: ui-monospace, monospace; font-size: .9rem; padding: .5rem; border: 1px solid var(--line); border-radius: .5rem; }
+  button { font: inherit; padding: .5rem .9rem; border-radius: .5rem; border: 1px solid var(--line); background: #2563eb; color: #fff; cursor: pointer; margin: .5rem .5rem 0 0; }
+  button[disabled] { opacity: .5; cursor: wait; }
+  code { font-family: ui-monospace, monospace; font-size: .9rem; word-break: break-all; }
+  .out { margin-top: .5rem; min-height: 1.5rem; word-break: break-all; } .ok { color: #15803d; } .err { color: #b91c1c; }
+  .small { font-size: .85rem; opacity: .8; } dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: 0; }
+  dt { opacity: .7; } dd { margin: 0; }
+</style>
+</head>
+<body>
+<div class="banner">TESTNET — the coins this faucet pays are testnet YEC and are worth nothing. Never send real YEC to a testnet address.</div>
+<h1>Ycash testnet faucet: <span id="network">…</span></h1>
+<p class="small">Testnet YEC for trying Ycash and Ycash Yellowback (YED) on a practice network. The faucet pays YEC only; YED is minted by its users.</p>
+
+<div class="card">
+  <h2>Get <span id="amount">…</span> testnet YEC</h2>
+  <p class="small">Paste a testnet address from your wallet: a transparent one or a Sapling (<code>ytestsapling1…</code>) one. One payment per address and per network address every <span id="window">…</span>.</p>
+  <input id="addr" type="text" placeholder="a testnet address" spellcheck="false" autocomplete="off">
+  <button id="send">Send me testnet YEC</button>
+  <div id="sendout" class="out"></div>
+</div>
+
+<div class="card">
+  <h2>The faucet</h2>
+  <dl>
+    <dt>Network</dt><dd id="network2">…</dd>
+    <dt>Tip height</dt><dd id="tip">…</dd>
+    <dt>Paying</dt><dd id="available">…</dd>
+  </dl>
+</div>
+<script src="testnet.js"></script>
+</body>
+</html>

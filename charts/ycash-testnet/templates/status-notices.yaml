@@ -1,0 +1,10 @@
+{{- if .Values.status.enabled }}
+# The status page's notices (status.notices: reset notices, plan §6.5), public text only.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "yt.fullname" . }}-status-notices
+  labels: {{- include "yt.labels" . | nindent 4 }}
+data:
+  notices.json: {{ toJson (default (list) .Values.status.notices) | quote }}
+{{- end }}

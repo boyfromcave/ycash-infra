@@ -18,7 +18,11 @@ yellowback-workspace (`../AGENTS.md`), on `upgrade/vault` like the other clients
    The chain is the shared state and the protocol replicates it.
 4. **Non-custodial.** Nothing in this cluster ever holds a seed, a spending key or an unsigned
    transaction for a user. `rpcuser`/`rpcpassword` are the only secrets and they are the
-   node's.
+   node's. **One exception, for the testnets only (owner decision T-9, 2026-10-29):**
+   `charts/ycash-testnet` may hold keys for worthless testnet coins: the testnet faucet's wallet
+   recovery phrase and the snapshotter's release-publishing token. They come only from External
+   Secrets (never a values file, never git), are rendered only with `testnetKeys.allowed: true`, and
+   no mainnet release of any chart may carry them. Never a user's key, never a mainnet key.
 5. **Images are built from the workspace trees at their pinned commits** (`images/*/Dockerfile`
    read `../ycash6`, `../lightwalletd-dd`); the Makefile records the commit in the tag.
    Never copy node or lightwalletd source into this repo. The published `ycashd` image

@@ -1,8 +1,15 @@
-{{ .Release.Name }} (testnet): {{ if .Values.seed.enabled }}{{ .Values.seed.replicas }}x seed (ycash6){{ end }}{{ if .Values.verifierDd.enabled }}, {{ .Values.verifierDd.replicas }}x verifier-dd (ycash-dd){{ end }}; prefix restore {{ ternary "on" "off" .Values.prefixRestore.enabled }}.
+{{ .Release.Name }} ({{ include "yt.networkName" . }}): {{ if .Values.seed.enabled }}{{ .Values.seed.replicas }}x seed (ycash6){{ end }}{{ if .Values.verifierDd.enabled }}, {{ .Values.verifierDd.replicas }}x verifier-dd (ycash-dd){{ end }}; prefix restore {{ ternary "on" "off" .Values.prefixRestore.enabled }}.
+Services: faucet {{ ternary "on" "off" .Values.faucet.enabled }}, probe {{ ternary "on" "off" .Values.probe.enabled }}, status {{ ternary "on" "off" .Values.status.enabled }}, snapshotter {{ ternary "on" "off" .Values.snapshotter.enabled }}, alerts {{ ternary "on" "off" .Values.monitoring.alerts.enabled }}.
+{{- if .Values.faucet.enabled }}
 
-SCAFFOLD: the testnet parameters in today's node binaries are the old, unreachable Ycash testnet
-(workspace docs/plans/yellowback-testnet-plan.md §1.1). Until N1 ships the new ones, these nodes
-have no peers and no chain to follow. No keys: miner, faucet and attestors wait for T-9.
+Faucet: fund the wallet node's first Sapling address:
+  kubectl -n {{ .Release.Namespace }} exec {{ include "yt.fullname" . }}-faucet-node-0 -c ycashd -- ycash-cli -datadir=/var/lib/ycash z_listaddresses
+{{- end }}
+{{- if .Values.snapshotter.enabled }}
+
+Snapshotter: a run now (e.g. before an rc, with snapshotter.height set):
+  kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "yt.fullname" . }}-snapshotter snapshot-manual
+{{- end }}
 
 P2P addresses (one Service per pod):
   kubectl -n {{ .Release.Namespace }} get svc -l app.kubernetes.io/instance={{ .Release.Name }} | grep -- -p2p

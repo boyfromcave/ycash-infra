@@ -34,7 +34,7 @@ gateway:
 regtest:
   enabled: false
   armYellowback: false
-  faucet: { enabled: false }        # the testnet faucet holds keys: charts/ycash-testnet after T-9
+  faucet: { enabled: false }        # the testnet faucet is charts/ycash-testnet `faucet` (its own wallet node; behind testnetKeys.allowed, T-9)
 externalSecrets:
   ycashdRpc: ycash/testnet-lite/ycashd-rpc
   yindexPostgres: ycash/testnet-lite/yindex-postgres

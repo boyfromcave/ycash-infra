@@ -1,0 +1,128 @@
+{{- $fn := include "yt.fullname" . }}
+{{- $net := include "yt.networkName" . }}
+{{- $ns := .Release.Namespace }}
+{{- if and .Values.monitoring.serviceMonitor (or .Values.probe.enabled .Values.faucet.enabled) }}
+# Prometheus scrapes the probe (every node and seed of this network, the state hashes, the bundle) and
+# the faucet (its balance and payments); both on their `http` port's /metrics.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $fn }}
+  labels: {{- include "yt.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }} }
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: In, values: [probe, faucet] }
+  endpoints:
+    - { port: http, path: /metrics, interval: 30s }
+{{- end }}
+{{- if .Values.monitoring.alerts.enabled }}
+{{- if not .Values.probe.enabled }}{{ fail "monitoring.alerts.enabled needs probe.enabled (the alerts read its metrics)" }}{{ end }}
+{{- $a := .Values.monitoring.alerts }}
+{{- $sel := printf "network=%q" $net }}
+---
+# The testnet alerts (plan §6.4), one rule group per network. They stop a rolling upgrade (plan §6.5).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $fn }}-alerts
+  labels: {{- include "yt.labels" . | nindent 4 }}
+    {{- with $a.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: ycash-testnet-{{ $net }}
+      rules:
+        - alert: YcashTestnetTipStale
+          expr: time() - ycash_node_tip_timestamp_seconds{ {{- $sel -}} } > {{ $a.tipAgeSeconds }}
+          for: 5m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "{{ "{{" }} $labels.node {{ "}}" }}: no new block for more than {{ div (int $a.tipAgeSeconds) 60 }} min on {{ $net }}"
+        - alert: YcashTestnetNodeDown
+          expr: ycash_node_up{ {{- $sel -}} } == 0
+          for: 10m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "{{ "{{" }} $labels.node {{ "}}" }} does not answer RPC on {{ $net }}"
+        - alert: YcashTestnetPeersLow
+          expr: ycash_node_peers{ {{- $sel -}} } < {{ $a.minPeers }}
+          for: 15m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "{{ "{{" }} $labels.node {{ "}}" }} has {{ "{{" }} $value {{ "}}" }} peers (< {{ $a.minPeers }}) on {{ $net }}"
+        - alert: YcashTestnetTipsDisagree
+          expr: ycash_nodes_tip_agree{ {{- $sel -}} } == 0
+          for: 10m
+          labels: { severity: critical, network: {{ $net | quote }} }
+          annotations:
+            summary: "the nodes of {{ $net }} hold different blocks at their common height (a chain split, or a node on another chain)"
+        - alert: YcashTestnetForkLong
+          expr: ycash_node_fork_length{ {{- $sel -}} } > {{ $a.forkBlocks }}
+          for: 5m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "{{ "{{" }} $labels.node {{ "}}" }} sees a side branch of {{ "{{" }} $value {{ "}}" }} blocks near the tip on {{ $net }}"
+        - alert: YcashTestnetStateHashDivergence
+          expr: ycash_statehash_agree{ {{- $sel -}} } == 0
+          for: 10m
+          labels: { severity: critical, network: {{ $net | quote }} }
+          annotations:
+            summary: "{{ "{{" }} $labels.kind {{ "}}" }} state hashes disagree between nodes at the same block on {{ $net }} (the cross-line verifier: G-10)"
+        - alert: YcashTestnetSeedUnreachable
+          expr: ycash_seed_up{ {{- $sel -}} } == 0
+          for: 10m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "seed {{ "{{" }} $labels.seed {{ "}}" }} does not answer in {{ $net }}'s magic"
+        - alert: YcashTestnetProbeDown
+          expr: absent(ycash_probe_last_round_timestamp_seconds{ {{- $sel -}} }) or time() - ycash_probe_last_round_timestamp_seconds{ {{- $sel -}} } > 600
+          for: 10m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "the {{ $net }} probe has not reported for 10 min: every other alert of this network is blind"
+        {{- if .Values.probe.bundleManifestUrl }}
+        - alert: YcashTestnetBundleStale
+          expr: time() - ycash_bundle_created_timestamp_seconds{ {{- $sel -}} } > {{ $a.bundleMaxAgeSeconds }}
+          for: 30m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "the latest published state bundle of {{ $net }} is older than {{ div (int $a.bundleMaxAgeSeconds) 3600 }} h"
+        {{- end }}
+        {{- if .Values.snapshotter.enabled }}
+        - alert: YcashTestnetSnapshotterStale
+          expr: time() - kube_cronjob_status_last_successful_time{namespace="{{ $ns }}", cronjob="{{ $fn }}-snapshotter"} > {{ $a.bundleMaxAgeSeconds }}
+          for: 30m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "the {{ $net }} snapshotter has not succeeded for {{ div (int $a.bundleMaxAgeSeconds) 3600 }} h"
+        - alert: YcashTestnetSnapshotterFailed
+          expr: kube_job_status_failed{namespace="{{ $ns }}", job_name=~"{{ $fn }}-snapshotter-.*"} > 0
+          for: 5m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "a {{ $net }} snapshotter run failed (statements disagree, a node did not reach H_B, or the publish): kubectl -n {{ $ns }} logs job/{{ "{{" }} $labels.job_name {{ "}}" }} --all-containers"
+        {{- end }}
+        - alert: YcashTestnetDiskLow
+          expr: kubelet_volume_stats_available_bytes{namespace="{{ $ns }}"} / kubelet_volume_stats_capacity_bytes{namespace="{{ $ns }}"} < {{ $a.diskFreeRatio }}
+          for: 15m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "volume {{ "{{" }} $labels.persistentvolumeclaim {{ "}}" }} in {{ $ns }} has less than {{ mulf $a.diskFreeRatio 100 }} % free"
+        {{- if .Values.faucet.enabled }}
+        - alert: YcashTestnetFaucetLow
+          expr: faucet_balance_zat{namespace="{{ $ns }}"} < {{ int64 $a.faucetMinBalanceZat }}
+          for: 30m
+          labels: { severity: warning, network: {{ $net | quote }} }
+          annotations:
+            summary: "the {{ $net }} faucet holds {{ "{{" }} $value | humanize {{ "}}" }} zat: send it testnet YEC"
+        - alert: YcashTestnetFaucetWrongChain
+          expr: faucet_chain_ok{namespace="{{ $ns }}"} == 0
+          for: 10m
+          labels: { severity: critical, network: {{ $net | quote }} }
+          annotations:
+            summary: "the {{ $net }} faucet's node is not on {{ $net }} (or not answering): it pays nothing"
+        {{- end }}
+{{- end }}

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ycash testnet status</title>
+<style>
+  :root { color-scheme: light dark; --line: #8884; --ok: #15803d; --bad: #b91c1c; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 44rem; margin: 0 auto; padding: 1rem 16px 3rem; }
+  h1 { font-size: 1.4rem; margin: .5rem 0; } h2 { font-size: 1.05rem; margin: 0 0 .5rem; }
+  .card { border: 1px solid var(--line); border-radius: .75rem; padding: 1rem; margin: 1rem 0; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: 0; }
+  dt { opacity: .7; } dd { margin: 0; word-break: break-all; }
+  code { font-family: ui-monospace, monospace; font-size: .9rem; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .small { font-size: .85rem; opacity: .8; }
+  ul { padding-left: 1.2rem; margin: 0; }
+</style>
+</head>
+<body>
+<h1>Ycash testnet status: <span id="network">…</span></h1>
+<p class="small">A practice network for Ycash and Ycash Yellowback (YED); its coins are worth nothing. Updated <span id="updated">…</span>.</p>
+<div class="card" id="noticecard" hidden>
+  <h2>Notices</h2>
+  <ul id="notices"></ul>
+</div>
+<div class="card">
+  <h2>The chain</h2>
+  <dl>
+    <dt>Height</dt><dd id="height">…</dd>
+    <dt>Last block</dt><dd id="tip">…</dd>
+    <dt>Peers</dt><dd id="peers">…</dd>
+    <dt>Our nodes agree</dt><dd id="agree">…</dd>
+    <dt>Seeds answering</dt><dd id="seeds">…</dd>
+  </dl>
+</div>
+<div class="card">
+  <h2>The vault upgrade</h2>
+  <dl>
+    <dt>Activation height</dt><dd id="vaultheight">…</dd>
+    <dt>Active</dt><dd id="vaultactive">…</dd>
+    <dt>Attestor set</dt><dd id="set">…</dd>
+  </dl>
+</div>
+<div class="card">
+  <h2>Software and bundles</h2>
+  <dl>
+    <dt>Release</dt><dd id="release">…</dd>
+    <dt>Node version</dt><dd id="version">…</dd>
+    <dt>Latest state bundle</dt><dd id="bundle">…</dd>
+  </dl>
+</div>
+<script src="status.js"></script>
+</body>
+</html>

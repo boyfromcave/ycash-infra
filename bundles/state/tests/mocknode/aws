@@ -1,0 +1,3 @@
+#!/bin/sh
+# records `aws s3 cp` calls (one line each) into $MOCK_AWS_LOG
+echo "$*" >> "${MOCK_AWS_LOG:?}"

@@ -6,7 +6,8 @@
 # Every image the chart renders is pinned: a tag that is not `latest`, or a digest (audit 06/I-1).
 # Fails on `tag: latest` in any values file and on any rendered `image:` with no tag/digest or :latest,
 # for the kind values and for the EKS values with the tags make eks-deploy sets; for the lightwallet
-# chart's testnet values (over the EKS values) and for charts/ycash-testnet's kind and EKS values. The
+# chart's testnet values (over the EKS values) and for charts/ycash-testnet's kind and EKS values, with
+# every testnet service off (the default) and on (ci/services-values.yaml). The
 # testnet value sets leave the release digests to the deploy (plan §6.1: release images by digest),
 # so they render here with a placeholder digest: what this checks for them is that every OTHER image
 # in the render is pinned and that no values file says latest. charts/ycash-testnet itself refuses
@@ -50,4 +51,10 @@ helm template t $CHART -f $CHART/values-eks.yaml "${EKS_SET[@]}" | check eks || 
 helm template t $CHART -f $CHART/values-eks.yaml -f $CHART/values-testnet.yaml "${TESTNET_LITE_SET[@]}" | check lightwallet-testnet || fail=1
 helm template t $TESTNET -f $TESTNET/values-kind.yaml | check testnet-kind || fail=1
 helm template t $TESTNET -f $TESTNET/values-eks.yaml "${TESTNET_EKS_SET[@]}" | check testnet-eks || fail=1
+# every testnet service on (ci/services-values.yaml): the faucet, the probe and status page, the
+# snapshotter's node and AWS CLI images; on EKS their own images take placeholder digests like the nodes'
+SERVICES=(-f "$TESTNET/ci/services-values.yaml")
+helm template t $TESTNET -f $TESTNET/values-kind.yaml -f $TESTNET/values-yb-fast.yaml "${SERVICES[@]}" | check testnet-services-kind || fail=1
+helm template t $TESTNET -f $TESTNET/values-eks.yaml -f $TESTNET/values-yb-fast.yaml "${TESTNET_EKS_SET[@]}" "${SERVICES[@]}" \
+  --set "images.faucet.digest=$PLACEHOLDER" --set "images.status.digest=$PLACEHOLDER" | check testnet-services-eks || fail=1
 exit $fail

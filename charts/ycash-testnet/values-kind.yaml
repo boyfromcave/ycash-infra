@@ -22,3 +22,8 @@ verifierDd:
   storage: { size: 5Gi }
   zcashParams: { enabled: true, size: 3Gi }
   resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 2Gi } }
+# The probe and the status page run here from `make image-testnet-status` (ycash/testnet-status:local);
+# no lightwallet release is probed (kind's lightwallet chart runs regtest). The faucet and the
+# snapshotter stay off (values.yaml): turn them on with --set to try them.
+probe:
+  lightwallet: { release: "" }

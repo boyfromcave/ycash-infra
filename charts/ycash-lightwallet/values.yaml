@@ -120,6 +120,11 @@ gateway:
   createClass: true           # the Envoy Gateway helm chart installs the controller, not a GatewayClass
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
   host: lite.example.org
+  # More HTTPS hosts on the same gateway (and load balancer), for routes of other releases in this
+  # namespace: [{name: faucet, host: faucet-fast.example.org}] makes listener https-faucet with its own
+  # certificate (certmanager mode; tls.mode existing: secretName per entry) and adds the host to the
+  # external-dns annotation. charts/ycash-testnet's faucet and status routes attach to them.
+  extraListeners: []
   tls:
     mode: certmanager         # certmanager | existing | none
     issuer: ""                # ClusterIssuer name (certmanager mode); "" on kind = a self-signed one this chart creates
