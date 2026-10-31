@@ -130,7 +130,7 @@ root_disk=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)" | head -1)
 dev=''
 for _ in $(seq 1 60); do
   while read -r name type model; do
-    [ "$type" = disk ] && [ "$(basename "$name")" != "$root_disk" ] || continue
+    if [ "$type" != disk ] || [ "$(basename "$name")" = "$root_disk" ]; then continue; fi
     [[ $model == *Elastic\ Block\ Store* || $name == /dev/xvd* ]] || continue
     [ -z "$(lsblk -no PARTTYPE "$name" | tr -d '[:space:]')" ] || continue
     dev=$name; break 2
