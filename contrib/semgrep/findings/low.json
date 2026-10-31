@@ -1,0 +1,102 @@
+{
+ "bucket": "low",
+ "sla_days": 180,
+ "findings": [
+  {
+   "fingerprint": "ba2071e94710b231",
+   "rule": "terraform.aws.security.aws-secretsmanager-secret-unencrypted",
+   "path": "infra/eks/module/secrets.tf",
+   "line": 18,
+   "first_seen": "2026-10-29",
+   "due": "2027-04-27"
+  },
+  {
+   "fingerprint": "9512e3888c6f9dd0",
+   "rule": "terraform.aws.security.aws-secretsmanager-secret-unencrypted",
+   "path": "infra/eks/module/secrets.tf",
+   "line": 33,
+   "first_seen": "2026-10-29",
+   "due": "2027-04-27"
+  },
+  {
+   "fingerprint": "e3d6a74a4d05859e",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "infra/eks/module/tests/networks.tftest.hcl",
+   "line": 37,
+   "first_seen": "2026-10-29",
+   "due": "2027-04-27"
+  },
+  {
+   "fingerprint": "c17f0e0dc33e3028",
+   "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+   "path": "bundles/prefix/fetch_addnodes.py",
+   "line": 49,
+   "first_seen": "2026-10-31",
+   "due": "2027-04-29"
+  },
+  {
+   "fingerprint": "452f5806959dbfda",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "images/faucet/tests/test_faucet.py",
+   "line": 88,
+   "first_seen": "2026-10-31",
+   "due": "2027-04-29"
+  },
+  {
+   "fingerprint": "0ce6ebe2195e14c8",
+   "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+   "path": "images/faucet/tests/test_faucet.py",
+   "line": 101,
+   "first_seen": "2026-10-31",
+   "due": "2027-04-29"
+  },
+  {
+   "fingerprint": "bdf39432a9b33a17",
+   "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+   "path": "images/testnet-status/probe.py",
+   "line": 62,
+   "first_seen": "2026-10-31",
+   "due": "2027-04-29"
+  },
+  {
+   "fingerprint": "db01587d587ffb25",
+   "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+   "path": "images/testnet-status/probe.py",
+   "line": 176,
+   "first_seen": "2026-10-31",
+   "due": "2027-04-29"
+  },
+  {
+   "fingerprint": "a86156dddb14e6b8",
+   "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+   "path": "images/testnet-status/status.py",
+   "line": 56,
+   "first_seen": "2026-10-31",
+   "due": "2027-04-29"
+  },
+  {
+   "fingerprint": "546c6b957e1426ce",
+   "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+   "path": "images/testnet-status/tests/test_status.py",
+   "line": 219,
+   "first_seen": "2026-10-31",
+   "due": "2027-04-29"
+  },
+  {
+   "fingerprint": "781d8fbf175fcf9e",
+   "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+   "path": "images/testnet-status/tests/test_status.py",
+   "line": 228,
+   "first_seen": "2026-10-31",
+   "due": "2027-04-29"
+  },
+  {
+   "fingerprint": "ab61f99f83d6cedd",
+   "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+   "path": "images/testnet-status/tests/test_status.py",
+   "line": 231,
+   "first_seen": "2026-10-31",
+   "due": "2027-04-29"
+  }
+ ]
+}
