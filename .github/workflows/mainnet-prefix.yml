@@ -168,6 +168,8 @@ jobs:
           rc=0; bundles/prefix/run-local-mainnet.sh "$HS" || rc=$?
           if [ "$rc" = 3 ]; then
             echo "::error::the sync did not finish within the job's budget; on a self-hosted runner with work_root set, dispatch again to resume"
+          elif [ "$rc" = 4 ]; then
+            echo "::error::the node found no usable mainnet peer (its peer log is above); dispatch again with working peers in addnodes"
           fi
           exit "$rc"
       - name: verify again outside the container (runner's Python)

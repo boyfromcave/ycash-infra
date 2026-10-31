@@ -33,6 +33,8 @@
 #         SYNC_TIMEOUT_MIN=<n>   stop the sync cleanly after n minutes, exit 3, keep state (0 = never)
 #         PROGRESS_MIN=<n>       log the sync every n minutes (default 5)
 #         POLL_SEC=<n>           seconds between polls (default 30)
+#         NO_PEERS_MIN=<n>       give up (exit 4) if the node has no headers after n minutes, printing
+#                                its peer and DNS-seed log lines (default 15; 0 = never)
 #         MIN_DEPTH, SPLIT_STEP  the split-height rule (1000, 10000); change only for trials
 #
 # Phases (each logs its duration to $WORK/timings.txt):
@@ -65,6 +67,7 @@ KEEP_RAW=${KEEP_RAW:-0}
 SYNC_TIMEOUT_MIN=${SYNC_TIMEOUT_MIN:-0}
 PROGRESS_MIN=${PROGRESS_MIN:-5}
 POLL_SEC=${POLL_SEC:-30}
+NO_PEERS_MIN=${NO_PEERS_MIN:-15}
 MIN_DEPTH=${MIN_DEPTH:-1000}
 SPLIT_STEP=${SPLIT_STEP:-10000}
 PACK=ycash-prefix:local
@@ -78,7 +81,7 @@ isnum() { [[ $1 =~ ^[0-9]+$ ]]; }
 for v in DBCACHE WORKERS JOBS PROGRESS_MIN POLL_SEC SPLIT_STEP; do
   isnum "${!v}" && (( ${!v} > 0 )) || die "$v must be a positive integer (got '${!v}')"
 done
-for v in SYNC_TIMEOUT_MIN MIN_DEPTH; do isnum "${!v}" || die "$v must be an integer (got '${!v}')"; done
+for v in SYNC_TIMEOUT_MIN MIN_DEPTH NO_PEERS_MIN; do isnum "${!v}" || die "$v must be an integer (got '${!v}')"; done
 [[ $HS_IN == auto ]] || isnum "$HS_IN" || die "H_S must be 'auto' or an integer (got '$HS_IN')"
 [[ $HS_IN == auto ]] || HS_IN=$((10#$HS_IN))
 case "$CROSSCHECK" in
@@ -181,6 +184,13 @@ while :; do
   if [ -n "$HS" ]; then
     if [ "$CROSSCHECK" != sync ]; then break; fi
     if isnum "$b_blocks" && (( b_blocks >= HS + MIN_DEPTH )); then TIP_B=$b_blocks; break; fi
+  fi
+  if (( NO_PEERS_MIN > 0 && el >= NO_PEERS_MIN )) && ! { isnum "$a_headers" && (( a_headers > 0 )); }; then
+    log "sync: no block headers after $el min: the node has found no usable mainnet peer. Its log:"
+    docker logs "$NODE_A" 2>&1 | grep -iE 'seed|addnode|version message|connect|peer|socket|disconnect|misbehav|ban|proxy|error' | tail -80 >&2 || true
+    log "peers tried: ${ADDNODES:-none given} plus the DNS seed; pass working peers as ADDNODES"
+    cleanup
+    exit 4
   fi
   if (( SYNC_TIMEOUT_MIN > 0 && el >= SYNC_TIMEOUT_MIN )); then
     log "sync: not done after $el min; stopping the nodes cleanly so state/ can resume"
