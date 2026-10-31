@@ -65,4 +65,44 @@ rc=0
 [ "$rc" = 2 ] && [ ! -e "$TMP/r-busy.json" ] || { echo "FAIL: non-empty work exit $rc"; exit 1; }
 pass=$((pass + 1))
 
+# Ycash mainnet history: real mainnet blocks 0..20 packed by harvest.py itself, imported under
+# mainnet parameters (no -testnet, magic 24e92764), z_gettreestate compared with treestate.json
+python3 -I - "$T/../.." "$TMP/mraw" "$TMP/mprefix" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import harvest as H
+blocks = [bytes.fromhex(l.strip()) for l in open(os.path.join(sys.argv[1], "tests", "vectors", "ycash-mainnet-blocks-0-20.hex")) if l.strip()]
+os.makedirs(sys.argv[2])
+with open(os.path.join(sys.argv[2], H.chunk_name(0, 20, gz=False, net=H.MAINNET)), "wb") as f:
+    f.write(b"".join(len(b).to_bytes(4, "little") + b for b in blocks))
+ts = {"hash": H.display(H.parse_block(blocks[20])[0]), "height": 20, "time": H.block_time(blocks[20]),
+      "sprout": {"commitments": {"finalRoot": "mock-sprout"}}, "sapling": {"commitments": {"finalRoot": "mock-sapling"}}}
+H.pack(sys.argv[2], sys.argv[3], 20, log=lambda *a: None, net=H.MAINNET, treestate=ts)
+PY
+"$IMPORT" --bin "$T/mocknode" --prefix "$TMP/mprefix" --network ycash-mainnet --mode checkpoints --work "$TMP/w-main" \
+  --out "$TMP/r-main.json" --line mock "${fast[@]}" > "$TMP/log-main" 2>&1 \
+  || { cat "$TMP/log-main"; echo "FAIL: mainnet import"; exit 1; }
+check "$TMP/r-main.json" 'r["ok"] and r["prefix"]["magic"] == "24e92764" and r["prefix"]["network"] == "ycash-mainnet"'
+check "$TMP/r-main.json" 'r["prefix"]["tip_hash"] == "0001cdc223983ae6a2392cc0a92caeaea870bb587d0dd686374059ff25708013"'
+check "$TMP/r-main.json" 'r["prefix"]["split"]["chaintx"] == 21 and "-testnet" not in r["node_args"]'
+# hashes at 0, 20 (manifest) and the treestate comparison
+check "$TMP/r-main.json" 'r["hash_checks"] == {"checked": 3, "mismatches": []}'
+pass=$((pass + 1))
+
+# the node computes a different tree state than the one published: refused
+rc=0
+MOCK_SAPLING_ROOT=other "$IMPORT" --bin "$T/mocknode" --prefix "$TMP/mprefix" --network ycash-mainnet --mode checkpoints \
+  --work "$TMP/w-main-ts" --out "$TMP/r-main-ts.json" "${fast[@]}" > "$TMP/log-main-ts" 2>&1 || rc=$?
+[ "$rc" = 1 ] || { cat "$TMP/log-main-ts"; echo "FAIL: treestate mismatch exit $rc"; exit 1; }
+check "$TMP/r-main-ts.json" 'not r["ok"] and "treestate" in r["failure"]'
+pass=$((pass + 1))
+
+# a mainnet prefix offered as testnet history is refused before the node starts
+rc=0
+"$IMPORT" --bin "$T/mocknode" --prefix "$TMP/mprefix" --mode checkpoints --work "$TMP/w-main-wrong" \
+  --out "$TMP/r-main-wrong.json" "${fast[@]}" > "$TMP/log-main-wrong" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q "manifest network 'ycash-mainnet', expected 'zcash-testnet'" "$TMP/log-main-wrong" \
+  || { cat "$TMP/log-main-wrong"; echo "FAIL: network mix-up exit $rc"; exit 1; }
+pass=$((pass + 1))
+
 echo "test_import.sh: $pass checks passed"

@@ -42,7 +42,7 @@ DOMAIN      ?= lite.example.org
 # to roll out before the target fails (scripts/kind-check-release.sh)
 ROLLOUT_TIMEOUT ?= 10m
 
-.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local zcash-params-test
+.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -279,11 +279,15 @@ PREFIX_DIR  ?= prefix-work/out
 prefix-test: ## the prefix harvest's offline unit tests (Python stdlib, real Zcash testnet vectors)
 	python3 -I -m unittest discover -s bundles/prefix/tests -v
 
-prefix-verify: ## re-verify a finished prefix directory offline (PREFIX_DIR=prefix-work/out)
+prefix-verify: ## re-verify a finished prefix directory offline, either network (PREFIX_DIR=prefix-work/out)
 	python3 -I bundles/prefix/harvest.py verify $(PREFIX_DIR)
 
 prefix-local: ## harvest the prefix on this machine with Docker (PREFIX_LAST=4799 smoke; 510247 full)
 	bundles/prefix/run-local.sh $(PREFIX_LAST)
+
+MAINNET_SPLIT ?= auto
+mainnet-prefix-local: ## harvest Ycash mainnet 0..H_S on this machine with Docker (MAINNET_SPLIT=auto or a height; the EC2 path)
+	bundles/prefix/run-local-mainnet.sh $(MAINNET_SPLIT)
 
 # --- the testnet services (charts/ycash-testnet: faucet, probe and status page, snapshotter) ---
 state-test: ## the state bundle's offline tests: snapshot.sh's steps against a stand-in node, verify.py (bundles/state)

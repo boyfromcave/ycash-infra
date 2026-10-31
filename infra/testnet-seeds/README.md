@@ -86,6 +86,10 @@ inside 4 GiB) applies to all of them.
   (formatting it only if it has no filesystem), installs `seedctl` and two systemd units (start
   the networks at boot; check the prefix imports every 10 minutes), then starts every network
   the data volume already carries. A new volume carries none: the deploy workflow starts them.
+- **Testnet nodes run with `-maxtipage=999999999`** (`nodes/locals.tf`, before `extra_args`):
+  a seed restarted while its testnet has gone over a day without a block would otherwise think
+  it is still syncing and ignore newcomers' header requests (`images/ycashd/README.md`, "Keeping
+  a quiet testnet alive"). Mainnet nodes keep the default.
 
 ## Per-network lifecycle: `seedctl` through SSM Run Command
 

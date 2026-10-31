@@ -27,7 +27,7 @@ ycashd:
   # -dnsseed=0: the compiled testseed.ycash.xyz does not answer. The seeds' addresses arrive with T-3
   # (hostnames) and charts/ycash-testnet's P2P Services: then confExtra gets `addnode=<seed>:18833`
   # lines. A bootstrap init container (YCASHD_BOOTSTRAP, plan §4.4) follows ycash-bootstrap (N2).
-  extraArgs: "-dnsseed=0"
+  extraArgs: "-dnsseed=0 -maxtipage=999999999"   # -maxtipage: a testnet can sit unmined for days; see charts/ycash-testnet/README.md
   confExtra: ""
 gateway:
   host: testnet-lite.example.org    # T-3: `testnet-lite.<domain>` (plan §6.3)

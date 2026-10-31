@@ -144,6 +144,8 @@ spec:
             - { name: YCASHD_INSIGHT, value: {{ ternary "1" "0" $r.insight | quote }} }
             {{- $args := list (printf "-port=%d" (int $root.Values.p2p.port)) }}
             {{- if not $root.Values.peers.dnsseed }}{{ $args = append $args "-dnsseed=0" }}{{ end }}
+            {{- /* a testnet can sit unmined for days: without -maxtipage a node restarted after a day without blocks thinks it is still syncing, ignores getheaders and refuses getblocktemplate */}}
+            {{- if eq $net "testnet" }}{{ $args = append $args "-maxtipage=999999999" }}{{ end }}
             {{- with $r.extraArgs }}{{ $args = append $args . }}{{ end }}
             - { name: YCASHD_EXTRA_ARGS, value: {{ join " " $args | quote }} }
             {{- $conf := list }}

@@ -4,7 +4,8 @@
 """A stand-in for the `docker` CLI, just enough of it to run run-local.sh end to end offline.
 
 The pack image's commands run harvest.py directly, with the -v mounts mapped back to host paths.
-The zebrad image becomes a fake Zebra (tests/test_run_local.py) whose tip climbs as it is polled.
+The zebrad image becomes a fake Zebra (tests/test_run_local.py) whose tip climbs as it is polled;
+the ycashd image a fake ycashd (tests/test_run_local_mainnet.py) that answers with or without a network.
 It models the Zebra v7.0.0 behaviour the 2026-10-28 smoke run hit: started with `--network none`
 it never answers RPC (network init waits for DNS seeders before the RPC server starts).
 State lives in $FAKE_DOCKER_DIR: <name>.pid, .port, .cookie, .log, .net, .requests.
@@ -78,6 +79,20 @@ def parse_run(args):
 
 def run(args):
     o, image, cmd = parse_run(args)
+    if o["detach"] and "ycashd" in image:
+        name = o["name"]
+        with open(f(name, ".net"), "w") as fh:
+            fh.write(o["network"])
+        with open(f(name, ".history"), "a") as fh:
+            fh.write(json.dumps({"network": o["network"], "args": cmd}) + "\n")
+        state = dict((c, h) for h, c in o["volumes"])["/var/lib/ycash"]
+        log = open(f(name, ".log"), "w")
+        p = subprocess.Popen([sys.executable, "-I", os.path.join(TESTS, "test_run_local_mainnet.py"),
+                              "--serve", D, name, state], stdout=log, stderr=log, start_new_session=True)
+        with open(f(name, ".pid"), "w") as fh:
+            fh.write(str(p.pid))
+        print(name)
+        return 0
     if o["detach"]:  # zebrad
         name = o["name"]
         with open(f(name, ".net"), "w") as fh:
@@ -108,7 +123,7 @@ def run(args):
         return a
     cmd = [host(a) for a in cmd]
     net = o["network"] or ""
-    if net.startswith("container:") and cmd and cmd[0] in ("tip", "export"):
+    if net.startswith("container:") and cmd and cmd[0] in ("tip", "export", "chaininfo", "treestate", "crosscheck"):
         with open(f(net.split(":", 1)[1], ".port")) as fh:
             cmd[1:1] = ["--rpc-url", "http://127.0.0.1:%s" % fh.read().strip()]
     return subprocess.call([sys.executable, "-I", HARVEST] + cmd)

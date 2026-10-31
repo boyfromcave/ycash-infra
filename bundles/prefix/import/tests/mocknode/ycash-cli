@@ -4,7 +4,7 @@ import hashlib, json, os, sys
 
 args = [a for a in sys.argv[1:] if not a.startswith("-")]
 opts = dict(a.partition("=")[::2] for a in sys.argv[1:] if a.startswith("-"))
-net = os.path.join(opts["-datadir"], "testnet3")
+net = os.path.join(opts["-datadir"], "testnet3") if "-testnet" in opts else opts["-datadir"]
 try:
     with open(os.path.join(net, "mock-state.json")) as f:
         st = json.load(f)
@@ -14,7 +14,7 @@ hashes = st["hashes"]
 tip = len(hashes) - 1
 cmd, rest = args[0], args[1:]
 if cmd == "getblockchaininfo":
-    print(json.dumps({"chain": "test", "blocks": tip, "headers": tip,
+    print(json.dumps({"chain": st.get("chain", "test"), "blocks": tip, "headers": tip,
                       "bestblockhash": hashes[-1] if hashes else None,
                       "chainwork": "%064x" % (32 * (tip + 1)), "initialblockdownload": True}, indent=2))
 elif cmd == "getblockhash":
@@ -28,6 +28,12 @@ elif cmd == "gettxoutsetinfo":
     print(json.dumps({"height": tip, "bestblock": hashes[-1], "transactions": tip + 1, "txouts": tip + 1,
                       "hash_serialized": hashlib.sha256("".join(hashes).encode()).hexdigest(),
                       "total_amount": 0}, indent=2))
+elif cmd == "z_gettreestate":
+    # a fixed tree state per block (mainnet imports compare it with the published treestate.json)
+    h = int(rest[0])
+    print(json.dumps({"hash": hashes[h], "height": h, "time": st["times"][h],
+                      "sprout": {"commitments": {"finalRoot": "mock-sprout"}},
+                      "sapling": {"commitments": {"finalRoot": os.environ.get("MOCK_SAPLING_ROOT", "mock-sapling")}}}))
 elif cmd == "stop":
     open(os.path.join(net, "mock-stop"), "w").close()
     print("Ycash server stopping")
