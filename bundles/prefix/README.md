@@ -221,13 +221,26 @@ longer, so the full harvest runs on a machine you control:
 - **The workflow, on a self-hosted runner** (`.github/workflows/mainnet-prefix.yml`, dispatch):
   `runner` = the runner's label, `timeout_minutes` up to 7200, `work_root` = a directory kept
   between runs (the node datadirs survive, so a run cut short resumes), `split_height`,
-  `crosscheck`, `crosscheck_connect`, `addnodes`, and `publish` with `publish_to` = `github`, `s3`
+  `crosscheck`, `crosscheck_connect`, `addnodes_url` (default the explorer's network page, below),
+  `addnodes`, and `publish` with `publish_to` = `github`, `s3`
   or `github-and-s3`. The S3 target lives in the GitHub Environment `mainnet-prefix-s3`: secrets
   `PREFIX_S3_URI` (`s3://bucket/path`), `PREFIX_S3_REGION` and, for OIDC, `PREFIX_S3_ROLE_ARN`
   (without it the runner's own credentials are used, e.g. an EC2 instance profile).
 
-On a push or a pull request the workflow only runs the tests and a smoke harvest of blocks
-0..20,000 on a hosted runner.
+On a push or a pull request the workflow only runs the offline tests. The harvest itself, which
+connects to Ycash mainnet, runs only when started by hand (a trial: `split_height` 19999,
+`crosscheck` none).
+
+### Peers: read from the explorer at run time
+
+**In plain words:** Ycash's built-in ways of finding peers no longer work: the DNS seed
+`seed.ycash.xyz` returns no addresses and the two addresses compiled into Ycash 4.5.0 do not
+answer (ycash6 has none). A fresh node therefore finds no one. The Ycash explorer publishes the
+peers its own node sees, on `https://explorer.ycash.xyz/network.html` and as an `addnode=`
+download, so the harvest reads that list when it runs (`fetch_addnodes.py`) and passes it to the
+node. Nothing is hardcoded, and the addresses are not printed in the public log (only a count; the
+node's peer log is shown with addresses masked if it finds no one). Locally: `python3 -I
+bundles/prefix/fetch_addnodes.py --out peers.txt`, then `ADDNODES_FILE=peers.txt`.
 
 ### Sizes (estimates, to be replaced by the first run's numbers)
 

@@ -57,6 +57,10 @@ on:
         description: "the second node's only peers, space-separated host[:port] (a disjoint peer set); empty = the DNS seed"
         type: string
         default: ""
+      addnodes_url:
+        description: "a page to read the main node's peers from at run time (fetch_addnodes.py: addnode= lines, getpeerinfo JSON or a peer table, and the download it links to); none = skip"
+        type: string
+        default: https://explorer.ycash.xyz/network.html
       addnodes:
         description: "extra peers for the main node, space-separated host[:port]"
         type: string
@@ -156,6 +160,18 @@ jobs:
           else root="$RUNNER_TEMP/mainnet-harvest"; mkdir -p "$root"; fi
           df -h "$root"
           echo "root=$root" >> "$GITHUB_OUTPUT"
+      - name: peers (from the explorer, at run time)
+        id: peers
+        env:
+          ADDNODES_URL: ${{ inputs.addnodes_url }}
+        run: |
+          set -euo pipefail
+          f="$RUNNER_TEMP/addnodes.txt"; : > "$f"
+          if [ -n "$ADDNODES_URL" ] && [ "$ADDNODES_URL" != none ]; then
+            [[ $ADDNODES_URL =~ ^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._/?=\&-]*)?$ ]] || { echo "addnodes_url: an https URL, plain characters" >&2; exit 1; }
+            python3 -I bundles/prefix/fetch_addnodes.py --url "$ADDNODES_URL" --out "$f"
+          fi
+          echo "file=$f" >> "$GITHUB_OUTPUT"
       - name: harvest (sync, export, verify, pack)
         env:
           HS: ${{ steps.in.outputs.hs }}
@@ -164,6 +180,7 @@ jobs:
           CROSSCHECK: ${{ steps.in.outputs.crosscheck }}
           CROSSCHECK_CONNECT: ${{ inputs.crosscheck_connect }}
           ADDNODES: ${{ inputs.addnodes }}
+          ADDNODES_FILE: ${{ steps.peers.outputs.file }}
           PROGRESS_MIN: "10"
         run: |
           set -euo pipefail

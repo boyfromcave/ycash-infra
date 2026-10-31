@@ -24,6 +24,8 @@
 #                                        (http://host:port), CROSSCHECK_RPC_USER, CROSSCHECK_RPC_PASSWORD
 #                                  none  only for H_S <= 2,250,000 (pack refuses above it)
 #         ADDNODES="h[:p] ..."   extra peers for the main node (-addnode); the DNS seed is used too
+#         ADDNODES_FILE=<file>   more peers, one host[:port] per line (fetch_addnodes.py writes it from
+#                                the explorer's network page); never echoed, only counted
 #         CROSSCHECK_CONNECT="h[:p] ..."  the second node's ONLY peers (-connect): a disjoint peer
 #                                set makes it independent of the first; empty = the DNS seed
 #         DBCACHE=<MB>           ycashd -dbcache (default 4096)
@@ -59,6 +61,11 @@ HS_IN=${1:-${SPLIT_HEIGHT:-auto}}
 WORK=${WORK:-$PWD/mainnet-work}
 CROSSCHECK=${CROSSCHECK:-sync}
 ADDNODES=${ADDNODES:-}
+ADDNODES_FILE=${ADDNODES_FILE:-}
+if [ -n "$ADDNODES_FILE" ]; then
+  [ -r "$ADDNODES_FILE" ] || die "ADDNODES_FILE $ADDNODES_FILE is not readable"
+  ADDNODES="$ADDNODES $(tr '\n' ' ' < "$ADDNODES_FILE")"
+fi
 CROSSCHECK_CONNECT=${CROSSCHECK_CONNECT:-}
 DBCACHE=${DBCACHE:-4096}
 WORKERS=${WORKERS:-4}
@@ -187,8 +194,10 @@ while :; do
   fi
   if (( NO_PEERS_MIN > 0 && el >= NO_PEERS_MIN )) && ! { isnum "$a_headers" && (( a_headers > 0 )); }; then
     log "sync: no block headers after $el min: the node has found no usable mainnet peer. Its log:"
-    docker logs "$NODE_A" 2>&1 | grep -iE 'seed|addnode|version message|connect|peer|socket|disconnect|misbehav|ban|proxy|error' | tail -80 >&2 || true
-    log "peers tried: ${ADDNODES:-none given} plus the DNS seed; pass working peers as ADDNODES"
+    # addresses masked: the log is public, the peer list need not be
+    docker logs "$NODE_A" 2>&1 | grep -iE 'seed|addnode|version message|connect|peer|socket|disconnect|misbehav|ban|proxy|error' \
+      | sed -E 's/[0-9]{1,3}(\.[0-9]{1,3}){3}/<ip>/g; s/\[[0-9A-Fa-f:]+\]/<ip6>/g' | tail -80 >&2 || true
+    log "peers tried: $(echo "$ADDNODES" | wc -w) given plus the DNS seed; pass working peers as ADDNODES or ADDNODES_FILE"
     cleanup
     exit 4
   fi
