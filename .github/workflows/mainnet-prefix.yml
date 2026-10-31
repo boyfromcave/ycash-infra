@@ -1,0 +1,327 @@
+# mainnet-prefix: harvest Ycash mainnet blocks 0..H_S, the history testnet-yb-slow and testnet-legacy
+# start from, into a bundle in the prefix format (bundles/prefix/FORMAT.md, network ycash-mainnet).
+#
+# In plain words: two of the Ycash testnets (testnet-yb-slow and testnet-legacy) start as a copy of
+# the real Ycash network's history up to a recent block, the split height H_S. This job makes that
+# copy in public: it runs the Ycash node (ycashd, pinned image) until it has synced Ycash mainnet,
+# copies blocks 0..H_S out, checks every one against the checkpoints compiled into Ycash, has a
+# second, independently synced node confirm the newer blocks, and packs them so that anyone who
+# reruns it gets the same files byte for byte. The same bundle is also the start of a mainnet
+# bootstrap bundle: a new mainnet node can load it instead of downloading every block from peers.
+#
+# Where it runs. Ycash mainnet history is tens of gigabytes and the sync takes longer than the six
+# hours any GitHub-hosted job (larger runners included) may run, so the full harvest needs a
+# self-hosted runner (the `runner` input, for example an EC2 instance registered with a label) or
+# runs outside Actions with bundles/prefix/run-local-mainnet.sh on EC2 (README.md, "Mainnet
+# history"). On a push or a pull request this job does a small smoke run on a hosted runner
+# (blocks 0..20,000, which is below every newer-block concern).
+#
+# Jobs:
+#   test            the offline unit tests, and the vendored checkpoint list re-derived from the
+#                   pinned ycash6 commit's src/chainparams.cpp (fetched from GitHub)
+#   harvest         bundles/prefix/run-local-mainnet.sh: sync (two nodes), export, verify, pack;
+#                   uploads the artifact `mainnet-prefix`
+#   publish-github  dispatch with publish and a GitHub target, from upgrade/vault: re-verifies,
+#                   attests provenance, creates release mainnet-prefix-v1 (refuses if it exists)
+#   publish-s3      dispatch with publish and an S3 target, from upgrade/vault, in the GitHub
+#                   Environment `mainnet-prefix-s3`, whose secrets name the location and the role
+#                   (PREFIX_S3_URI, PREFIX_S3_REGION, optional PREFIX_S3_ROLE_ARN; without a role
+#                   the runner's own credentials are used, e.g. an EC2 instance profile)
+name: mainnet-prefix
+on:
+  push:
+    branches: [upgrade/vault, "claude/**"]
+    paths: [bundles/prefix/**, .github/workflows/mainnet-prefix.yml]
+  pull_request:
+    paths: [bundles/prefix/**, .github/workflows/mainnet-prefix.yml]
+  workflow_dispatch:
+    inputs:
+      split_height:
+        description: "H_S, the last copied block: auto (the most recent multiple of 10,000 at least 1,000 below the synced tip) or a number"
+        type: string
+        default: auto
+      runner:
+        description: "runner label: a self-hosted label for the full run (hosted jobs stop at 6 h); ubuntu-latest for trials"
+        type: string
+        default: ubuntu-latest
+      timeout_minutes:
+        description: "job time limit in minutes (hosted runners stop at 360 regardless; self-hosted up to 7200)"
+        type: string
+        default: "350"
+      crosscheck:
+        description: "how blocks above the newest compiled checkpoint (2,250,000) are confirmed: sync = a second node syncs alongside"
+        type: choice
+        options: [sync, none]
+        default: sync
+      crosscheck_connect:
+        description: "the second node's only peers, space-separated host[:port] (a disjoint peer set); empty = the DNS seed"
+        type: string
+        default: ""
+      addnodes:
+        description: "extra peers for the main node, space-separated host[:port]"
+        type: string
+        default: ""
+      work_root:
+        description: "self-hosted only: an absolute directory kept between runs (node datadirs survive, so a rerun resumes the sync); empty = the job's temporary space"
+        type: string
+        default: ""
+      publish:
+        description: "publish the bundle (from upgrade/vault only)"
+        type: boolean
+        default: false
+      publish_to:
+        description: "where to publish"
+        type: choice
+        options: [github, s3, github-and-s3]
+        default: github
+permissions: {}
+concurrency:
+  group: mainnet-prefix-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+env:
+  # the release name (testnet shadow-fork plan §6.2); the bundle is immutable once published
+  RELEASE_TAG: mainnet-prefix-v1
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - run: make prefix-test
+      - name: the vendored mainnet checkpoints equal the pinned ycash6 commit's
+        run: |
+          set -euo pipefail
+          commit=$(python3 -I bundles/prefix/harvest.py constants --network ycash-mainnet | sed -n 's/^YCASH_CHECKPOINTS_COMMIT=//p')
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/boyfromcave/ycash6/$commit/src/chainparams.cpp" -o "$RUNNER_TEMP/chainparams.cpp"
+          python3 -I bundles/prefix/harvest.py main-checkpoints --chainparams "$RUNNER_TEMP/chainparams.cpp" --check
+      - name: shellcheck
+        run: shellcheck -S warning bundles/prefix/run-local-mainnet.sh bundles/prefix/publish-s3.sh
+
+  harvest:
+    needs: test
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '120') }}
+    permissions:
+      contents: read
+    outputs:
+      split_height: ${{ steps.done.outputs.split_height }}
+      sums_sha256: ${{ steps.done.outputs.sums_sha256 }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: inputs
+        id: in
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_HS: ${{ inputs.split_height }}
+          IN_TIMEOUT: ${{ inputs.timeout_minutes }}
+          IN_XC: ${{ inputs.crosscheck }}
+          IN_XC_CONNECT: ${{ inputs.crosscheck_connect }}
+          IN_ADDNODES: ${{ inputs.addnodes }}
+          IN_WORK_ROOT: ${{ inputs.work_root }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_dispatch ]; then
+            hs=$IN_HS; timeout=$IN_TIMEOUT; xc=$IN_XC; work_root=$IN_WORK_ROOT
+          else
+            hs=20000; timeout=120; xc=none; work_root=''
+          fi
+          [[ $hs == auto || $hs =~ ^[0-9]+$ ]] || { echo "split_height: auto or a number" >&2; exit 1; }
+          if ! [[ $timeout =~ ^[0-9]+$ ]] || (( timeout < 30 )); then echo "timeout_minutes: a number >= 30" >&2; exit 1; fi
+          case "$xc" in sync|none) ;; *) echo "crosscheck: sync or none" >&2; exit 1 ;; esac
+          for p in $IN_XC_CONNECT $IN_ADDNODES; do
+            [[ $p =~ ^([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:[0-9]+)?$ ]] || { echo "not a host[:port]: $p" >&2; exit 1; }
+          done
+          if [ -n "$work_root" ]; then
+            [[ $work_root =~ ^/[A-Za-z0-9._/-]+$ && $work_root != *..* ]] || { echo "work_root: an absolute path, plain characters" >&2; exit 1; }
+          fi
+          # the sync budget: the job's limit less export, pack and the artifact upload
+          if (( timeout > 400 )); then budget=$(( timeout - 240 )); else budget=$(( timeout - 25 )); fi
+          {
+            echo "hs=$hs"; echo "budget=$budget"; echo "crosscheck=$xc"; echo "work_root=$work_root"
+          } >> "$GITHUB_OUTPUT"
+      - name: work directory
+        id: w
+        env:
+          WORK_ROOT: ${{ steps.in.outputs.work_root }}
+        run: |
+          set -euo pipefail
+          if [ -n "$WORK_ROOT" ]; then root=$WORK_ROOT; mkdir -p "$root"
+          elif sudo -n mkdir -p /mnt/mainnet-harvest 2>/dev/null && sudo -n chown "$(id -u):$(id -g)" /mnt/mainnet-harvest; then root=/mnt/mainnet-harvest
+          else root="$RUNNER_TEMP/mainnet-harvest"; mkdir -p "$root"; fi
+          df -h "$root"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+      - name: harvest (sync, export, verify, pack)
+        env:
+          HS: ${{ steps.in.outputs.hs }}
+          WORK: ${{ steps.w.outputs.root }}
+          SYNC_TIMEOUT_MIN: ${{ steps.in.outputs.budget }}
+          CROSSCHECK: ${{ steps.in.outputs.crosscheck }}
+          CROSSCHECK_CONNECT: ${{ inputs.crosscheck_connect }}
+          ADDNODES: ${{ inputs.addnodes }}
+          PROGRESS_MIN: "10"
+        run: |
+          set -euo pipefail
+          rc=0; bundles/prefix/run-local-mainnet.sh "$HS" || rc=$?
+          if [ "$rc" = 3 ]; then
+            echo "::error::the sync did not finish within the job's budget; on a self-hosted runner with work_root set, dispatch again to resume"
+          fi
+          exit "$rc"
+      - name: verify again outside the container (runner's Python)
+        env:
+          WORK: ${{ steps.w.outputs.root }}
+        run: python3 -I bundles/prefix/harvest.py verify "$WORK/out"
+      - name: outputs
+        id: done
+        env:
+          WORK: ${{ steps.w.outputs.root }}
+        run: |
+          set -euo pipefail
+          echo "split_height=$(cat "$WORK/split-height")" >> "$GITHUB_OUTPUT"
+          echo "sums_sha256=$(sha256sum "$WORK/out/SHA256SUMS" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: summary
+        if: always()
+        env:
+          WORK: ${{ steps.w.outputs.root }}
+        run: |
+          {
+            echo "## mainnet-prefix: Ycash mainnet history"
+            if [ -f "$WORK/out/SHA256SUMS" ]; then
+              # shellcheck disable=SC2016  # the backticks are Markdown, inside Python
+              python3 -I -c '
+          import json, sys
+          m = json.load(open(sys.argv[1]))
+          s = m["split"]
+          print("Split height %d, hash `%s`, time %d, chaintx %d; %d chunks, %d bytes gzipped; %d cross-check heights."
+                % (s["height"], s["hash"], s["time"], s["chaintx"], len(m["chunks"]),
+                   sum(c["gz_bytes"] for c in m["chunks"]), len(m["crosscheck"])))' "$WORK/out/manifest.json"
+              echo '### SHA256SUMS'; echo '```'; cat "$WORK/out/SHA256SUMS"; echo '```'
+            fi
+            if [ -f "$WORK/harvest-report.json" ]; then echo '### Run'; echo '```'; cat "$WORK/harvest-report.json"; echo '```'; fi
+            if [ -f "$WORK/timings.txt" ]; then echo '### Durations'; echo '```'; cat "$WORK/timings.txt"; echo '```'; fi
+            echo '### Disk'; echo '```'; du -sh "$WORK"/* 2>/dev/null || true; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mainnet-prefix
+          path: |
+            ${{ steps.w.outputs.root }}/out/*.blocks.gz
+            ${{ steps.w.outputs.root }}/out/manifest.json
+            ${{ steps.w.outputs.root }}/out/treestate.json
+            ${{ steps.w.outputs.root }}/out/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish-github:
+    needs: harvest
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/upgrade/vault' &&
+      (inputs.publish_to == 'github' || inputs.publish_to == 'github-and-s3')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mainnet-prefix
+          path: dist
+      - name: verify the artifact before publishing
+        env:
+          SUMS_SHA256: ${{ needs.harvest.outputs.sums_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -I bundles/prefix/harvest.py verify dist
+          echo "$SUMS_SHA256  dist/SHA256SUMS" | sha256sum -c -
+          # a publishable split height is past the newest compiled checkpoint, so it was cross-checked
+          python3 -I -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["network"] == "ycash-mainnet" and m["last_height"] > 2250000 and m["crosscheck"], m["last_height"]' dist/manifest.json
+      - name: refuse an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG exists; a published bundle is immutable" >&2; exit 1
+          fi
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: create the release (draft, upload in batches, then publish)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HS: ${{ needs.harvest.outputs.split_height }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Ycash mainnet blocks 0..$HS: the history testnet-yb-slow and testnet-legacy start from, and the start of a mainnet bootstrap bundle (prefix format v1, network ycash-mainnet, bundles/prefix/FORMAT.md)."
+            echo
+            echo "Audit: rerun the mainnet-prefix workflow (or bundles/prefix/run-local-mainnet.sh $HS) and compare SHA256SUMS; run"
+            echo "\`python3 -I bundles/prefix/harvest.py verify <dir>\` on the downloaded files; check provenance with"
+            echo "\`gh attestation verify <file> -R $GITHUB_REPOSITORY\`."
+            echo
+            echo '```'; cat dist/SHA256SUMS; echo '```'
+          } > notes.md
+          gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft \
+            --title "$RELEASE_TAG: Ycash mainnet 0..$HS" --notes-file notes.md
+          mapfile -t files < <(find dist -maxdepth 1 -type f | sort)
+          for ((i = 0; i < ${#files[@]}; i += 20)); do
+            for try in 1 2 3; do
+              if gh release upload "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --clobber "${files[@]:i:20}"; then break; fi
+              [ "$try" = 3 ] && exit 1; sleep 30
+            done
+          done
+          n=$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')
+          [ "$n" = "${#files[@]}" ] || { echo "release has $n assets, expected ${#files[@]}" >&2; exit 1; }
+          gh release edit "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --draft=false
+
+  publish-s3:
+    needs: harvest
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/upgrade/vault' &&
+      (inputs.publish_to == 's3' || inputs.publish_to == 'github-and-s3')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
+    environment: mainnet-prefix-s3
+    permissions:
+      contents: read
+      id-token: write  # OIDC for PREFIX_S3_ROLE_ARN
+    env:
+      HAS_ROLE: ${{ secrets.PREFIX_S3_ROLE_ARN != '' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mainnet-prefix
+          path: dist
+      - name: verify the artifact before publishing
+        env:
+          SUMS_SHA256: ${{ needs.harvest.outputs.sums_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 -I bundles/prefix/harvest.py verify dist
+          echo "$SUMS_SHA256  dist/SHA256SUMS" | sha256sum -c -
+          python3 -I -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["network"] == "ycash-mainnet" and m["last_height"] > 2250000 and m["crosscheck"], m["last_height"]' dist/manifest.json
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.HAS_ROLE == 'true'
+        with:
+          role-to-assume: ${{ secrets.PREFIX_S3_ROLE_ARN }}
+          aws-region: ${{ secrets.PREFIX_S3_REGION }}
+          role-session-name: ycash-infra-mainnet-prefix
+          mask-aws-account-id: true
+      - name: upload (refuses an existing bundle; index files last)
+        env:
+          S3_URI: ${{ secrets.PREFIX_S3_URI }}
+          AWS_REGION: ${{ secrets.PREFIX_S3_REGION }}
+        run: |
+          set -euo pipefail
+          [ -n "$S3_URI" ] || { echo "::error::the mainnet-prefix-s3 environment has no PREFIX_S3_URI secret"; exit 1; }
+          bundles/prefix/publish-s3.sh dist "${S3_URI%/}/$RELEASE_TAG"
+          echo "Published to the environment's S3 location under $RELEASE_TAG/." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,276 @@
+# mainnet-prefix-import: import the Ycash mainnet history bundle into both node lines under mainnet
+# parameters and record the result.
+#
+# In plain words: the `mainnet-prefix` job copies Ycash mainnet's history (blocks 0..H_S) into a set
+# of files. This job proves that both versions of today's Ycash node software accept that copy as
+# real Ycash mainnet history: each node reads every block from the files on mainnet settings (the
+# real network's magic, 24e92764, and its checkpoints), must end on exactly the block H_S the files
+# name, with the same hash, and must compute the same shielded tree state at H_S as the one
+# published beside the bundle. It runs for ycash6 and ycash-dd; checking every proof and signature
+# from scratch as well (-checkpoints=0) is an option, because it takes much longer.
+#
+# Triggers:
+#   workflow_dispatch  prefix_run_id (a successful mainnet-prefix run of this repository), the runner
+#                      (a mainnet import needs room for the bundle, the framed copy and the datadir:
+#                      about three times the history; a self-hosted label for the full history),
+#                      optionally the node commits and the full leg.
+#   push / pull_request on this workflow or bundles/prefix/import/: the unit job only (frame.py tests,
+#                      import.sh against the stand-in node, mainnet included), no node and no bundle.
+#
+# Security: the bundle is data only; frame.py (from this checkout) checks SHA256SUMS, the manifest,
+# the split block, the cross-check hashes and every block before the node sees a byte. The token is
+# read-only (actions: read, contents: read). Node binaries come only from the `node-bin` artifact of a
+# push/schedule/dispatch run of the node repository's yellowback-tests.yml whose head_sha is the
+# requested commit (testnet-prefix-import.yml's pattern). Those artifacts are kept 3 days; for an older
+# commit, dispatch yellowback-tests.yml on it first.
+name: mainnet-prefix-import
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefix_run_id:
+        description: 'a successful mainnet-prefix run of this repository (numeric run id)'
+        required: true
+        type: string
+      runner:
+        description: 'runner label (glibc >= 2.35, as ubuntu-22.04); a self-hosted label for the full history'
+        type: string
+        default: ubuntu-22.04
+      timeout_minutes:
+        description: 'per-leg time limit (hosted runners stop at 360 regardless)'
+        type: string
+        default: '350'
+      full:
+        description: 'also run the -checkpoints=0 leg on each line (much slower)'
+        type: boolean
+        default: false
+      ycash6_sha:
+        description: 'ycash6 commit (its yellowback-tests node-bin artifact is used)'
+        type: string
+        default: '71e74a9efc8118ab72ad9b526e09b454f4e79b64'
+      ycash_dd_sha:
+        description: 'ycash-dd commit (its yellowback-tests node-bin artifact is used)'
+        type: string
+        default: 'fec0be1d1152b66f331429bcf4be8cfe85ad0572'
+  push:
+    branches: [upgrade/vault, 'claude/**']
+    paths:
+      - .github/workflows/mainnet-prefix-import.yml
+      - bundles/prefix/import/**
+  pull_request:
+    paths:
+      - .github/workflows/mainnet-prefix-import.yml
+      - bundles/prefix/import/**
+
+permissions: {}
+
+jobs:
+  unit:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: frame.py unit tests
+        run: python3 -I bundles/prefix/import/tests/test_frame.py -v
+      - name: import.sh against the stand-in node (testnet and mainnet)
+        run: bundles/prefix/import/tests/test_import.sh
+
+  resolve:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read  # read the bundle's run and its artifact list
+    outputs:
+      prefix_run: ${{ steps.r.outputs.prefix_run }}
+      matrix: ${{ steps.r.outputs.matrix }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_RUN: ${{ inputs.prefix_run_id }}
+          IN_Y6: ${{ inputs.ycash6_sha }}
+          IN_DD: ${{ inputs.ycash_dd_sha }}
+          IN_FULL: ${{ inputs.full }}
+          IN_TIMEOUT: ${{ inputs.timeout_minutes }}
+        run: |
+          set -euo pipefail
+          case "$IN_RUN" in *[!0-9]*|'') echo "::error::prefix run id is not numeric"; exit 1 ;; esac
+          case "$IN_TIMEOUT" in *[!0-9]*|'') echo "::error::timeout_minutes is not a number"; exit 1 ;; esac
+          (( IN_TIMEOUT >= 30 )) || { echo "::error::timeout_minutes must be >= 30"; exit 1; }
+          for s in "$IN_Y6" "$IN_DD"; do
+            [[ $s =~ ^[0-9a-f]{40}$ ]] || { echo "::error::a node commit is not a full 40-hex sha"; exit 1; }
+          done
+          ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$IN_RUN" --jq \
+            'select(.path == ".github/workflows/mainnet-prefix.yml" and .conclusion == "success"
+                    and .head_repository.full_name == env.GITHUB_REPOSITORY
+                    and (.event == "push" or .event == "schedule" or .event == "workflow_dispatch")) | .id')
+          [ "$ok" = "$IN_RUN" ] || { echo "::error::run $IN_RUN is not a successful push/schedule/dispatch mainnet-prefix run of $GITHUB_REPOSITORY"; exit 1; }
+          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$IN_RUN/artifacts" --jq '[.artifacts[] | select(.name == "mainnet-prefix" and (.expired | not))] | length')
+          [ "$n" = 1 ] || { echo "::error::run $IN_RUN has no unexpired mainnet-prefix artifact"; exit 1; }
+          modes='"checkpoints"'; [ "$IN_FULL" = true ] && modes='"checkpoints","full"'
+          matrix=$(printf '{"line":["ycash6","ycash-dd"],"mode":[%s],"include":[{"line":"ycash6","sha":"%s"},{"line":"ycash-dd","sha":"%s"}]}' "$modes" "$IN_Y6" "$IN_DD")
+          { echo "prefix_run=$IN_RUN"; echo "matrix=$matrix"; } >> "$GITHUB_OUTPUT"
+          echo "- bundle: mainnet-prefix run [$IN_RUN]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$IN_RUN)" >> "$GITHUB_STEP_SUMMARY"
+
+  import:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) }}
+    permissions:
+      contents: read
+      actions: read  # gh run download: the bundle run here, the node runs in the node repositories
+    env:
+      LINE: ${{ matrix.line }}
+      MODE: ${{ matrix.mode }}
+      NODE_REPO: boyfromcave/${{ matrix.line }}
+      NODE_SHA: ${{ matrix.sha }}
+      PREFIX_RUN: ${{ needs.resolve.outputs.prefix_run }}
+      TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: work directory (the runner's larger /mnt disk when there is one)
+        id: w
+        run: |
+          set -euo pipefail
+          if sudo -n mkdir -p /mnt/import 2>/dev/null && sudo -n chown "$(id -u):$(id -g)" /mnt/import; then root=/mnt/import
+          else root="$RUNNER_TEMP/import"; mkdir -p "$root"; fi
+          rm -rf "${root:?}"/*
+          df -h "$root"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+      - name: download the bundle (data only)
+        id: prefix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT: ${{ steps.w.outputs.root }}
+        run: |
+          set -euo pipefail
+          gh run download "$PREFIX_RUN" -R "$GITHUB_REPOSITORY" -n mainnet-prefix -D "$ROOT/prefix-dl"
+          mapfile -t sums < <(find "$ROOT/prefix-dl" -maxdepth 2 -type f -name SHA256SUMS)
+          [ "${#sums[@]}" = 1 ] || { echo "::error::the mainnet-prefix artifact has ${#sums[@]} SHA256SUMS files, expected 1"; exit 1; }
+          dir=$(dirname "${sums[0]}")
+          du -sh "$dir"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+      - name: download the node binaries from a trusted node run
+        id: node
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT: ${{ steps.w.outputs.root }}
+        run: |
+          set -euo pipefail
+          runs=$(gh api "repos/$NODE_REPO/actions/workflows/yellowback-tests.yml/runs?head_sha=$NODE_SHA&per_page=100" --jq \
+            '[.workflow_runs[] | select(.head_sha == env.NODE_SHA and .head_repository.full_name == env.NODE_REPO
+                and (.event == "push" or .event == "schedule" or .event == "workflow_dispatch"))]
+             | sort_by(if .conclusion == "success" then 0 else 1 end) | .[].id')
+          got=''
+          for r in $runs; do
+            if gh run download "$r" -R "$NODE_REPO" -n node-bin -D "$ROOT/node-dl" 2>/dev/null; then got=$r; break; fi
+          done
+          [ -n "$got" ] || { echo "::error::no node-bin artifact in the trusted yellowback-tests runs of $NODE_REPO at $NODE_SHA (runs: ${runs:-none}); artifacts expire after 3 days: dispatch yellowback-tests.yml on that commit"; exit 1; }
+          mkdir -p "$ROOT/bin-src" "$ROOT/bin"
+          if [ -f "$ROOT/node-dl/node-bin.tgz" ]; then tar -xzf "$ROOT/node-dl/node-bin.tgz" -C "$ROOT/bin-src" src/ycashd src/ycash-cli
+          elif [ -f "$ROOT/node-dl/node-bin.tar" ]; then tar -xf "$ROOT/node-dl/node-bin.tar" -C "$ROOT/bin-src" src/ycashd src/ycash-cli
+          else echo "::error::node-bin holds neither node-bin.tgz nor node-bin.tar"; ls -l "$ROOT/node-dl"; exit 1; fi
+          for b in ycashd ycash-cli; do
+            head -c4 "$ROOT/bin-src/src/$b" | od -An -c | grep -q 'E   L   F' || { echo "::error::$b is not an ELF executable"; exit 1; }
+            install -m 0755 "$ROOT/bin-src/src/$b" "$ROOT/bin/$b"
+          done
+          rm -rf "$ROOT/node-dl" "$ROOT/bin-src"
+          "$ROOT/bin/ycashd" --version | head -n 1 || true
+          echo "run=$got" >> "$GITHUB_OUTPUT"
+          echo "dir=$ROOT/bin" >> "$GITHUB_OUTPUT"
+      - name: zk parameters (ycash-dd only; the sums its zcutil/fetch-params.sh pins)
+        if: matrix.line == 'ycash-dd'
+        id: params
+        env:
+          ROOT: ${{ steps.w.outputs.root }}
+        run: |
+          set -euo pipefail
+          dir="$ROOT/zcash-params"; mkdir -p "$dir"; cd "$dir"
+          for f in sapling-spend.params sapling-output.params sprout-groth16.params; do
+            for i in 1 2; do curl -fsSL --retry 3 -o "$f.part.$i" "https://download.z.cash/downloads/$f.part.$i"; done
+            cat "$f.part.1" "$f.part.2" > "$f" && rm "$f.part.1" "$f.part.2"
+          done
+          sha256sum -c <<'EOF'
+          8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13  sapling-spend.params
+          2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4  sapling-output.params
+          b685d700c60328498fbde589c8c7c484c722b788b265b72af448a5bf0ee55b50  sprout-groth16.params
+          EOF
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+      - name: import under mainnet parameters
+        env:
+          ROOT: ${{ steps.w.outputs.root }}
+          PREFIX_DIR: ${{ steps.prefix.outputs.dir }}
+          BIN_DIR: ${{ steps.node.outputs.dir }}
+          PARAMS_DIR: ${{ steps.params.outputs.dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/result"
+          extra=()
+          [ -z "$PARAMS_DIR" ] || extra+=(--paramsdir "$PARAMS_DIR")
+          # wait for the tip: the job limit less 20 minutes for the downloads and framing
+          max_wait=$(( (TIMEOUT_MINUTES - 20) * 60 ))
+          bundles/prefix/import/import.sh --bin "$BIN_DIR" --prefix "$PREFIX_DIR" --network ycash-mainnet --mode "$MODE" \
+            --work "$ROOT/work" --out "$RUNNER_TEMP/result/result-$LINE-$MODE.json" \
+            --line "$LINE" --node-sha "$NODE_SHA" --max-wait "$max_wait" --dbcache 4096 "${extra[@]}"
+      - name: summary
+        if: ${{ !cancelled() }}
+        env:
+          NODE_RUN: ${{ steps.node.outputs.run }}
+        run: |
+          {
+            echo "### $LINE, $MODE (mainnet parameters)"
+            echo "- node: $NODE_REPO commit \`$NODE_SHA\`, node-bin from run [$NODE_RUN]($GITHUB_SERVER_URL/$NODE_REPO/actions/runs/$NODE_RUN)"
+            echo "- bundle: mainnet-prefix run [$PREFIX_RUN]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$PREFIX_RUN)"
+            echo
+            if [ -f "$RUNNER_TEMP/result/result-$LINE-$MODE.json" ]; then
+              python3 -I bundles/prefix/import/summarize.py "$RUNNER_TEMP/result/result-$LINE-$MODE.json" || true
+            else
+              echo "No result file: the job failed before the import."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
+        with:
+          name: mainnet-import-result-${{ matrix.line }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/result/
+          if-no-files-found: warn
+          retention-days: 90
+
+  compare:
+    needs: [resolve, import]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: mainnet-import-result-*
+          path: results
+          merge-multiple: true
+      - name: compare the results (one tip and hash across both lines)
+        env:
+          FULL: ${{ inputs.full }}
+        run: |
+          set -euo pipefail
+          want=2; [ "$FULL" = true ] && want=4
+          mapfile -t files < <(find results -name 'result-*.json' | sort)
+          { echo "## Mainnet history import: all legs"; echo; } >> "$GITHUB_STEP_SUMMARY"
+          [ "${#files[@]}" = "$want" ] || echo "Only ${#files[@]} of $want results exist." >> "$GITHUB_STEP_SUMMARY"
+          rc=0
+          if [ "${#files[@]}" -gt 0 ]; then
+            python3 -I bundles/prefix/import/summarize.py "${files[@]}" >> "$GITHUB_STEP_SUMMARY" || rc=$?
+          fi
+          [ "${#files[@]}" = "$want" ] && [ "$rc" = 0 ]
