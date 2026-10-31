@@ -102,6 +102,8 @@ jobs:
 
   harvest:
     needs: test
+    # Connects to Ycash mainnet peers: only when started by hand, never on a push or a PR.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '120') }}
     permissions:
