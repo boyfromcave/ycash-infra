@@ -1,0 +1,54 @@
+{
+ "bucket": "medium",
+ "sla_days": 90,
+ "findings": [
+  {
+   "fingerprint": "7bbd383164c877aa",
+   "rule": "python.lang.security.audit.insecure-file-permissions",
+   "path": "bundles/prefix/tests/test_mainnet.py",
+   "line": 386,
+   "first_seen": "2026-10-31",
+   "due": "2027-01-29"
+  },
+  {
+   "fingerprint": "981eec729b731bab",
+   "rule": "python.lang.security.audit.insecure-file-permissions",
+   "path": "bundles/prefix/tests/test_run_local_mainnet.py",
+   "line": 108,
+   "first_seen": "2026-10-31",
+   "due": "2027-01-29"
+  },
+  {
+   "fingerprint": "f7b06a7c88d919d2",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "bundles/prefix/tests/test_run_local_mainnet.py",
+   "line": 118,
+   "first_seen": "2026-10-31",
+   "due": "2027-01-29"
+  },
+  {
+   "fingerprint": "4ef74b8c3b40607d",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "bundles/state/tests/test_state.py",
+   "line": 132,
+   "first_seen": "2026-10-31",
+   "due": "2027-01-29"
+  },
+  {
+   "fingerprint": "51c19afcf1cadd9c",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "images/testnet-status/tests/test_status.py",
+   "line": 214,
+   "first_seen": "2026-10-31",
+   "due": "2027-01-29"
+  },
+  {
+   "fingerprint": "f929053e49478689",
+   "rule": "terraform.aws.security.aws-subnet-has-public-ip-address",
+   "path": "infra/mainnet-harvest/network.tf",
+   "line": 24,
+   "first_seen": "2026-10-31",
+   "due": "2027-01-29"
+  }
+ ]
+}
