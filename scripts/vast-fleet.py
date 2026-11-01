@@ -59,7 +59,17 @@ LABEL_RE = re.compile(r"^ycash-([a-z][a-z0-9]{0,15})-([0-9]{1,3})(?:\.until-([0-
 UNTIL_FMT = "%Y%m%dT%H%MZ"
 WORKER_RE = re.compile(r"^[A-Za-z0-9._-]{1,48}$")
 PAYOUT_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{26,40}$")
-IMAGE_RE = re.compile(r"^[a-z0-9][a-z0-9./_-]*(?::[0-9]+)?(?:/[a-z0-9./_-]+)*@sha256:[0-9a-f]{64}$")
+# An image by digest: <name>@sha256:<64 hex>. The name is checked on its own, with no nested
+# repetition (a registry host with a port, then a path), so matching is linear.
+IMAGE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,254}(?::[0-9]{1,5}/[a-z0-9][a-z0-9._/-]{0,254})?$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def image_ok(image):
+    if not isinstance(image, str) or image.count("@") != 1:
+        return False
+    name, digest = image.split("@")
+    return bool(IMAGE_NAME_RE.match(name) and DIGEST_RE.match(digest))
 POOL_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})?:([0-9]{1,5})$")
 ARG_RE = re.compile(r"^[A-Za-z0-9=,._:/*-]+$")
 GPU_RE = re.compile(r"^[A-Za-z0-9 ._-]{2,40}$")
@@ -253,7 +263,7 @@ def parse_fleet(raw):
             if a.split("=", 1)[0] in FORBIDDEN_ARGS:
                 raise FleetError(f"{where}.extra_args: {a} is set by the image or not allowed")
         image = n.get("image", default_image)
-        if not isinstance(image, str) or not IMAGE_RE.match(image):
+        if not image_ok(image):
             raise FleetError(f"{where}.image: an image by digest, <repository>@sha256:<64 hex>")
         disk = n.get("disk_gb", default_disk)
         if not isinstance(disk, int) or isinstance(disk, bool) or not 4 <= disk <= 64:
@@ -691,9 +701,9 @@ def main(argv=None):
     sub.add_parser("expire")
     a = ap.parse_args(argv)
 
+    # The key is a GitHub environment secret, which Actions masks in every log line on its own;
+    # it is never printed here, not even in an ::add-mask:: line.
     key = os.environ.get("VAST_API_KEY", "")
-    if key:
-        mask(key)
     try:
         fleet = load_fleet(a.fleet)
         nets = fleet["networks"]

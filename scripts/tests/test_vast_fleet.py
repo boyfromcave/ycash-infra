@@ -446,6 +446,25 @@ class TestBurst(Base):
         self.assertEqual(self.creates(), [])
 
 
+class TestImage(unittest.TestCase):
+    def test_image_names(self):
+        ok = ["ghcr.io/example/ycash-miner@sha256:" + "a" * 64,
+              "registry.example:5000/team/miner@sha256:" + "b" * 64,
+              "miner@sha256:" + "c" * 64]
+        bad = ["ghcr.io/example/ycash-miner:latest", "ghcr.io/x@sha256:" + "a" * 63,
+               "a@b@sha256:" + "a" * 64, "UPPER/x@sha256:" + "a" * 64, 7]
+        for i in ok:
+            self.assertTrue(vf.image_ok(i), i)
+        for i in bad:
+            self.assertFalse(vf.image_ok(i), i)
+
+    def test_no_backtracking(self):
+        import time
+        t = time.time()
+        self.assertFalse(vf.image_ok("0/" + "-/" * 5000 + "!@sha256:" + "a" * 64))
+        self.assertLess(time.time() - t, 1.0)
+
+
 class TestSecrets(Base):
     def test_key_never_printed_and_ids_masked_in_actions(self):
         self.fake.write({"offers": copy.deepcopy(OFFERS), "instances": [inst(7000123, "ycash-fast-0")]})
@@ -454,7 +473,7 @@ class TestSecrets(Base):
         self.run_fleet("status")
         out = self.out
         visible = "\n".join(line for line in out.splitlines() if not line.startswith("::add-mask::"))
-        self.assertIn(f"::add-mask::{KEY}", out)
+        self.assertNotIn(KEY, out)                       # not even in an ::add-mask:: line
         self.assertIn("::add-mask::7000123", out)
         self.assertIn("::add-mask::198.51.100.", out)
         self.assertNotIn(KEY, visible)
