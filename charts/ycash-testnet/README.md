@@ -241,7 +241,7 @@ helm upgrade --install testnet charts/ycash-testnet -n yb-fast -f values-eks.yam
 
 | Not here | Why | Waits for |
 |---|---|---|
-| `miner` (`-gen -mineraddress`) | not planned: the testnets' blocks come from GPU miners rented on Vast.ai (owner, 2026-11-01; `infra/vast-miners/README.md`), and the node's CPU miner cannot keep up at Equihash 192,7 | — |
+| `miner` (`-gen -mineraddress`) | not planned: the testnets' blocks come from GPU miners rented on Vast.ai (owner, 2026-11-01; `infra/vast-miners/README.md`); slow and legacy need about 109 Sol/s at Equihash 192,7, far beyond a CPU | — |
 | `pool` (yolo), the stratum endpoint those miners use | a payout address; where the pools run (the seed hosts or this chart) is open | T-9 (the `AGENTS.md` rule 4 amendment for this chart) |
 | `attestor` (house seats), `bridge-persona` | hold signing keys | T-9, T-5 (the founding set) |
 | `dnsseed` | the testnets have fixed seeds only (D1) | — |
