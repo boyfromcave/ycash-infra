@@ -8,7 +8,7 @@
 | `ycash/web` | `images/web/Dockerfile` | `yew/web` after `npm run build` |
 | `ycash/faucet` | `images/faucet/Dockerfile` ([README](faucet/README.md): the kind demo's regtest faucet and a testnet's faucet) | `images/faucet` |
 | `ycash/testnet-status` | `images/testnet-status/Dockerfile` ([README](testnet-status/README.md): a testnet's probe and status page) | `images/testnet-status` |
-| `ghcr.io/<owner>/ycash-miner` | `images/miner/Dockerfile` ([README](miner/README.md): the testnet GPU miner, lolMiner at Equihash 192,7; published by `miner-image.yml`) | `images/miner` |
+| `ghcr.io/<owner>/ycash-miner` | `images/miner/Dockerfile` ([README](miner/README.md): the testnet GPU miner launcher, no miner binary: it downloads lolMiner at start and checks its pinned SHA-256; published by `miner-image.yml`) | `images/miner` |
 | `ycash/personas` | `images/personas/Dockerfile` | see the file |
 
 The node and lightwalletd images are owned by their repositories (rule 5 in AGENTS.md); this

@@ -310,10 +310,10 @@ zcash-params-test: ## the parameter mirror's offline tests: SHA256SUMS vs the ch
 	YCASH_DD=$(YCASH_DD) python3 -I -m unittest discover -s bundles/zcash-params/tests -v
 
 # --- the testnet GPU miners on Vast.ai (images/miner, scripts/vast-fleet.py, infra/vast-miners) ---
-image-miner: ## the testnet GPU miner (images/miner: lolMiner at a pinned, checksummed release; Equihash 192,7, ZcashPoW)
+image-miner: ## the testnet GPU miner launcher (images/miner: no miner binary; downloads lolMiner at start, SHA-256 pinned in miners.conf)
 	docker build --platform linux/amd64 -t $(REGISTRY)/ycash-miner:local images/miner
 
-miners-test: ## offline: the miner entrypoint against a stand-in lolMiner, vast-fleet.py against a stand-in Vast API, the example fleet file
+miners-test: ## offline: the miner entrypoint against a stand-in curl and stand-in miners, vast-fleet.py against a stand-in Vast API, the example fleet file
 	shellcheck -S warning images/miner/entrypoint.sh images/miner/tests/*.sh
 	images/miner/tests/entrypoint-test.sh
 	python3 -I -m unittest discover -s scripts/tests -p 'test_vast_fleet.py' -v

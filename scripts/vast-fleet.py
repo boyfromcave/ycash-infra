@@ -34,6 +34,8 @@ The REST API used (as the vastai CLI 1.10.0 calls it, https://console.vast.ai):
   GET    /api/v1/instances/      the account's instances, paged (next_token -> after_token)
   POST   /api/v0/bundles/        search offers (type on-demand | bid)
   PUT    /api/v0/asks/<offer>/   rent an offer (label, image, env, disk, runtype args, price for bid)
+Each miner's environment: POOL_URL, WORKER, MINER (lolminer | miniz; miniz only with the fleet's
+pinned miniz_url / miniz_sha256, passed as MINIZ_URL / MINIZ_SHA256), PAYOUT and MINER_ARGS if set.
   PUT    /api/v0/instances/<id>/ relabel (a burst's end time)
   DELETE /api/v0/instances/<id>/ destroy
 Standard library only.
@@ -76,11 +78,15 @@ SECRET_VALUE_RES = [
     re.compile(r"://[^/@\s]*:[^/@\s]*@"),       # user:password@ in a URL
 ]
 NET_KEYS = {"count", "gpu_names", "max_dph", "min_reliability", "rental", "pools", "worker_prefix",
-            "payout", "extra_args", "image", "disk_gb", "comment"}
-TOP_KEYS = {"format", "image", "disk_gb", "max_start_minutes", "comment", "networks"}
+            "payout", "extra_args", "image", "disk_gb", "miner", "comment"}
+TOP_KEYS = {"format", "image", "disk_gb", "max_start_minutes", "miniz_url", "miniz_sha256", "comment", "networks"}
+MINERS = ("lolminer", "miniz")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+DOWNLOAD_RE = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~%/+-]*$")
 FORBIDDEN_ARGS = {"-p", "--pool", "-u", "--user", "--pass", "--dualpool", "--dualuser", "--dualpass",
                   "-a", "--algo", "--pers", "-c", "--coin", "--config", "--json", "--profile",
-                  "--watchdogscript", "--apihost", "--apiport", "--tls", "--socks5", "--dns-over-https"}
+                  "--watchdogscript", "--apihost", "--apiport", "--tls", "--socks5", "--dns-over-https",
+                  "--url", "--par", "--smart-pers", "--run", "--telemetry"}
 
 
 class FleetError(Exception):
@@ -158,6 +164,8 @@ def scan_secrets(node, path="$"):
             if SECRET_KEY_RE.search(str(k)):
                 raise FleetError(f"{path}.{k}: a field named like a secret; the fleet file holds no keys, "
                                  "passwords or tokens (the API key comes from VAST_API_KEY)")
+            if str(k).endswith("_sha256") and isinstance(v, str) and SHA256_RE.match(v):
+                continue  # a pinned download checksum: public, and 64 hex by design
             scan_secrets(v, f"{path}.{k}")
     elif isinstance(node, list):
         for i, v in enumerate(node):
@@ -196,6 +204,12 @@ def parse_fleet(raw):
     fleet = {"max_start_minutes": raw.get("max_start_minutes", 30), "networks": {}}
     if not isinstance(fleet["max_start_minutes"], int) or not 5 <= fleet["max_start_minutes"] <= 240:
         raise FleetError("max_start_minutes: 5 to 240")
+    mz_url, mz_sha = raw.get("miniz_url", ""), raw.get("miniz_sha256", "")
+    if not isinstance(mz_url, str) or not isinstance(mz_sha, str) or bool(mz_url) != bool(mz_sha):
+        raise FleetError("miniz_url and miniz_sha256: both set (miniZ pinned) or both empty")
+    if mz_url and not (DOWNLOAD_RE.match(mz_url) and SHA256_RE.match(mz_sha)):
+        raise FleetError("miniz_url: an https download URL; miniz_sha256: 64 lowercase hex")
+    miniz = {"MINIZ_URL": mz_url, "MINIZ_SHA256": mz_sha} if mz_url else None
     total = 0
     for name, n in nets.items():
         where = f"networks.{name}"
@@ -244,10 +258,17 @@ def parse_fleet(raw):
         disk = n.get("disk_gb", default_disk)
         if not isinstance(disk, int) or isinstance(disk, bool) or not 4 <= disk <= 64:
             raise FleetError(f"{where}.disk_gb: 4 to 64")
+        miner = n.get("miner", "lolminer")
+        miners = [miner] if isinstance(miner, str) else miner
+        if not isinstance(miners, list) or not miners or not all(m in MINERS for m in miners):
+            raise FleetError(f"{where}.miner: lolminer or miniz, or a list of them (miner n uses entry n mod length)")
+        if "miniz" in miners and not miniz:
+            raise FleetError(f"{where}.miner: miniz needs the fleet's pinned miniz_url and miniz_sha256 "
+                             "(set them only after reading miniZ's Terms and confirming its 192,7 flags)")
         fleet["networks"][name] = {
             "count": count, "gpu_names": gpus, "max_dph": float(max_dph), "min_reliability": float(rel),
             "rental": rental, "pools": pools, "worker_prefix": prefix, "payout": payout,
-            "extra_args": args, "image": image, "disk_gb": disk,
+            "extra_args": args, "image": image, "disk_gb": disk, "miners": miners, "miniz": miniz,
         }
     if total > MAX_TOTAL:
         raise FleetError(f"the fleet asks for {total} miners; at most {MAX_TOTAL}")
@@ -390,6 +411,23 @@ def health(inst, now, max_start_minutes):
     return f"dead: {actual}"
 
 
+def want_miner(cfg, idx):
+    return cfg["miners"][idx % len(cfg["miners"])]
+
+
+def drifted(inst, cfg, idx):
+    """Why a running miner no longer matches the file (its miner or pool changed), or None. Only when
+    the instance's environment is known; an instance without it is left as it is."""
+    env = inst.get("extra_env") or {}
+    if not isinstance(env, dict) or "POOL_URL" not in env:
+        return None
+    if env.get("MINER", "lolminer") != want_miner(cfg, idx):
+        return f"its miner is now {want_miner(cfg, idx)} in the file"
+    if env["POOL_URL"] != cfg["pools"][idx % len(cfg["pools"])]:
+        return "its pool changed in the file"
+    return None
+
+
 def offer_price(offer, cfg):
     """(price to pay per hour, bid or None) or None when over the cap."""
     if cfg["rental"] == "interruptible":
@@ -477,6 +515,9 @@ class Fleet:
             env["PAYOUT"] = cfg["payout"]
         if cfg["extra_args"]:
             env["MINER_ARGS"] = " ".join(cfg["extra_args"])
+        env["MINER"] = want_miner(cfg, idx)
+        if env["MINER"] == "miniz":
+            env.update(cfg["miniz"])
         tries = 0
         for offer in self.offer_cache[net]:
             if offer.get("id") in self.used_offers:
@@ -555,6 +596,10 @@ class Fleet:
                     self.destroy(i, i["_health"][6:])
             for i in alive[1:]:
                 self.destroy(i, "a second instance in the same slot")
+            drift = alive and drifted(alive[0], nets[net], idx)
+            if drift:
+                self.destroy(alive[0], drift)
+                alive = []
             if not alive:
                 self.create(net, idx, until if idx >= count else None)
                 continue
@@ -656,7 +701,8 @@ def main(argv=None):
             for net, cfg in sorted(nets.items()):
                 note = startable(cfg)
                 say(f"{net}: count {cfg['count']}, {', '.join(cfg['gpu_names'])}, at most ${cfg['max_dph']:.3f}/h "
-                    f"{cfg['rental']}, {len(cfg['pools'])} pool(s)" + (f"; cannot start yet: {note}" if note else ""))
+                    f"{cfg['rental']}, {len(cfg['pools'])} pool(s), miner {'/'.join(cfg['miners'])}"
+                    + (f"; cannot start yet: {note}" if note else ""))
             say(f"fleet file OK: {fleet['total']} miner(s)")
             return 0
         if a.action == "total":

@@ -202,6 +202,29 @@ class TestFleetFile(unittest.TestCase):
         with self.assertRaisesRegex(vf.FleetError, "at most"):
             self.parse(raw)
 
+    def test_miner_field(self):
+        fl = self.parse(fleet_file())
+        self.assertEqual({c["miners"][0] for c in fl["networks"].values()}, {"lolminer"})   # the default
+        for bad in ("xmrig", "", [], ["lolminer", "gminer"], 3):
+            with self.assertRaises(vf.FleetError):
+                self.parse(fleet_file(slow__miner=bad))
+        # miniz is refused until the fleet carries both pins
+        with self.assertRaisesRegex(vf.FleetError, "miniz_url"):
+            self.parse(fleet_file(slow__miner=["lolminer", "miniz"]))
+        raw = fleet_file(slow__miner=["lolminer", "miniz"])
+        raw["miniz_url"] = "https://downloads.example/miniZ_linux-x64.tar.gz"
+        with self.assertRaisesRegex(vf.FleetError, "both"):
+            self.parse(raw)
+        raw["miniz_sha256"] = "ab" * 32           # 64 hex: a checksum, not taken for a secret
+        fl = self.parse(raw)
+        self.assertEqual(fl["networks"]["slow"]["miners"], ["lolminer", "miniz"])
+        raw["miniz_url"] = "http://downloads.example/miniZ.tar.gz"
+        with self.assertRaises(vf.FleetError):
+            self.parse(raw)
+        raw = fleet_file(fast__comment="ab" * 32)    # the same 64 hex elsewhere is still refused
+        with self.assertRaisesRegex(vf.FleetError, "secret"):
+            self.parse(raw)
+
     def test_labels(self):
         self.assertEqual(vf.parse_label("ycash-fast-0")[:2], ("fast", 0))
         self.assertIsNotNone(vf.parse_label("ycash-legacy-3.until-20270115T1200Z")[2])
@@ -229,7 +252,7 @@ class TestReconcile(Base):
         self.assertEqual(body["runtype"], "args")
         self.assertIsNone(body["price"])
         self.assertTrue(body["cancel_unavail"])
-        self.assertEqual(set(body["env"]), {"POOL_URL", "WORKER"})
+        self.assertEqual(body["env"], {"POOL_URL": "pool-b.test1:3333", "WORKER": "vast-slow-1", "MINER": "lolminer"})
         self.assertEqual(rents["ycash-slow-0"][1]["env"]["POOL_URL"], "pool-a.test1:3333")
         self.assertEqual(body["env"]["POOL_URL"], "pool-b.test1:3333")       # round-robin over the pools
         self.assertEqual(body["env"]["WORKER"], "vast-slow-1")
@@ -249,6 +272,26 @@ class TestReconcile(Base):
         self.assertEqual(env["PAYOUT"], addr)
         self.assertEqual(env["MINER_ARGS"], "--devices 0")
         self.assertEqual(self.labels(), ["ycash-fast-0"])
+
+    def test_miner_per_slot_and_drift(self):
+        raw = fleet_file()
+        self.assertEqual(self.run_fleet("reconcile", "--network", "slow"), 0, self.out)
+        raw["miniz_url"] = "https://downloads.example/miniZ_linux-x64.tar.gz"
+        raw["miniz_sha256"] = "cd" * 32
+        raw["networks"]["slow"]["miner"] = ["lolminer", "miniz"]
+        self.set_fleet(raw)
+        self.fake.clear()
+        self.assertEqual(self.run_fleet("reconcile", "--network", "slow"), 0, self.out)
+        deleted = [c["path"] for c in self.fake.calls("DELETE")]
+        self.assertEqual(len(deleted), 1)                  # slot 1 changes miner: replaced; slot 0 kept
+        (c,) = self.creates()
+        self.assertEqual(c["body"]["label"], "ycash-slow-1")
+        self.assertEqual(c["body"]["env"]["MINER"], "miniz")
+        self.assertEqual(c["body"]["env"]["MINIZ_URL"], raw["miniz_url"])
+        self.assertEqual(c["body"]["env"]["MINIZ_SHA256"], "cd" * 32)
+        self.fake.clear()
+        self.assertEqual(self.run_fleet("reconcile", "--network", "slow"), 0, self.out)
+        self.assertEqual(self.fake.calls("DELETE") + self.creates(), [])
 
     def test_respects_the_price_cap(self):
         st = self.fake.read()

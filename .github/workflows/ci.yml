@@ -68,8 +68,8 @@ jobs:
   miner:
     # the testnet GPU miner (images/miner, scripts/vast-fleet.py): the entrypoint against a stand-in
     # lolMiner, the fleet script against a stand-in Vast API (nothing rented), the example fleet file;
-    # then the image is built (the lolMiner archive checked against its pinned SHA-256) and its
-    # entrypoint run in dry-run mode (lolMiner itself is not started: no GPU, no pool)
+    # then the image is built (it holds no miner binary) and its entrypoint run in dry-run mode
+    # (no download, nothing mined: no GPU, no pool)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

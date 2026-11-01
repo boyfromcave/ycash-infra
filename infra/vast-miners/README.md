@@ -12,7 +12,8 @@ A small **fleet file** says, per testnet: how many miners, which cards, the most
 which pools to mine into. [`scripts/vast-fleet.py`](../../scripts/vast-fleet.py) compares that with
 what is actually rented and fixes the difference: it rents the cheapest matching card for a missing
 miner, replaces one that died, and gives back the ones no longer wanted. Each rented machine runs
-the [miner image](../../images/miner/README.md) and mines into a [yolo](https://github.com/boyfromcave/yolo)
+the [miner image](../../images/miner/README.md), which downloads the mining program (lolMiner by
+default) from its official release at start and checks its pinned fingerprint, and mines into a [yolo](https://github.com/boyfromcave/yolo)
 pool. The pools and the testnet nodes stay on our own servers; only the mining is rented.
 
 Nothing here holds a real value: the actual fleet file (pool addresses, the image digest) and the
@@ -38,7 +39,12 @@ private deployment repo                         this repo (public, pinned by com
   cards at or under `max_dph` (dollars per hour, storage included) with at least `min_reliability`.
   The script checks card, count, reliability and price itself, whatever the search returns.
 - **Dead** means: exited, stopped, offline, or still starting after `max_start_minutes` (30). A dead
-  miner is destroyed and its slot rented again in the same run.
+  miner is destroyed and its slot rented again in the same run. So is a running miner whose miner
+  or pool no longer matches the file (when Vast reports its environment).
+- **Which miner:** `lolminer` unless the network's `miner` says otherwise; a list is spread over the
+  slots like the pools (`["lolminer", "miniz"]` puts miniZ on slot 1). miniZ is refused unless the
+  fleet pins `miniz_url` and `miniz_sha256` (public values), which reach the container as
+  `MINIZ_URL` / `MINIZ_SHA256`.
 - **Hard limits** in the script, whatever the file says: 8 miners per network, 16 in all, $1/h per
   miner, bursts of at most 168 hours.
 
@@ -50,6 +56,7 @@ private deployment repo                         this repo (public, pinned by com
 |---|---|
 | `image` | the miner image **by digest** (`ghcr.io/<owner>/ycash-miner@sha256:…`, from `miner-image.yml`); per network `image` overrides it |
 | `disk_gb` | disk per machine (default 8) |
+| `miniz_url`, `miniz_sha256` | miniZ's official https download and its SHA-256; both empty (miniZ off) until the owner has read miniZ's Terms and confirmed its 192,7 flags (`images/miner/README.md`) |
 | `max_start_minutes` | how long a machine may stay "loading" before it counts as dead (default 30) |
 | `networks.<name>.count` | how many miners always on (0 = none, only bursts) |
 | `gpu_names` | the cards accepted, as Vast names them (`"RTX 3060"`, `"RTX 3070"`, `"RTX A4000"`, …) |
@@ -59,7 +66,8 @@ private deployment repo                         this repo (public, pinned by com
 | `pools` | the stratum pools, `host:port` |
 | `worker_prefix` | miner `n` is worker `<prefix>-<n>` |
 | `payout` | empty (the pool runs with `--payout`) or a transparent address (the pool pays usernames) |
-| `extra_args` | extra lolMiner options (no pool, user or password options) |
+| `extra_args` | extra miner options (no pool, user, password or algorithm options) |
+| `miner` | `lolminer` (default) or `miniz`, or a list of them spread over the slots; passed as `MINER` |
 
 The script **refuses** a file with a field named like a secret (`key`, `token`, `pass…`, `secret`,
 `auth`, …) or a value that looks like one (a long hex or token string, a private key block,
@@ -105,7 +113,9 @@ entrypoint (`runtype: args`) with the pool, worker and payout as environment var
 | testnet-yb-slow | about 109 Sol/s for 75 s blocks (mainnet's PoW limit after the shadow fork: 8,192 solutions per block); one RTX 3070-class card does about 45–60 Sol/s, so about 150 s blocks | 2 × RTX 3070 class, one per pool | $120–190 a month |
 | testnet-legacy | as slow | 0 by default; bursts for campaigns | about $25 a month when used |
 
-Prices on Vast change daily; `status` prints the fleet's current $/h.
+Prices on Vast change daily; `status` prints the fleet's current $/h. A later cost option for fast:
+CPU mining with the node's own open-source 192,7 solver on a cheap Vast machine (not on AWS, whose
+terms prohibit mining); not built.
 
 ## Tests
 
@@ -114,4 +124,5 @@ Prices on Vast change daily; `status` prints the fleet's current $/h.
 (nothing is rented): it starts the right number at the cheapest offer under the cap, ignores
 offers over the cap or for other cards, replaces a dead or stuck miner, destroys extras and
 networks no longer in the file, never touches unlabelled instances, bursts and expires, refuses a
-fleet file with a secret-looking field, and never prints the key (in and outside GitHub Actions).
+fleet file with a secret-looking field, validates `miner` (miniZ only with its pins), replaces a
+miner whose miner or pool changed, and never prints the key (in and outside GitHub Actions).
