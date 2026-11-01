@@ -49,6 +49,10 @@ where Ycash itself forked:
   needs the owner's T-9), the **probe and status page** (`images/testnet-status`), the **snapshotter
   and bundle verifier** (state bundles, `bundles/state/FORMAT.md`) and the **alerts**
   (kube-prometheus-stack): [charts/ycash-testnet/README.md](charts/ycash-testnet/README.md#the-services).
+- **Miners** (block production): GPU miners rented by the hour on Vast.ai, mining Equihash 192,7
+  through yolo pools; the image is `images/miner` (lolMiner, pinned and checksummed) and
+  `scripts/vast-fleet.py` keeps the fleet at the size a private fleet file asks for:
+  [infra/vast-miners/README.md](infra/vast-miners/README.md). No node mines with `-gen` on AWS.
 - **The plan:** workspace `docs/plans/yellowback-testnet-plan.md`.
 
 ## Node line: `upgrade/vault`, post-quantum
@@ -239,19 +243,21 @@ images/yindex/        Dockerfile for yindex
 images/web/           Dockerfile + nginx.conf for the yew/web bundle (K4)
 images/faucet/        the faucet: regtest (kind demo) and testnet modes, faucet.py (JSON-RPC, the pages, /params/), fetch-params.py (the init container), its README
 images/testnet-status/ a testnet's probe (nodes, seeds, state hashes -> /metrics) and public status page, its README
+images/miner/         the testnet GPU miner: lolMiner (pinned release, SHA-256 checked) at Equihash 192,7 / ZcashPoW, its entrypoint and README
 yindex/               Go: the address index (ingester, Postgres store, gRPC server for the three address methods)
 charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml, values-testnet.yaml (over values-eks.yaml), values-{yb-fast,yb-slow,legacy}.yaml (one release per testnet); gateway.extraListeners puts the testnet faucet and status hosts on its gateway
 charts/ycash-testnet/       the testnets' network roles: ycash6 seeds, the ycash-dd verifier, the prefix restore, and per network the faucet, probe, status page, snapshotter and alerts (flags); values-{yb-fast,yb-slow,legacy}.yaml; not yet run on a cluster (its README)
 kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host)
-scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), kind-personas.py (K0c), wait-for.sh
+scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), kind-personas.py (K0c), wait-for.sh, vast-fleet.py (the Vast.ai miner fleet; tests/ with a stand-in Vast API)
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: module/ (VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons as helm_release; one namespace per network) and a thin example root
 infra/testnet-seeds/  Terraform: the seed hosts on EC2 + Elastic IPs (ips/, nodes/), every testnet on each host, seedctl (its README)
 infra/mainnet-harvest/ Terraform: the mainnet history harvest on a one-shot EC2 instance (results bucket, launch template; its README)
+infra/vast-miners/    the testnet GPU miner fleet on Vast.ai: fleet.example.json and its README; scripts/vast-fleet.py reconciles it
 bundles/prefix/       the Zcash testnet history bundle: format (FORMAT.md), harvest, import checks (testnet-prefix*.yml)
 bundles/state/        the testnet state bundle: format (FORMAT.md, ycash-state/1), verify.py, the snapshotter's offline tests
 bundles/zcash-params/ the mirrored Zcash parameter files' checksums (zcash-params.yml)
-.github/workflows/    ci, the security scans, node-image (the ycashd image), testnet-prefix(-import), zcash-params
+.github/workflows/    ci, the security scans, node-image (the ycashd image), miner-image (the testnet GPU miner), testnet-prefix(-import), zcash-params
 keys/                 public keys only: ycash-release.pub, the owner's minisign key for release SHA256SUMS (its README)
 docs/eks-runbook.md   EKS: empty account → smoke green, cost, rollback, open decisions
 docs/try-it.md        the tester's guide to the demo kit (the wallet's screens, the walk, troubleshooting)

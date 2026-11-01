@@ -42,7 +42,7 @@ DOMAIN      ?= lite.example.org
 # to roll out before the target fails (scripts/kind-check-release.sh)
 ROLLOUT_TIMEOUT ?= 10m
 
-.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test
+.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner miners-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -308,3 +308,13 @@ services-test: state-test ## offline tests of the faucet (both modes), the probe
 # --- Zcash parameter mirror (bundles/zcash-params) ---
 zcash-params-test: ## the parameter mirror's offline tests: SHA256SUMS vs the chart copy and ycash-dd's fetch-params.sh (YCASH_DD), the chart's init script
 	YCASH_DD=$(YCASH_DD) python3 -I -m unittest discover -s bundles/zcash-params/tests -v
+
+# --- the testnet GPU miners on Vast.ai (images/miner, scripts/vast-fleet.py, infra/vast-miners) ---
+image-miner: ## the testnet GPU miner (images/miner: lolMiner at a pinned, checksummed release; Equihash 192,7, ZcashPoW)
+	docker build --platform linux/amd64 -t $(REGISTRY)/ycash-miner:local images/miner
+
+miners-test: ## offline: the miner entrypoint against a stand-in lolMiner, vast-fleet.py against a stand-in Vast API, the example fleet file
+	shellcheck -S warning images/miner/entrypoint.sh images/miner/tests/*.sh
+	images/miner/tests/entrypoint-test.sh
+	python3 -I -m unittest discover -s scripts/tests -p 'test_vast_fleet.py' -v
+	python3 -I scripts/vast-fleet.py --fleet infra/vast-miners/fleet.example.json validate

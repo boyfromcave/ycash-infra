@@ -65,3 +65,18 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with: { persist-credentials: false }
       - run: docker build -f images/yindex/Dockerfile -t yindex:ci .
+  miner:
+    # the testnet GPU miner (images/miner, scripts/vast-fleet.py): the entrypoint against a stand-in
+    # lolMiner, the fleet script against a stand-in Vast API (nothing rented), the example fleet file;
+    # then the image is built (the lolMiner archive checked against its pinned SHA-256) and its
+    # entrypoint run in dry-run mode (lolMiner itself is not started: no GPU, no pool)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - run: make miners-test
+      - run: docker build -t ycash-miner:ci images/miner
+      - run: docker run --rm -e POOL_URL=pool.example:3333 -e WORKER=ci -e MINER_DRY_RUN=1 ycash-miner:ci
