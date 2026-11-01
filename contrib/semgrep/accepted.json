@@ -99,20 +99,6 @@
       "by": "secops CI setup",
       "date": "2026-10-23"
     },
-    "e31f868098e71d62": {
-      "rule": "terraform.aws.security.aws-secretsmanager-secret-unencrypted",
-      "path": "infra/eks/secrets.tf",
-      "reason": "Encrypted at rest with the AWS-managed aws/secretsmanager key; a customer-managed KMS key adds cost and a key policy for one rpcuser/rpcpassword pair. Revisit if the account requires CMKs.",
-      "by": "secops CI setup",
-      "date": "2026-10-23"
-    },
-    "fea647f97292b2fd": {
-      "rule": "terraform.aws.security.aws-secretsmanager-secret-unencrypted",
-      "path": "infra/eks/secrets.tf",
-      "reason": "As above: AWS-managed aws/secretsmanager key.",
-      "by": "secops CI setup",
-      "date": "2026-10-23"
-    },
     "14942284812f17e2": {
       "rule": "terraform.aws.security.aws-ec2-security-group-rule-missing-description",
       "path": "infra/eks/rds.tf",
@@ -126,6 +112,62 @@
       "reason": "The kind-only RPC password of the testnet chart's local render (rpc.password, a laptop cluster with no keys and RPC reachable only in-cluster): a default credential, not a secret, as the rule's own exclusion of charts/ycash-lightwallet/values-kind.yaml (AGENTS.md rule 7). EKS reads it through External Secrets (values-eks.yaml rpc.existingSecret).",
       "by": "testnet chart hardening",
       "date": "2026-10-28"
+    },
+    "ba2071e94710b231": {
+      "rule": "terraform.aws.security.aws-secretsmanager-secret-unencrypted",
+      "path": "infra/eks/module/secrets.tf",
+      "reason": "The ycashd-rpc secret (the node's rpcuser/rpcpassword, AGENTS.md rule 4) is encrypted at rest with the account's AWS-managed aws/secretsmanager key; a customer-managed KMS key adds cost and a key policy for one testnet credential (the resource's own #checkov:skip=CKV_AWS_149). Carries over the accepted entry for infra/eks/secrets.tf, which moved into the module. Revisit if the account requires CMKs.",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
+    },
+    "9512e3888c6f9dd0": {
+      "rule": "terraform.aws.security.aws-secretsmanager-secret-unencrypted",
+      "path": "infra/eks/module/secrets.tf",
+      "reason": "The yindex-postgres URL secret, as the ycashd-rpc one above: AWS-managed aws/secretsmanager key; the database holds only a derived index of public chain data.",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
+    },
+    "e3d6a74a4d05859e": {
+      "rule": "generic.secrets.gitleaks.generic-api-key",
+      "path": "infra/eks/module/tests/networks.tftest.hcl",
+      "reason": "Not a credential: cluster_certificate_authority_data = \"ZXhhbXBsZQ==\" is base64 of the word `example`, a mocked output of override_module in a terraform test (beside cluster_endpoint https://example.invalid and an all-zero account id).",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
+    },
+    "c17f0e0dc33e3028": {
+      "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+      "path": "bundles/prefix/fetch_addnodes.py",
+      "reason": "fetch() is only reached with https URLs: main() rejects a --url that is not https://, and every followed link passes same_site() (scheme https, the explorer's own domain); urllib's redirect handler follows only http/https/ftp, so file:// cannot be reached. It runs once on the one-shot harvest instance (infra/mainnet-harvest/files/harvest-run.sh step 5), reads public pages and writes only host:port lines whose addresses pass ipaddress.is_global.",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
+    },
+    "bdf39432a9b33a17": {
+      "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+      "path": "images/testnet-status/probe.py",
+      "reason": "rpc() posts to the node URLs of the NODES environment variable, which the chart writes from its own node Services (charts/ycash-testnet/templates/status.yaml); no request input reaches the URL (the probe's HTTP handler only serves /metrics, /status.json, /healthz).",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
+    },
+    "db01587d587ffb25": {
+      "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+      "path": "images/testnet-status/probe.py",
+      "reason": "BUNDLE_MANIFEST_URL is operator configuration (chart value probe.bundleManifestUrl, rendered into the Deployment's env in templates/status.yaml); no request input reaches it.",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
+    },
+    "a86156dddb14e6b8": {
+      "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+      "path": "images/testnet-status/status.py",
+      "reason": "PROBE_URL is fixed by the chart to the in-cluster probe Service (http://<release>-probe:9100/status.json, templates/status.yaml); the status page's handler serves a fixed set of paths and never puts request input into a URL.",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
+    },
+    "f929053e49478689": {
+      "rule": "terraform.aws.security.aws-subnet-has-public-ip-address",
+      "path": "infra/mainnet-harvest/network.tf",
+      "reason": "Deliberate: the one-shot harvest instance needs an outbound address to reach Ycash peers, the explorer, package mirrors and S3, and a public IPv4 is cheaper than a NAT gateway. Nothing is inbound: the instance's security group has no ingress rule, the VPC's default security group is closed, the shell is SSM Session Manager and IMDSv2 is required (main.tf metadata_options); the VPC holds only this instance (the resource's own #checkov:skip=CKV_AWS_130).",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
     }
   },
   "rule_paths": [
@@ -183,6 +225,38 @@
       "reason": "Each test writes a stand-in executable (docker, curl) into its own temporary directory and must make it executable; 0o700 (owner only) is the narrowest mode that runs. Test-only, never shipped. A chmod anywhere else is still reported.",
       "by": "testnet harvest",
       "date": "2026-10-28"
+    },
+    {
+      "rule": "python.lang.security.audit.insecure-file-permissions",
+      "paths": [
+        "bundles/prefix/tests/test_mainnet.py",
+        "bundles/prefix/tests/test_run_local_mainnet.py"
+      ],
+      "reason": "Each test writes a stand-in executable (aws, docker) into its own temporary directory and must make it executable; 0o700 (owner only) is the narrowest mode that runs. Test-only (make prefix-test), never shipped. A chmod anywhere else is still reported.",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
+    },
+    {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+      "paths": [
+        "bundles/prefix/tests/test_run_local_mainnet.py",
+        "bundles/state/tests/test_state.py",
+        "images/testnet-status/tests/test_status.py",
+        "images/faucet/tests/test_faucet.py"
+      ],
+      "reason": "Unit tests that start this repository's own scripts (run-local-mainnet.sh, verify.py, status.py, faucet.py) or the test's docker stand-in with argv lists, no shell, and arguments built by the test itself (sys.executable -I, paths under the test's temporary directory). Test-only (make prefix-test / state-test / services-test, ci.yml), never shipped. A subprocess call anywhere else is still reported.",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
+    },
+    {
+      "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+      "paths": [
+        "images/testnet-status/tests/test_status.py",
+        "images/faucet/tests/test_faucet.py"
+      ],
+      "reason": "The tests' HTTP client: http://127.0.0.1:<port> of the server the test itself started on a free local port. Test-only (make services-test, ci.yml), never shipped. A urlopen anywhere else is still reported.",
+      "by": "@boyfromcave",
+      "date": "2026-11-01"
     }
   ]
 }
