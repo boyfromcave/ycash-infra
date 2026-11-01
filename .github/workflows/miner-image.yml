@@ -1,0 +1,92 @@
+# miner-image: build the testnet GPU miner image (images/miner) and push it to
+# ghcr.io/<owner>/ycash-miner:lolminer-<version>-<sha12>, with build provenance. The image holds no
+# miner binary: it downloads the pinned miner at start (images/miner/miners.conf) and checks its SHA-256.
+#
+# In plain words: the Ycash testnets are kept moving by graphics cards rented by the hour (the Vast.ai
+# fleet, infra/vast-miners/README.md). Those rented machines run a ready-made container: a small
+# start-up script that, when the machine starts, downloads the mining program (lolMiner) from its
+# author's official release, checks it against the fingerprint we pinned, and runs it for Ycash's
+# proof of work. We do not redistribute the miner: the container holds only our script. This job
+# makes that container in public from this repository at one commit and publishes it on GitHub's
+# container registry together with a signed record of how it was built. It runs only when started by hand, from upgrade/vault.
+#
+# The image holds no key, password or token, and never may: it runs on strangers' machines. The
+# package must be made public once (package settings) so the rented machines can pull it without
+# credentials. Deploys happen elsewhere (the fleet file takes the printed digest); this job only
+# publishes the image and prints its digest.
+name: miner-image
+on:
+  workflow_dispatch: {}
+permissions: {}
+concurrency:
+  group: miner-image-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/upgrade/vault'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      REPO_OWNER: ${{ github.repository_owner }}
+      SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: the tag and the offline checks
+        id: meta
+        run: |
+          set -euo pipefail
+          make miners-test
+          version=$(sed -n 's/^LOLMINER_VERSION=//p' images/miner/miners.conf | tail -1)
+          echo "$version" | grep -qxE '[0-9]+\.[0-9]+[a-z]?' || { echo "LOLMINER_VERSION not found in images/miner/miners.conf" >&2; exit 1; }
+          owner=$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          {
+            echo "image=ghcr.io/$owner/ycash-miner"
+            echo "tag=ghcr.io/$owner/ycash-miner:lolminer-$version-${SHA:0:12}"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: build and push
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: images/miner
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=ycash-miner (downloads lolMiner ${{ steps.meta.outputs.version }} at start)
+            org.opencontainers.image.description=A GPU miner launcher for the Ycash testnets. Contains no miner binary: at start it downloads lolMiner (1% developer fee) from its official GitHub release, checks the pinned SHA-256, and mines Equihash 192,7 with personalization ZcashPoW through a stratum pool. Testnet use only; it holds no key or password.
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/upgrade/vault/images/miner/README.md
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: digest
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "image: $IMAGE@$DIGEST"
+          {
+            echo "## miner-image at $SHA"
+            echo
+            echo "- tag: \`$TAG\`"
+            echo "- by digest (what the fleet file takes as \`image\`): \`$IMAGE@$DIGEST\`"
+            echo "- verify: \`gh attestation verify oci://$IMAGE@$DIGEST -R $GITHUB_REPOSITORY\`"
+          } >> "$GITHUB_STEP_SUMMARY"

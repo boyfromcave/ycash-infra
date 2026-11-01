@@ -1,0 +1,69 @@
+{
+  "format": "ycash-vast-fleet/1",
+  "comment": "Placeholders only. The real file (pool addresses, image digest) is private deployment config.",
+  "image": "ghcr.io/example/ycash-miner@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "disk_gb": 8,
+  "max_start_minutes": 30,
+  "miniz_url": "",
+  "miniz_sha256": "",
+  "networks": {
+    "fast": {
+      "comment": "1 x the cheapest card, always on: 0.43 Sol/s is enough for 75 s blocks",
+      "count": 1,
+      "gpu_names": [
+        "RTX 3060",
+        "RTX 3060 Ti",
+        "RTX A4000",
+        "RTX 3070"
+      ],
+      "max_dph": 0.09,
+      "min_reliability": 0.97,
+      "rental": "on-demand",
+      "pools": [
+        "pool-a.example:3333"
+      ],
+      "worker_prefix": "vast-fast",
+      "payout": "",
+      "miner": "lolminer"
+    },
+    "slow": {
+      "comment": "2 x RTX 3070 class, always on, one per pool; once miniZ is pinned, \"miner\": [\"lolminer\", \"miniz\"] runs it on the second (software diversity)",
+      "count": 2,
+      "gpu_names": [
+        "RTX 3070",
+        "RTX 3070 Ti",
+        "RTX A4000",
+        "RTX 3080"
+      ],
+      "max_dph": 0.14,
+      "min_reliability": 0.97,
+      "rental": "on-demand",
+      "pools": [
+        "pool-a.example:3333",
+        "pool-b.example:3333"
+      ],
+      "worker_prefix": "vast-slow",
+      "payout": "",
+      "miner": "lolminer"
+    },
+    "legacy": {
+      "comment": "campaigns only: burst legacy <n> --hours <h>",
+      "count": 0,
+      "gpu_names": [
+        "RTX 3070",
+        "RTX 3070 Ti",
+        "RTX A4000",
+        "RTX 3080"
+      ],
+      "max_dph": 0.14,
+      "min_reliability": 0.97,
+      "rental": "on-demand",
+      "pools": [
+        "pool-c.example:3333"
+      ],
+      "worker_prefix": "vast-legacy",
+      "payout": "",
+      "miner": "lolminer"
+    }
+  }
+}
