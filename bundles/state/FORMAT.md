@@ -198,7 +198,7 @@ byte-identical over the fields the bundle keeps.
 | `pins` | `{height: hash}` for every compiled ycash6 mainnet pin at or below `H`: `checkpointData`, the Ycash fork block 570,000, the chain-supply checkpoint block 2,800,000 (ycash6 `src/chainparams.cpp` at 65cb4ae0f; the table is vendored in `verify.py`). Each was read from the node with `getblockhash` and must equal the table |
 | `tree_sha256` | SHA-256 over one line `<sha256 of the file>  <path>\n` per regular file of the tarball, in tar order. The producer computes it from the clone while packing; `verify.py --tree` recomputes it from the tarball |
 | `treestate` | `"treestate.json"`: `z_gettreestate H` from the same node, canonical JSON, in the bundle directory and in `SHA256SUMS` (the shadow-fork harvest and the kogany sync gate compare it) |
-| `purpose` | optional: why this height (e.g. `"proposed shadow-fork height H_S, pending the Yellowback lead architect"`) |
+| `purpose` | optional: why this height (e.g. `"proposed shadow-fork height H_S, decided by the Yellowback lead architect on 2026-11-02 (3,079,999)"`) |
 
 **Files.** The tarball, `manifest.json`, the statements, `treestate.json`, `SHA256SUMS`, and nothing
 else. Signatures (`*.minisig`) sit beside them and are not listed, as in v1.
