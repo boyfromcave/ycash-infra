@@ -138,6 +138,11 @@ spec:
               if [ "$WANT" != 0 ] && [ "$GOT" != "$WANT" ]; then
                 echo "the node answers rpcversion $GOT, the chart expects $WANT (ycashd.rpcVersion): build the images from the matching node line"; exit 1
               fi
+              {{- if include "yc.kogany" . }}
+              echo "restarting kogany with yellowback.attestor_set = $SETID"
+              $K rollout restart statefulset/{{ $fn }}-kogany
+              $K rollout status statefulset/{{ $fn }}-kogany --timeout=15m
+              {{- end }}
               echo "rolling lightwalletd so it probes yed_getinfo again"
               $K rollout restart deployment/{{ $fn }}-lightwalletd
               $K rollout status deployment/{{ $fn }}-lightwalletd --timeout=10m

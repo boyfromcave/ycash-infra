@@ -12,6 +12,20 @@ neither a non-latest tag nor a digest. */ -}}
 {{- define "yc.image" -}}{{ .repository }}{{ with .tag }}:{{ . }}{{ end }}{{ with .digest }}@{{ . }}{{ end }}{{- end -}}
 {{- define "yc.rpcSecret" -}}{{ default (printf "%s-ycashd-rpc" (include "yc.fullname" .)) .Values.ycashd.rpc.existingSecret }}{{- end -}}
 {{- define "yc.rpcHost" -}}{{ include "yc.fullname" . }}-ycashd{{- end -}}
+{{- /* The node lightwalletd-dd and yindex read (nodeLine): ycashd's RPC pool, or with nodeLine kogany
+the kogany node (workspace kogany plan W9-c). yc.rpcHost stays ycashd's: the wallet the miner, the
+arming Job and the faucet use is always a ycashd (kogany is wallet-less, kogany plan K-3). */ -}}
+{{- define "yc.kogany" -}}
+{{- if not (has .Values.nodeLine (list "ycash6" "kogany")) -}}
+{{- fail (printf "nodeLine %q: ycash6 or kogany" .Values.nodeLine) -}}
+{{- end -}}
+{{- if and (eq .Values.nodeLine "kogany") (ne .Values.ycashd.network "regtest") -}}
+{{- fail "nodeLine kogany is regtest only until kogany is a qualified line (workspace kogany plan K-19)" -}}
+{{- end -}}
+{{- ternary "true" "" (eq .Values.nodeLine "kogany") -}}
+{{- end -}}
+{{- define "yc.backendHost" -}}{{ if include "yc.kogany" . }}{{ include "yc.fullname" . }}-kogany{{ else }}{{ include "yc.rpcHost" . }}{{ end }}{{- end -}}
+{{- define "yc.backendPort" -}}{{ if include "yc.kogany" . }}{{ .Values.kogany.rpc.port }}{{ else }}{{ .Values.ycashd.rpc.port }}{{ end }}{{- end -}}
 {{- /* D-Q-31: a signer set's maturity (its bond exit delay) is at least 16,128 blocks on mainnet and
 testnet and 2 on regtest (consensus nVaultMinSetMaturity; set_create refuses less). The YED module
 adopts its attestor set only at exactly BOND_MATURITY (ycash-dd/ycash6 src/yellowback/params.cpp:

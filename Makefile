@@ -5,6 +5,8 @@ WORKSPACE   ?= $(abspath ..)
 YCASH6      ?= $(WORKSPACE)/ycash6
 YCASH_DD    ?= $(WORKSPACE)/ycash-dd
 LWD         ?= $(WORKSPACE)/lightwalletd-dd
+# kogany (the third node line; nodeLine kogany, values-kind-kogany.yaml): its own docker/Dockerfile
+KOGANY      ?= $(WORKSPACE)/kogany
 # The node line the images are built from, as a branch: each tree must have it checked out or be on a
 # branch that contains it (`make line` checks). LINE is a shorthand for the branch names only:
 # LINE=vault -> upgrade/vault, LINE=quantum -> upgrade/quantum-vaults.
@@ -42,7 +44,7 @@ DOMAIN      ?= lite.example.org
 # to roll out before the target fails (scripts/kind-check-release.sh)
 ROLLOUT_TIMEOUT ?= 10m
 
-.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner miners-test
+.PHONY: help lint-kogany image-zakurad line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner miners-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -81,6 +83,9 @@ line: ## check the source trees: on BRANCH (or a branch containing it), one rpcv
 image-ycashd: line ## ycashd from YCASH6 (BRANCH) and its contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
 	@test -f $(YCASHD_DOCKERFILE) || { echo "$(YCASHD_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH6) yet"; exit 1; }
 	s=$$(scripts/image-stamp.sh hash $(STAMP_ycashd)) && docker build --platform $(PLATFORM) -f $(YCASHD_DOCKERFILE) --build-arg JOBS=$(JOBS) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
+
+image-zakurad: ## kogany's zakurad --features ycash from KOGANY and its docker/Dockerfile (runtime stage), for nodeLine kogany. Fails at dependency resolution until boyfromcave/zakura-common-ycash is on GitHub (kogany plan K-2)
+	docker build --platform $(PLATFORM) -f $(KOGANY)/docker/Dockerfile --target runtime --build-arg FEATURES="default-release-binaries ycash" -t $(REGISTRY)/zakurad:$$(git -C $(KOGANY) rev-parse --short HEAD) -t $(REGISTRY)/zakurad:local $(KOGANY)
 
 image-ycashd-legacy: line ## the v4.5.0 tree YCASH_DD (BRANCH), same Dockerfile shape, tagged ycashd-legacy
 	@test -f $(YCASHD_LEGACY_DOCKERFILE) || { echo "$(YCASHD_LEGACY_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH_DD) yet"; exit 1; }
@@ -233,7 +238,12 @@ docker-noauth: ## print an `export DOCKER_CONFIG=...` that bypasses Docker Deskt
 	@d=$${TMPDIR:-/tmp}/docker-noauth; mkdir -p $$d; python3 -c "import json,sys; c=json.load(open('$(HOME)/.docker/config.json')); c.pop('credsStore',None); c['auths']={}; json.dump(c,open('$$d/config.json','w'))"; \
 	for x in cli-plugins contexts buildx; do [ -e $(HOME)/.docker/$$x ] && ln -sfn $(HOME)/.docker/$$x $$d/$$x; done; echo "export DOCKER_CONFIG=$$d"
 
-lint: lint-testnet ## helm lint + image pins + kubeconform + go vet
+lint-kogany: ## the kogany backend renders (nodeLine kogany, render-only): helm lint + kubeconform over values-kind.yaml + values-kind-kogany.yaml, and scripts/tests/test-kogany-render.sh
+	helm lint $(CHART) -f $(CHART)/values-kind.yaml -f $(CHART)/values-kind-kogany.yaml
+	helm template $(RELEASE) $(CHART) -f $(CHART)/values-kind.yaml -f $(CHART)/values-kind-kogany.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
+	scripts/tests/test-kogany-render.sh
+
+lint: lint-testnet lint-kogany ## helm lint + image pins + kubeconform + go vet
 	helm lint $(CHART) -f $(CHART)/values-kind.yaml
 	scripts/lint-images.sh
 	helm lint $(CHART) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET)

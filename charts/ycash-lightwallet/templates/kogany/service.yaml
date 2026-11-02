@@ -1,0 +1,17 @@
+{{- if include "yc.kogany" . }}
+# kogany's RPC (lightwalletd-dd, yindex) and P2P (its test rig, the ycashd StatefulSet, connects).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "yc.fullname" . }}-kogany
+  labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kogany
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: kogany
+  ports:
+    - { name: rpc, port: {{ .Values.kogany.rpc.port }}, targetPort: rpc }
+    - { name: p2p, port: {{ .Values.kogany.p2p.port }}, targetPort: p2p }
+{{- end }}
