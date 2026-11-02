@@ -1,0 +1,15 @@
+{
+  "agrees_with": "ycash6:b7a1041f204789356399fac13858b2b95c129935075a350c73f4c3201ad12cab",
+  "blockhash": "0000014fbc5917ba8bcacf3336faf588d86b32443aa3a490a587af5750c77ec5",
+  "bytes": 18397165478,
+  "format": "kogany-state/1",
+  "height": 570000,
+  "line": "kogany",
+  "network": "main",
+  "producer": "ycash-infra/mainnet-snapshot",
+  "sha256": "86c483957634ada2a3b4daa32b6a4674fad2bd40a402c58ac688cb7750075071",
+  "state_format": "30.2.0",
+  "tarball": "kogany-main-570000-state-30.2.0.tar.gz",
+  "tree_sha256": "5883c1e120b420ea99b2d170593c60503216a3cff3816a640628c3ae6946fbc6",
+  "version": "kogany 1.7.0+383.g081e264c2"
+}
