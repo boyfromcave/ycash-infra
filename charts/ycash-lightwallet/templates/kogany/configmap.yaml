@@ -3,6 +3,19 @@
 {{- if not $heights.Vault }}
 {{- fail "nodeLine kogany: kogany.activationHeights needs Overwinter..Canopy and Vault, equal to ycashd's -nuparams (values-kind-kogany.yaml)" }}
 {{- end }}
+{{- $mode := .Values.kogany.storageMode | default "archive" }}
+{{- if not (has $mode (list "archive" "pruned")) }}
+{{- fail (printf "kogany.storageMode %q: archive or pruned" $mode) }}
+{{- end }}
+{{- if eq $mode "pruned" }}
+{{- $floor := ternary 1001 10000 (eq .Values.ycashd.network "regtest") }}
+{{- if lt (int .Values.kogany.retention) $floor }}
+{{- fail (printf "kogany.retention %d is below Zakura's %s floor %d" (int .Values.kogany.retention) .Values.ycashd.network $floor) }}
+{{- end }}
+{{- if or (gt (int .Values.lightwalletd.replicas) 0) .Values.yindex.enabled }}
+{{- fail "kogany.storageMode pruned: this kogany backs lightwalletd-dd and yindex, which need an archive node (pruning assessment decision 7); set lightwalletd.replicas=0 and yindex.enabled=false, or keep archive" }}
+{{- end }}
+{{- end }}
 # zakurad.toml for the kogany node (workspace kogany plan W9-c): Ycash regtest, the legacy P2P stack
 # only (kogany plan K-11), no RPC authentication (ClusterIP only), the state on the PVC. The YED
 # attestor set the arming Job records is added at start (statefulset.yaml), as ycashd's
@@ -40,6 +53,11 @@ data:
     [state]
     cache_dir = "/var/lib/zakura/state"
     ephemeral = false
+    {{- if eq $mode "pruned" }}
+
+    [state.storage_mode.pruned]
+    tx_retention = {{ int .Values.kogany.retention }}
+    {{- end }}
 
     [mempool]
     debug_enable_at_height = 0

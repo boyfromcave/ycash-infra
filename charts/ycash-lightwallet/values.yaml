@@ -85,6 +85,15 @@ kogany:
   # (both nodes validate the same chain). Overwinter, Sapling, Ycash, Blossom, Heartwood, Canopy, Vault.
   activationHeights: {}
   logFilter: info
+  # Zakura's [state] storage_mode (workspace docs/plans/kogany/research/pruning-assessment.md,
+  # decisions 4, 7, 8). archive (the default) keeps every raw transaction. pruned keeps them for
+  # `retention` blocks below the finalized tip (Zakura's floor: 10,000 on mainnet and testnet, 1,001
+  # on regtest; the infrastructure's pruned retention is 34,560, 30 days at 75 s) and still enforces
+  # Vault and Yellowback in full. This chart's kogany is lightwalletd-dd's and yindex's backend, which
+  # read every block from Sapling activation and the address index, so the render refuses pruned
+  # while either runs (decision 7: lightwalletd-dd backends stay archive).
+  storageMode: archive        # archive | pruned
+  retention: 34560            # pruned only: zakurad.toml [state.storage_mode.pruned] tx_retention
   storage:
     className: ""
     size: 20Gi

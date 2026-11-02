@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://www.opensource.org/licenses/mit-license.php .
 """Offline tests of the mainnet snapshot tool (bundles/state/mainnet/snapshot.py: pack, finalize, kogany)
-and of verify.py's `ycash-state/2` and `kogany-state/1` rules, on stand-in datadirs (no node)."""
+and of verify.py's `ycash-state/2` and `kogany-state/1`/`2` rules, on stand-in datadirs (no node)."""
 
 import argparse
 import contextlib
@@ -156,24 +156,39 @@ class Mainnet(unittest.TestCase):
         self.assertTrue(any("unexpected" in e for e in verify.verify(self.out)))
 
 
+def kogany_cache(tmp):
+    v = os.path.join(tmp, "cache", "state", "v30", "mainnet")
+    write(os.path.join(v, "version"), b"30.2.0")
+    write(os.path.join(v, "000012.sst"), b"sst")
+    write(os.path.join(v, "003143.log"), b"wal")      # RocksDB's write-ahead log: kept
+    write(os.path.join(v, "LOCK"), b"")
+    write(os.path.join(v, "LOG"), b"x")
+    write(os.path.join(v, "LOG.old.1762000000"), b"x")
+    write(os.path.join(tmp, "cache", "non_finalized_state", "mainnet", "00" * 32), b"block")
+    return os.path.join(tmp, "cache")
+
+
+def kogany_args(tmp, out, **kw):
+    return argparse.Namespace(cache=kogany_cache(tmp), height=H, blockhash=BH, out=out, version="kogany test",
+                              ycash_statement=None, check_stopped=False, **kw)
+
+
+def rewrite(out, m):
+    snapshot.dump(os.path.join(out, "manifest.json"), m)
+    snapshot.write_sums(out)
+
+
 class Kogany(unittest.TestCase):
     def test_kogany_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
-            v = os.path.join(tmp, "cache", "state", "v30", "mainnet")
-            write(os.path.join(v, "version"), b"30.2.0")
-            write(os.path.join(v, "000012.sst"), b"sst")
-            write(os.path.join(v, "003143.log"), b"wal")      # RocksDB's write-ahead log: kept
-            write(os.path.join(v, "LOCK"), b"")
-            write(os.path.join(v, "LOG"), b"x")
-            write(os.path.join(v, "LOG.old.1762000000"), b"x")
-            write(os.path.join(tmp, "cache", "non_finalized_state", "mainnet", "00" * 32), b"block")
             out = os.path.join(tmp, "out")
-            a = argparse.Namespace(cache=os.path.join(tmp, "cache"), height=H, blockhash=BH, out=out,
-                                   version="kogany test", ycash_statement=None, check_stopped=False)
+            a = kogany_args(tmp, out)
             quiet(snapshot.kogany, a)
             self.assertEqual(verify.verify(out, tree=True), [])
             with open(os.path.join(out, "manifest.json")) as f:
                 m = json.load(f)
+            self.assertEqual(m["format"], "kogany-state/2")
+            self.assertEqual((m["storage_mode"], m["lowest_retained_height"]), ("archive", None))
             self.assertEqual(m["state_format"], "30.2.0")
             self.assertEqual(m["tarball"], "kogany-main-570000-state-30.2.0.tar.gz")
             with tarfile.open(os.path.join(out, m["tarball"])) as t:
@@ -194,6 +209,62 @@ class Kogany(unittest.TestCase):
             snapshot.dump(os.path.join(out, "manifest.json"), m)
             snapshot.write_sums(out)
             self.assertTrue(any("pin" in e for e in verify.verify(out)))
+
+    def test_kogany_pruned_bundle(self):
+        """KP-4: a pruned cache as `kogany-state/2` with `storage_mode` and `lowest_retained_height`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out")
+            low = (H - 1) - 34_560 + 1                  # the infra retention below the finalized tip H - 1
+            quiet(snapshot.kogany, kogany_args(tmp, out, storage_mode="pruned", lowest_retained_height=low))
+            self.assertEqual(verify.verify(out, tree=True), [])
+            with open(os.path.join(out, "manifest.json")) as f:
+                m = json.load(f)
+            self.assertEqual((m["format"], m["storage_mode"], m["lowest_retained_height"]),
+                             ("kogany-state/2", "pruned", low))
+            self.assertEqual(m["tarball"], "kogany-main-570000-state-30.2.0-pruned.tar.gz")
+            # Zakura's floor: fewer than 10,000 blocks kept below the finalized tip is refused
+            bad = dict(m, lowest_retained_height=H - 1 - 9_999 + 1)
+            rewrite(out, bad)
+            self.assertTrue(any("floor" in e for e in verify.verify(out)))
+            rewrite(out, dict(m, lowest_retained_height=H + 1))
+            self.assertTrue(any("lowest_retained_height" in e for e in verify.verify(out)))
+            rewrite(out, dict(m, storage_mode="archive"))   # an archive bundle names no retained height
+            errs = verify.verify(out)
+            self.assertTrue(any("archive bundle" in e for e in errs), errs)
+            self.assertTrue(any("tarball" in e for e in errs), errs)    # and has no -pruned suffix
+            rewrite(out, dict(m, storage_mode="thin"))
+            self.assertTrue(any("storage_mode" in e for e in verify.verify(out)))
+            rewrite(out, dict(m, lowest_retained_height=0))  # pruned mode, nothing deleted yet
+            self.assertEqual(verify.verify(out), [])
+            nofield = {k: v for k, v in m.items() if k != "storage_mode"}
+            rewrite(out, nofield)
+            self.assertTrue(any("missing storage_mode" in e for e in verify.verify(out)))
+
+    def test_kogany_pruned_needs_its_height(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out")
+            with self.assertRaises(SystemExit):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    quiet(snapshot.kogany, kogany_args(tmp, out, storage_mode="pruned", lowest_retained_height=None))
+            with self.assertRaises(SystemExit):                 # below the floor: refused before packing
+                with contextlib.redirect_stderr(io.StringIO()):
+                    quiet(snapshot.kogany, kogany_args(tmp, out, storage_mode="pruned",
+                                                       lowest_retained_height=H - 100))
+            self.assertFalse(any(n.endswith(".tar.gz") for n in os.listdir(out)))
+
+    def test_kogany_v1_still_verifies(self):
+        """The recorded `kogany-state/1` bundles (archive by construction) stay valid; v1 carries no v2 field."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out")
+            quiet(snapshot.kogany, kogany_args(tmp, out))
+            with open(os.path.join(out, "manifest.json")) as f:
+                m = json.load(f)
+            v1 = {k: v for k, v in m.items() if k not in ("storage_mode", "lowest_retained_height")}
+            v1["format"] = "kogany-state/1"
+            rewrite(out, v1)
+            self.assertEqual(verify.verify(out, tree=True), [])
+            rewrite(out, dict(v1, storage_mode="archive"))
+            self.assertTrue(any("kogany-state/2 fields" in e for e in verify.verify(out)))
 
 
 if __name__ == "__main__":

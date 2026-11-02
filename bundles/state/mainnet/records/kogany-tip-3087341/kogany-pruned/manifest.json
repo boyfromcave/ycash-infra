@@ -1,0 +1,18 @@
+{
+  "agrees_with": null,
+  "blockhash": "0000002ba6d97af6474d3bac9b8b82da7b54568f47097871d429438b338461bf",
+  "bytes": 5429931325,
+  "format": "kogany-state/2",
+  "height": 3087341,
+  "line": "kogany",
+  "lowest_retained_height": 3051782,
+  "network": "main",
+  "non_finalized_blocks": 1001,
+  "producer": "ycash-infra/mainnet-snapshot",
+  "sha256": "790353571d1fd40fce6b847d49a48e2e40403499d7ea6a53ebc9962301dcdb73",
+  "state_format": "30.2.0",
+  "storage_mode": "pruned",
+  "tarball": "kogany-main-3087341-state-30.2.0-pruned.tar.gz",
+  "tree_sha256": "29468c78d75fe6ad2cd1cbfc5b6805a3dda992cdd225e734df0e3d8bcfd9a827",
+  "version": "kogany 1.7.0+383.g081e264c2, pruned offline by zakura-prune-state --tx-retention 34560 (kogany kc/pruned)"
+}

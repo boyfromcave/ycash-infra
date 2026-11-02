@@ -264,3 +264,55 @@ format upgrade on the copy. Restore a snapshot only into a kogany build of the s
 - **Restore**: stop kogany, then
   `tar -xzf <tarball> -C <cache_dir> && cat <cache_dir>/state/v*/mainnet/version`, where
   `<cache_dir>` is kogany's `[state] cache_dir`. The version must equal `state_format`.
+
+---
+
+# kogany state cache, format v2 (`kogany-state/2`)
+
+## In plain words
+
+v1, plus the cache's storage mode. A kogany node runs Zakura's **Archive** mode (the default: every
+raw transaction kept) or its **Pruned** mode (raw transactions kept only for a window of blocks below
+the finalized tip; headers, hashes, transaction locations, the UTXO set, nullifiers, trees, the vault
+and YED state stay). A pruned cache is about a third of an archive one on mainnet (raw transactions
+are 18.4 of 25.6 GB), and it is all a node that will run pruned needs: kogany's vault and YED rules
+read the block in hand and the kept state, never an old body (workspace
+`docs/plans/kogany/research/pruning-assessment.md` §3; decisions 4 and 6). A pruned cache cannot seed
+an archive node, lightwalletd-dd's backend, `yindex`, or a check that re-reads old blocks.
+
+## Contract
+
+Everything in v1's "Contract" applies, except what follows.
+
+- **`manifest.json`**: `format: "kogany-state/2"`; `non_finalized_blocks` is required; and:
+
+| Field | Value |
+|---|---|
+| `storage_mode` | `"archive"` or `"pruned"`: the Zakura `[state] storage_mode` the cache was written (or pruned) under |
+| `lowest_retained_height` | archive: `null`. pruned: the lowest height at and above which every raw transaction is in the bundle (Zakura's `lowest_retained_height`, what `getblockchaininfo.pruneheight` reports; `0` while a pruned node has deleted nothing yet). Below it only genesis keeps its body |
+
+  A pruned bundle keeps at least Zakura's Mainnet floor: `lowest_retained_height` is 0, or the
+  finalized tip (`height − non_finalized_blocks`) minus `lowest_retained_height`, plus one, is at
+  least 10,000 (`MIN_PRUNING_RETENTION`). The infrastructure's pruned bundles use a retention of
+  34,560 blocks (30 days at 75 s; decision 8).
+- **Producing a pruned bundle.** Prune a *copy* of a stopped archive cache in place with
+  `zakura-prune-state --cache-dir <copy> --network mainnet --tx-retention <N> --confirm` (the same
+  binary's state format; it deletes the raw transactions below the window with one range tombstone,
+  writes the one-way pruning marker and compacts the range), then pack it with
+  `snapshot.py kogany --storage-mode pruned --lowest-retained-height <the summary's new lowest
+  retained height>`. A node already running pruned is packed the same way with its `pruneheight`.
+  The producer states both fields; `snapshot.py` reads no RocksDB.
+- **Tarball** `kogany-main-<H>-state-<state_format>.tar.gz` for an archive bundle,
+  `kogany-main-<H>-state-<state_format>-pruned.tar.gz` for a pruned one, so both flavours of one
+  height can sit side by side.
+- **Published**: archive as v1 (`<base>/kogany-main/<H>/<file>`,
+  `<base>/kogany-main/latest-<state_format>/manifest.json`); pruned at
+  `<base>/kogany-main-pruned/<H>/<file>` and `<base>/kogany-main-pruned/latest-<state_format>/manifest.json`
+  (`mainnet/publish-s3.sh`).
+- **Restore**: as v1. A **pruned** bundle restores only into a kogany configured
+  `[state.storage_mode.pruned] tx_retention = N` with `N` at least 10,000 (Zakura refuses to open a
+  pruned database in Archive mode, `zakura-state` `finalized_state.rs`, and refuses a retention under
+  its floor at start); the change is one-way, so an archive node needs an archive bundle or a resync.
+  An archive bundle restores into either mode (a pruned node prunes it as it commits).
+- **v1 bundles** stay valid: `kogany-state/1` bundles were all written by archive nodes and carry
+  neither field (`verify.py` refuses a v1 manifest that carries one).

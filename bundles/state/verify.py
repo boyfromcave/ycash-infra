@@ -3,8 +3,8 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://www.opensource.org/licenses/mit-license.php .
 """Check a state bundle directory against bundles/state/FORMAT.md, offline: `ycash-state/1` (the testnet
-bundle), `ycash-state/2` (mainnet and other single-producer bundles) and `kogany-state/1` (a kogany state
-cache).
+bundle), `ycash-state/2` (mainnet and other single-producer bundles) and `kogany-state/1` / `kogany-state/2`
+(a kogany state cache; v2 records its storage mode, archive or pruned).
 
   python3 -I bundles/state/verify.py [--tree] DIR      DIR holds the tarball, manifest.json, SHA256SUMS, ...
 
@@ -26,6 +26,12 @@ import tarfile
 FORMAT = "ycash-state/1"
 FORMAT_V2 = "ycash-state/2"
 KOGANY_FORMAT = "kogany-state/1"
+KOGANY_FORMAT_V2 = "kogany-state/2"
+KOGANY_FORMATS = (KOGANY_FORMAT, KOGANY_FORMAT_V2)
+STORAGE_MODES = ("archive", "pruned")
+# Zakura's Mainnet/Testnet retention floor (zakura-state constants.rs MIN_PRUNING_RETENTION): a pruned
+# kogany keeps the raw transactions of at least this many blocks below its finalized tip.
+MIN_PRUNING_RETENTION = 10_000
 FORMATS = (FORMAT, FORMAT_V2)
 NETWORKS = ("testnet-yb-fast", "testnet-yb-slow", "testnet-legacy", "testnet", "main")
 STATEMENT_FIELDS = ("network", "height", "blockhash", "chainwork", "utxo_hash_serialized", "vault_statehash", "yed_statehash")
@@ -166,10 +172,43 @@ def check_sums(d, errors):
     return present
 
 
+def kogany_tarball_name(m):
+    """`kogany-main-<H>-state-<state_format>.tar.gz`, with `-pruned` before `.tar.gz` for a pruned v2 bundle."""
+    suffix = "-pruned" if m.get("storage_mode") == "pruned" else ""
+    return f"kogany-main-{m['height']}-state-{m['state_format']}{suffix}.tar.gz"
+
+
+def check_storage_mode(m, errors):
+    """`kogany-state/2`: `storage_mode` and `lowest_retained_height` (FORMAT.md). An archive bundle has
+    every raw transaction (`null`); a pruned one has none below `lowest_retained_height` but genesis's (0:
+    pruned mode, nothing deleted yet), and keeps at least Zakura's Mainnet floor below its finalized tip."""
+    mode, low = m["storage_mode"], m["lowest_retained_height"]
+    if mode not in STORAGE_MODES:
+        errors.append(f"manifest: storage_mode {mode!r}, expected one of {STORAGE_MODES}")
+        return
+    if mode == "archive":
+        if low is not None:
+            errors.append(f"manifest: an archive bundle has lowest_retained_height null, not {low!r}")
+        return
+    if not isinstance(low, int) or isinstance(low, bool) or low < 0 or low > m["height"]:
+        errors.append(f"manifest: lowest_retained_height {low!r} is not a height in 0..{m['height']}")
+        return
+    nf = m.get("non_finalized_blocks", 0)
+    finalized = m["height"] - (nf if isinstance(nf, int) else 0)
+    if low > 0 and finalized - low + 1 < MIN_PRUNING_RETENTION:
+        errors.append(f"manifest: lowest_retained_height {low} keeps {finalized - low + 1} blocks below the "
+                      f"finalized tip {finalized}, fewer than Zakura's floor {MIN_PRUNING_RETENTION}")
+
+
 def verify_kogany(d, m, raw, tree, errors):
-    """`kogany-state/1` (FORMAT.md): a stopped kogany state cache, valid only for its state format."""
+    """`kogany-state/1` and `/2` (FORMAT.md): a stopped kogany state cache, valid only for its state format;
+    v2 also names its storage mode."""
     need = ("format", "line", "network", "height", "blockhash", "state_format", "tarball", "sha256", "bytes",
             "tree_sha256", "producer", "version", "agrees_with")
+    if m["format"] == KOGANY_FORMAT_V2:
+        need += ("non_finalized_blocks", "storage_mode", "lowest_retained_height")
+    elif "storage_mode" in m or "lowest_retained_height" in m:
+        errors.append("manifest: storage_mode / lowest_retained_height are kogany-state/2 fields")
     missing = [k for k in need if k not in m]
     if missing:
         return errors + [f"manifest: missing {', '.join(missing)}"]
@@ -182,7 +221,9 @@ def verify_kogany(d, m, raw, tree, errors):
     pin = MAINNET_PINS.get(m["height"])
     if pin and pin != m["blockhash"]:
         errors.append(f"manifest: blockhash at {m['height']} is not ycash6's pin {pin}")
-    name = f"kogany-main-{m['height']}-state-{m['state_format']}.tar.gz"
+    if m["format"] == KOGANY_FORMAT_V2:
+        check_storage_mode(m, errors)
+    name = kogany_tarball_name(m)
     if m["tarball"] != name:
         errors.append(f"manifest: tarball {m['tarball']!r}, expected {name!r}")
     if check_sums(d, errors) is None:
@@ -214,10 +255,10 @@ def verify(d, tree=False):
         return [f"manifest.json: {e}"]
     if raw != canonical(m):
         errors.append("manifest.json is not canonical (sorted keys, 2-space indent, one trailing newline)")
-    if m.get("format") == KOGANY_FORMAT:
+    if m.get("format") in KOGANY_FORMATS:
         return verify_kogany(d, m, raw, tree, errors)
     if m.get("format") not in FORMATS:
-        errors.append(f"manifest: format {m.get('format')!r}, expected one of {FORMATS + (KOGANY_FORMAT,)}")
+        errors.append(f"manifest: format {m.get('format')!r}, expected one of {FORMATS + KOGANY_FORMATS}")
     v2 = m.get("format") == FORMAT_V2
     missing = [k for k in STATEMENT_FIELDS[:3] + (V2_MANIFEST_FIELDS if v2 else MANIFEST_FIELDS) if k not in m]
     if missing:

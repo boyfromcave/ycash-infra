@@ -3,7 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://www.opensource.org/licenses/mit-license.php .
 #
-# In plain words: copies one finished, verified mainnet snapshot (a `ycash-state/2` or `kogany-state/1`
+# In plain words: copies one finished, verified mainnet snapshot (a `ycash-state/2` or `kogany-state/1`/`2`
 # bundle directory) to the object store the snapshotter and the restore read, once. It refuses to
 # overwrite a published height, uploads the tarball first and the manifest and its sums last (a reader
 # never sees a manifest that names a file not yet there), and moves `latest/manifest.json` only forward.
@@ -11,7 +11,10 @@
 #
 # Usage:  publish-s3.sh DIR s3://bucket/prefix
 #   ycash-state/2:   <prefix>/<network>/<H>/<file>         and <prefix>/<network>/latest/manifest.json
-#   kogany-state/1:  <prefix>/kogany-<network>/<H>/<file>  and <prefix>/kogany-<network>/latest-<state_format>/manifest.json
+#   kogany-state/1, kogany-state/2 archive:
+#                    <prefix>/kogany-<network>/<H>/<file>  and <prefix>/kogany-<network>/latest-<state_format>/manifest.json
+#   kogany-state/2 pruned:
+#                    <prefix>/kogany-<network>-pruned/<H>/<file>  and  .../kogany-<network>-pruned/latest-<state_format>/manifest.json
 # The same <prefix>/<network>/<H>/ layout as the testnet snapshotter (bundles/state/FORMAT.md
 # "Where it is published", charts/ycash-testnet/files/snapshot.sh publish-s3).
 # Env:    AWS_REGION and credentials as the AWS CLI reads them; AWS=<cli> (default aws); DRY=1 prints only.
@@ -28,7 +31,13 @@ format=$(field format); network=$(field network); height=$(field height); tarbal
 case "$format" in
   ycash-state/2) root="$BASE/$network"; latest="$root/latest/manifest.json" ;;
   kogany-state/1) root="$BASE/kogany-$network"; latest="$root/latest-$(field state_format)/manifest.json" ;;
-  *) echo "$DIR: format $format is not a mainnet snapshot (ycash-state/2, kogany-state/1)" >&2; exit 2 ;;
+  kogany-state/2)
+    case "$(field storage_mode)" in
+      pruned) root="$BASE/kogany-$network-pruned" ;;
+      *) root="$BASE/kogany-$network" ;;
+    esac
+    latest="$root/latest-$(field state_format)/manifest.json" ;;
+  *) echo "$DIR: format $format is not a mainnet snapshot (ycash-state/2, kogany-state/1, kogany-state/2)" >&2; exit 2 ;;
 esac
 dest="$root/$height"
 run() { if [ "${DRY:-0}" = 1 ]; then echo "+ $*"; else "$@"; fi; }
