@@ -90,13 +90,15 @@ the driver runs kogany with `[state] debug_stop_at_height = H` (Zakura `zakura-s
 finalized state then stops exactly at H and zakurad exits. Then:
 
 ```bash
-python3 -I snapshot.py kogany --cache $WS/wt/.data/kogany-mainnet/state/.. --height H --blockhash <hash at H> \
+python3 -I snapshot.py kogany --cache $WS/wt/.data/kogany-mainnet/state --height H --blockhash <hash at H> \
   --out <snapdir>/<H>/kogany --version <kogany commit> --ycash-statement <snapdir>/<H>/bundle/statement-ycash6.json
 ```
 
-`--cache` is kogany's `cache_dir` (the directory holding `state/v30/mainnet`). The bundle records the
+`--cache` is kogany's `[state] cache_dir`: the directory holding `state/v30/mainnet` and
+`non_finalized_state/mainnet`. In practice, clone it first with `cp -c` (seconds) and pack the
+clone, so kogany can resume at once. The bundle records the
 state format (`30.2.0`) from the database's `version` file, and is valid only for that format
-(FORMAT.md).
+(FORMAT.md). It also includes the non-finalized blocks whenever there are any (a tip snapshot).
 
 ## Publishing (for the chart's snapshotter and the restore)
 

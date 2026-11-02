@@ -86,9 +86,10 @@ def tarball_name(m):
     return f"ycash6-{m['network']}-{m['height']}-{m['flavour']}.tar.gz"
 
 
-def check_tar(path, network, flavour, errors, tree=False, kogany=False):
+def check_tar(path, network, flavour, errors, tree=False, kogany=False, kogany_nf=0):
     """Check the entries; with tree, return the tree hash of the members (else None)."""
     names = []
+    nf_seen = 0
     th = hashlib.sha256() if tree else None
     with tarfile.open(path, "r|gz") as t:
         for e in t:
@@ -99,9 +100,13 @@ def check_tar(path, network, flavour, errors, tree=False, kogany=False):
                 continue
             parts = n.split("/")
             if kogany:
-                if parts[0] != "state" or (len(parts) > 1 and not re.fullmatch(r"v\d+", parts[1])) or \
+                if parts[0] == "non_finalized_state":
+                    nf_seen += e.isfile()
+                    if len(parts) > 1 and parts[1] != "mainnet":
+                        errors.append(f"tar: {e.name} is not under non_finalized_state/mainnet/")
+                elif parts[0] != "state" or (len(parts) > 1 and not re.fullmatch(r"v\d+", parts[1])) or \
                         (len(parts) > 2 and parts[2] != "mainnet"):
-                    errors.append(f"tar: {e.name} is not under state/v<major>/mainnet/")
+                    errors.append(f"tar: {e.name} is not under state/v<major>/mainnet/ or non_finalized_state/mainnet/")
                 if KOGANY_LEFT_OUT.search(n):
                     errors.append(f"tar: {e.name} is a file the format leaves out")
             else:
@@ -127,6 +132,8 @@ def check_tar(path, network, flavour, errors, tree=False, kogany=False):
         for d in ("blocks", "chainstate"):
             if f"{network}/{d}" not in {n.rstrip("/") for n in names}:
                 errors.append(f"tar: no {network}/{d}/")
+    elif nf_seen != kogany_nf:
+        errors.append(f"tar: {nf_seen} non-finalized block file(s), the manifest says {kogany_nf}")
     return th.hexdigest() if th is not None else None
 
 
@@ -187,7 +194,11 @@ def verify_kogany(d, m, raw, tree, errors):
         errors.append("manifest: sha256 does not match the tarball")
     if os.path.getsize(tp) != m["bytes"]:
         errors.append("manifest: bytes does not match the tarball")
-    th = check_tar(tp, "state", "full", errors, tree=tree, kogany=True)
+    nf = m.get("non_finalized_blocks", 0)    # absent in the first bundles: 0
+    if not isinstance(nf, int) or nf < 0:
+        errors.append(f"manifest: non_finalized_blocks {nf!r}")
+        nf = 0
+    th = check_tar(tp, "state", "full", errors, tree=tree, kogany=True, kogany_nf=nf)
     if th is not None and th != m["tree_sha256"]:
         errors.append("manifest: tree_sha256 does not match the tarball's members")
     return errors

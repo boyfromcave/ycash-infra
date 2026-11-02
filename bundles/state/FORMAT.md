@@ -233,19 +233,28 @@ format upgrade on the copy. Restore a snapshot only into a kogany build of the s
 
 ## Contract
 
-- **Source.** kogany's `[state] cache_dir`, with zakurad stopped. The producer stops it with
-  `[state] debug_stop_at_height = H`, so the finalized tip is exactly `H`.
+- **Source.** kogany's `[state] cache_dir`, with zakurad stopped. At a fixed height the producer
+  stops it with `[state] debug_stop_at_height = H`, so the finalized tip is exactly `H`. At the
+  network tip it is stopped at its tip `H`. The last ~100 blocks then sit in the non-finalized
+  state, which kogany restores from `non_finalized_state/` on reopen.
 - **Tarball** `kogany-main-<H>-state-<state_format>.tar.gz`. Entries sit under
   `state/v<major>/mainnet/` (relative to `cache_dir`). They include every RocksDB file: `*.sst`,
   `*.log` (the write-ahead log, which holds data), `CURRENT`, `IDENTITY`, `MANIFEST-*`, `OPTIONS-*`
-  and `version`. They exclude `LOCK`, `LOG` and `LOG.old.*`, the non-finalized state backup
-  (`state/non_finalized_state/`, blocks above `H`), the peer cache (`network/`), `identity/` and
-  logs. The encoding is v1's (bytewise order, fixed headers, `gzip -n -6`).
+  and `version`. They exclude `LOCK`, `LOG` and `LOG.old.*`, the peer cache (`network/`),
+  `identity/` and logs.
+- **The non-finalized state** (`non_finalized_state/mainnet/`, one file per block above the
+  finalized tip) is **required whenever the cache has any**: without it a tip snapshot's state would
+  end ~100 blocks below its `height`. Its file count is the manifest's `non_finalized_blocks`, and
+  `verify.py` checks it against the tarball. A bundle without the field counts as 0. The first four
+  bundles (`debug_stop_at_height`, finalized tip exactly at `H`) were packed without the directory
+  and have no such field.
+- **Encoding.** v1's: bytewise order, fixed headers, `gzip -n -6`.
 - **`manifest.json`** (canonical as above):
   - `format: "kogany-state/1"`, `line: "kogany"`, `network: "main"`;
   - `height`, `blockhash` (from the node or the sync gate at `H`), `state_format`;
   - `tarball`, `sha256`, `bytes`, `tree_sha256` (as in v2);
   - `producer`, `version` (the kogany commit or release that wrote it);
+  - `non_finalized_blocks`: the number of non-finalized block files included;
   - `agrees_with`: `"ycash6:<sha256 of statement-ycash6.json>"` when the producer checked that the
     `ycash-state/2` statement at the same height names the same block hash; `null` otherwise.
   - At a pinned height, `blockhash` must equal ycash6's pin.
@@ -253,5 +262,5 @@ format upgrade on the copy. Restore a snapshot only into a kogany build of the s
 - **Published** at `<base>/kogany-main/<H>/<file>` and
   `<base>/kogany-main/latest-<state_format>/manifest.json`.
 - **Restore**: stop kogany, then
-  `tar -xzf <tarball> -C <cache_dir> && cat <cache_dir>/state/v*/mainnet/version`; the version must
-  equal `state_format`.
+  `tar -xzf <tarball> -C <cache_dir> && cat <cache_dir>/state/v*/mainnet/version`, where
+  `<cache_dir>` is kogany's `[state] cache_dir`. The version must equal `state_format`.

@@ -380,8 +380,17 @@ def kogany(a):
     rel = os.path.join("state", os.path.basename(os.path.dirname(vdir)), "mainnet")
     os.makedirs(os.path.dirname(os.path.join(stage, rel)))
     clone_tree(vdir, os.path.join(stage, rel))
+    # the non-finalized state (the last ~100 blocks above the finalized tip, kogany restores them on
+    # reopen): part of the snapshot whenever the cache has any, so the bundle's tip is the node's tip
+    nf = os.path.join(cache, "non_finalized_state", "mainnet")
+    nf_files = sorted(os.listdir(nf)) if os.path.isdir(nf) else []
+    if nf_files:
+        os.makedirs(os.path.join(stage, "non_finalized_state"))
+        clone_tree(nf, os.path.join(stage, "non_finalized_state", "mainnet"))
     entries = []
-    for dirpath, dirnames, filenames in os.walk(os.path.join(stage, "state")):
+    for dirpath, dirnames, filenames in os.walk(stage):
+        if dirpath == stage:
+            continue
         r = os.path.relpath(dirpath, stage)
         entries.append((r, True))
         for fn in filenames:
@@ -396,10 +405,10 @@ def kogany(a):
          "blockhash": a.blockhash, "state_format": sv, "tarball": name,
          "sha256": sha256_file(os.path.join(out, name)), "bytes": os.path.getsize(os.path.join(out, name)),
          "tree_sha256": tree, "producer": "ycash-infra/mainnet-snapshot", "version": a.version,
-         "agrees_with": None}
+         "agrees_with": None, "non_finalized_blocks": len(nf_files)}
     if a.ycash_statement:
         y = load(a.ycash_statement)
-        if y["height"] != a.height or y["blockhash"] != a.blockhash:
+        if y["height"] != a.height or y["blockhash"] != a.blockhash:  # the tip: compare the same height
             die("the ycash6 statement is at %d %s, not %d %s" % (y["height"], y["blockhash"], a.height, a.blockhash))
         m["agrees_with"] = "ycash6:%s" % sha256_file(a.ycash_statement)
     pins_at = MAINNET_PINS.get(a.height)

@@ -166,7 +166,7 @@ class Kogany(unittest.TestCase):
             write(os.path.join(v, "LOCK"), b"")
             write(os.path.join(v, "LOG"), b"x")
             write(os.path.join(v, "LOG.old.1762000000"), b"x")
-            write(os.path.join(tmp, "cache", "state", "non_finalized_state", "mainnet", "b"), b"x")
+            write(os.path.join(tmp, "cache", "non_finalized_state", "mainnet", "00" * 32), b"block")
             out = os.path.join(tmp, "out")
             a = argparse.Namespace(cache=os.path.join(tmp, "cache"), height=H, blockhash=BH, out=out,
                                    version="kogany test", ycash_statement=None, check_stopped=False)
@@ -181,7 +181,14 @@ class Kogany(unittest.TestCase):
             self.assertIn("state/v30/mainnet/003143.log", names)
             self.assertNotIn("state/v30/mainnet/LOCK", names)
             self.assertNotIn("state/v30/mainnet/LOG.old.1762000000", names)
-            self.assertFalse(any("non_finalized" in n for n in names))
+            self.assertIn("non_finalized_state/mainnet/" + "00" * 32, names)   # the tip's last blocks
+            self.assertEqual(m["non_finalized_blocks"], 1)
+            # a manifest that miscounts the non-finalized blocks is refused
+            m["non_finalized_blocks"] = 0
+            snapshot.dump(os.path.join(out, "manifest.json"), m)
+            snapshot.write_sums(out)
+            self.assertTrue(any("non-finalized" in e for e in verify.verify(out)))
+            m["non_finalized_blocks"] = 1
             # a wrong block hash at a pinned height is refused
             m["blockhash"] = "ee" * 32
             snapshot.dump(os.path.join(out, "manifest.json"), m)
