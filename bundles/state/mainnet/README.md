@@ -137,3 +137,23 @@ ycash-cli getblockhash <H>                        # must equal the manifest's bl
   no download.
 - For the chart: the init container does the same from `<base>/main/latest/manifest.json`, as for
   the testnets (`ycash-bootstrap`, testnet plan §4.4).
+
+## Taken on 2026-11-02 (ycash6 6.22.0-rc1 at 65cb4ae0f)
+
+All bundles below are `verify.py --tree` ok. Each node pause was the clone (0.1–0.5 s) plus the
+node's restart. The tarballs of the checkpoint heights were deleted after recording; each rebuilds
+byte for byte from its clone, which was shown for 570,000. The H_S and tip tarballs are kept for
+publishing.
+
+| Height | Block | `utxo_hash_serialized` | Tarball bytes | Tarball sha256 |
+|---|---|---|---|---|
+| 570,000 | `0000014fbc59…0c77ec5` (pin) | `c94ae436…80048406` | 18,938,433,104 | `3ea2693c…976c02e3` |
+| 1,100,006 | `00000388cfe0…612205d5` | `228377fa…f2ec2c` | 20,591,711,514 | `94af4b3f…5fc35ff4` |
+| 2,275,000 | `000006e55442…02c9183c` | `b9f2e313…edbd8367` | 23,358,662,189 | `8258fe3b…7287b690` |
+| 2,800,000 | `000003170414…3874facb` (pin; supply = compiled total) | `af80d206…7b24473a` | 24,187,791,474 | `7aa4c0d2…56cf006d` |
+| 3,079,999 (proposed H_S) | `000005030be4…d31e4bef` | `58b9a13c…07968509` | 24,453,443,316 | `7f09ffe2…574ee45c` |
+| 3,087,294 (tip) | `0000014ff36f…7ac3eeee` | `dcc2265d…1601beff` | 24,444,609,639 | `d7f7ecbf…35228d38` |
+
+The full values are in `records/<H>/`. kogany (`kogany-state/1`, Zakura state format 30.2.0) was
+packed at the heights where the sync-gate driver stopped it, each at the same block as ycash6:
+`records/<H>/kogany/`.
