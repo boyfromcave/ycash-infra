@@ -188,6 +188,15 @@ reach it through a port-forward, e.g.
 `kubectl --context kind-ycash-kogany -n ycash port-forward svc/ycash-kogany 18232` and a JSON-RPC
 `getblockchaininfo` on `127.0.0.1:18232` (no RPC authentication; ClusterIP only).
 
+Two things it needs from the images (found on the first run, 2026-11-02): `ycashd:local` must be
+built from ycash6 at or after `2904a2046` (`PROTOCOL_VERSION` 270200). With Vault active from height
+1, kogany refuses a peer below Vault's 270200 (as ycash6 does), so an older rig image (270013)
+connects, hands over a few blocks and is then dropped at every `version` message: kogany stays at
+that height while lightwalletd-dd waits. And yindex's ingest sends `getblockcount` with
+`"params": null`, which ycashd accepts and koganyd answers with `-32600 Invalid request` (kogany
+RPC gap). From a worktree under `wt/`, pass `WORKSPACE=` the workspace root so the image stamps are
+checked against the main trees.
+
 ### The demo kit (`make demo`)
 
 `make demo` is the kind cluster as a thing a person tests in a browser: idempotent, it creates
