@@ -50,6 +50,12 @@ sys.path.insert(0, STATE_DIR)
 from verify import MAINNET_PINS, canonical, tree_line  # noqa: E402
 
 
+def clone_tree(src, dst):
+    """Copy a directory tree copy-on-write where the filesystem can (APFS clonefile, Linux reflink)."""
+    cmd = ["cp", "-cR"] if sys.platform == "darwin" else ["cp", "-R", "--reflink=auto"]
+    subprocess.run(cmd + [src, dst], check=True)
+
+
 def log(msg):
     print("snapshot: %s" % msg, flush=True)
 
@@ -155,7 +161,7 @@ def statement(a):
     scratch = os.path.join(cap, "scratch")
     if os.path.exists(scratch):
         shutil.rmtree(scratch)
-    subprocess.run(["cp", "-cR", src, scratch], check=True)
+    clone_tree(src, scratch)
     node = Node(a.bin, scratch, a.rpcport)
     t0 = time.time()
     try:
@@ -373,7 +379,7 @@ def kogany(a):
         shutil.rmtree(stage)
     rel = os.path.join("state", os.path.basename(os.path.dirname(vdir)), "mainnet")
     os.makedirs(os.path.dirname(os.path.join(stage, rel)))
-    subprocess.run(["cp", "-cR", vdir, os.path.join(stage, rel)], check=True)
+    clone_tree(vdir, os.path.join(stage, rel))
     entries = []
     for dirpath, dirnames, filenames in os.walk(os.path.join(stage, "state")):
         r = os.path.relpath(dirpath, stage)

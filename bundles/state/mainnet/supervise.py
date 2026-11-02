@@ -37,6 +37,12 @@ TIP_RE = re.compile(r"UpdateTip: new best hash=([0-9a-f]{64}) height=(\d+)")
 BUNDLE_DIRS = ("blocks", "chainstate", "vaults", "yellowback")
 
 
+def clone_tree(src, dst):
+    """Copy a directory tree copy-on-write where the filesystem can (APFS clonefile, Linux reflink)."""
+    cmd = ["cp", "-cR"] if sys.platform == "darwin" else ["cp", "-R", "--reflink=auto"]
+    subprocess.run(cmd + [src, dst], check=True)
+
+
 def now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -127,7 +133,7 @@ class Supervisor:
         for d in BUNDLE_DIRS:
             src = os.path.join(self.netpath, d)
             if os.path.isdir(src):
-                subprocess.run(["cp", "-cR", src, os.path.join(dst, d)], check=True)
+                clone_tree(src, os.path.join(dst, d))
         t1 = time.time()
         rec = {"height": height, "method": method, "stopped_at": stopped_at,
                "clone_seconds": round(t1 - t0, 1), "datadir": self.datadir}
