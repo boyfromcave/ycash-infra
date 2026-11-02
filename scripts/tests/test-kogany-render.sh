@@ -2,7 +2,7 @@
 # Render-only test of the lightwallet chart's kogany backend (nodeLine kogany, workspace kogany plan
 # W9-c): values-kind.yaml + values-kind-kogany.yaml. lightwalletd-dd and yindex read the kogany node,
 # the ycashd StatefulSet is its test rig (connect= kogany, no listen) and keeps the wallet (the miner,
-# the arming Job and the faucet still reach ycashd), the arming Job rolls kogany, zakurad.toml carries
+# the arming Job and the faucet still reach ycashd), the arming Job rolls kogany, koganyd.toml carries
 # ycashd's activation heights; with nodeLine ycash6 nothing kogany renders; the refusals hold; the
 # storage mode is archive unless kogany.storageMode=pruned (and then only without lightwalletd-dd/yindex).
 set -euo pipefail
@@ -26,9 +26,9 @@ has "$kog" '- { name: YCASHD_LISTEN, value: "0" }' 'kogany: the rig does not lis
 has "$kog" 'rollout restart statefulset/t-kogany' 'kogany: the arming Job rolls kogany'
 has "$kog" 'RPC_URL, value: "http://t-ycashd:18832/"' 'kogany: the wallet RPC (faucet, arming) stays on ycashd'
 has "$kog" 'kind: StatefulSet' 'kogany: a StatefulSet'
-has "$kog" 'image: ycash/zakurad:local' 'kogany: the zakurad image'
+has "$kog" 'image: ycash/koganyd:local' 'kogany: the koganyd image'
 for nu in Overwinter Sapling Ycash Blossom Heartwood Canopy Vault; do
-  has "$kog" "    $nu = 1" "kogany: zakurad.toml activation_heights.$nu = 1 (= ycashd -nuparams)"
+  has "$kog" "    $nu = 1" "kogany: koganyd.toml activation_heights.$nu = 1 (= ycashd -nuparams)"
 done
 has "$kog" 'p2p_stack = "legacy"' 'kogany: the legacy P2P stack only (K-11)'
 hasnt "$kind" 't-kogany' 'ycash6: nothing kogany renders'

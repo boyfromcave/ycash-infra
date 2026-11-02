@@ -381,7 +381,7 @@ def kogany(a):
     if os.path.exists(os.path.join(vdir, "LOCK")) and a.check_stopped:
         r = subprocess.run(["lsof", "+D", vdir], capture_output=True, text=True)
         if r.stdout.strip():
-            die("the kogany state is open by a running process: stop zakurad first")
+            die("the kogany state is open by a running process: stop koganyd first")
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     stage = os.path.join(out, ".stage")

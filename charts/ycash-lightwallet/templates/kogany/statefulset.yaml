@@ -1,7 +1,7 @@
 {{- if include "yc.kogany" . }}
-# The kogany node (workspace kogany plan W9-c): zakurad --features ycash, one replica, its state on a
+# The kogany node (workspace kogany plan W9-c): koganyd --features ycash, one replica, its state on a
 # PVC. kogany's image (kogany docker/Dockerfile, runtime stage) runs as uid 10001; the pod starts
-# zakurad itself rather than through the image's entrypoint (no setpriv under runAsNonRoot).
+# koganyd itself rather than through the image's entrypoint (no setpriv under runAsNonRoot).
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -27,7 +27,7 @@ spec:
       {{- include "yc.podSecurity" (list . 10001) | nindent 6 }}
       terminationGracePeriodSeconds: 60
       containers:
-        - name: zakurad
+        - name: koganyd
           image: {{ include "yc.image" .Values.images.kogany }}
           imagePullPolicy: {{ .Values.images.kogany.pullPolicy }}
           {{- include "yc.containerSecurity" . | nindent 10 }}
@@ -41,11 +41,11 @@ spec:
           args:
             - |
               set -eu
-              cp /etc/zakura/zakurad.toml /tmp/zakurad.toml
+              cp /etc/zakura/koganyd.toml /tmp/koganyd.toml
               if [ -n "${YELLOWBACK_ATTESTOR_SET:-}" ]; then
-                printf '\n[yellowback]\nattestor_set = "%s"\n' "$YELLOWBACK_ATTESTOR_SET" >> /tmp/zakurad.toml
+                printf '\n[yellowback]\nattestor_set = "%s"\n' "$YELLOWBACK_ATTESTOR_SET" >> /tmp/koganyd.toml
               fi
-              exec zakurad -c /tmp/zakurad.toml start
+              exec koganyd -c /tmp/koganyd.toml start
           ports:
             - { name: rpc, containerPort: {{ .Values.kogany.rpc.port }} }
             - { name: p2p, containerPort: {{ .Values.kogany.p2p.port }} }

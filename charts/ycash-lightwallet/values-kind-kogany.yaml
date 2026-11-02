@@ -1,6 +1,6 @@
 # kind with kogany behind lightwalletd-dd and yindex (workspace kogany plan W9-c), on top of
 # values-kind.yaml:  helm template t . -f values-kind.yaml -f values-kind-kogany.yaml
-# `make image-zakurad` (kogany's zakurad --features ycash) + `make kind-load` first. The ycashd
+# `make image-koganyd` (kogany's koganyd --features ycash) + `make kind-load` first. The ycashd
 # StatefulSet becomes kogany's test rig (connect= kogany): it keeps the wallet, mines, arms YED.
 nodeLine: kogany
 kogany:
