@@ -156,6 +156,23 @@ publishing.
 | 3,079,999 (proposed H_S) | `000005030be4…d31e4bef` | `58b9a13c…07968509` | 24,453,443,316 | `7f09ffe2…574ee45c` |
 | 3,087,294 (tip) | `0000014ff36f…7ac3eeee` | `dcc2265d…1601beff` | 24,444,609,639 | `d7f7ecbf…35228d38` |
 
-The full values are in `records/<H>/`. kogany (`kogany-state/1`, Zakura state format 30.2.0) was
-packed at the heights where the sync-gate driver stopped it, each at the same block as ycash6:
-`records/<H>/kogany/`.
+The full values are in `records/<H>/`.
+
+kogany 1.7.0+383.g081e264c2 (`kogany-state/1`, Zakura state format 30.2.0):
+- The sync-gate driver stopped it with `debug_stop_at_height` at each fixed height, and with the
+  `stop` at its tip. Each block equals ycash6's at the same height (`agrees_with` names ycash6's
+  statement there).
+- The tip's block equals the live ycash6 node's `getblockhash 3087341`; ycash6 has no statement at
+  that height.
+- Only the H_S and tip tarballs are kept.
+
+| Height | Block | Tarball bytes | Tarball sha256 | Non-finalized blocks |
+|---|---|---|---|---|
+| 570,000 | `0000014fbc59…50c77ec5` | 18,397,165,478 | `86c48395…50075071` | 0 |
+| 1,100,006 | `00000388cfe0…612205d5` | 19,680,987,591 | `c291c43f…e1de90b7` | 0 |
+| 2,275,000 | `000006e55442…02c9183c` | 21,241,831,647 | `dc88e245…53528322` | 0 |
+| 2,800,000 | `000003170414…3874facb` | 21,885,176,031 | `61b83b72…150e09ae` | 0 |
+| 3,079,999 (proposed H_S) | `000005030be4…d31e4bef` | 22,429,729,018 | `e74668ed…325311df` | 0 |
+| 3,087,341 (tip) | `0000002ba6d9…338461bf` | 22,206,647,600 | `484ad481…bcd68fad` | 1,001 |
+
+The kogany manifests are in `records/<H>/kogany/` (the tip: `records/kogany-tip-3087341/kogany/`).

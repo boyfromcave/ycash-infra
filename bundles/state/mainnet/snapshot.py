@@ -380,7 +380,7 @@ def kogany(a):
     rel = os.path.join("state", os.path.basename(os.path.dirname(vdir)), "mainnet")
     os.makedirs(os.path.dirname(os.path.join(stage, rel)))
     clone_tree(vdir, os.path.join(stage, rel))
-    # the non-finalized state (the last ~100 blocks above the finalized tip, kogany restores them on
+    # the non-finalized state (the blocks above the finalized tip; kogany restores them on
     # reopen): part of the snapshot whenever the cache has any, so the bundle's tip is the node's tip
     nf = os.path.join(cache, "non_finalized_state", "mainnet")
     nf_files = sorted(os.listdir(nf)) if os.path.isdir(nf) else []

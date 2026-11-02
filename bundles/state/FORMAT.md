@@ -235,7 +235,7 @@ format upgrade on the copy. Restore a snapshot only into a kogany build of the s
 
 - **Source.** kogany's `[state] cache_dir`, with zakurad stopped. At a fixed height the producer
   stops it with `[state] debug_stop_at_height = H`, so the finalized tip is exactly `H`. At the
-  network tip it is stopped at its tip `H`. The last ~100 blocks then sit in the non-finalized
+  network tip it is stopped at its tip `H`. The blocks above its finalized tip then sit in the non-finalized
   state, which kogany restores from `non_finalized_state/` on reopen.
 - **Tarball** `kogany-main-<H>-state-<state_format>.tar.gz`. Entries sit under
   `state/v<major>/mainnet/` (relative to `cache_dir`). They include every RocksDB file: `*.sst`,
@@ -244,7 +244,7 @@ format upgrade on the copy. Restore a snapshot only into a kogany build of the s
   `identity/` and logs.
 - **The non-finalized state** (`non_finalized_state/mainnet/`, one file per block above the
   finalized tip) is **required whenever the cache has any**: without it a tip snapshot's state would
-  end ~100 blocks below its `height`. Its file count is the manifest's `non_finalized_blocks`, and
+  end below its `height`. Its file count is the manifest's `non_finalized_blocks`, and
   `verify.py` checks it against the tarball. A bundle without the field counts as 0. The first four
   bundles (`debug_stop_at_height`, finalized tip exactly at `H`) were packed without the directory
   and have no such field.
