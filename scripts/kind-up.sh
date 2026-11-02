@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # cluster add-ons (Envoy Gateway, cert-manager, metrics-server; kube-prometheus-stack with
-# MONITORING=1) + the chart with values-kind.yaml. The mkcert TLS Secret (scripts/kind-cert.sh)
+# MONITORING=1) + the chart with values-kind.yaml (VALUES="values-kind.yaml values-kind-kogany.yaml":
+# the chart's value files, in order; make kind-up-kogany). The mkcert TLS Secret (scripts/kind-cert.sh)
 # is used when it exists; with MONITORING=1 the chart's ServiceMonitor, dashboard and the
 # /grafana/ route are turned on.
 set -euo pipefail
@@ -12,6 +13,8 @@ KPS_VERSION=${KPS_VERSION:-92.3.0}
 MONITORING=${MONITORING:-0}
 k() { kubectl --context "$CTX" "$@"; }
 SET=()
+VF=()
+for v in ${VALUES:-values-kind.yaml}; do VF+=(-f "charts/ycash-lightwallet/$v"); done
 
 echo "== Gateway API CRDs + Envoy Gateway $EG_VERSION"
 helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm --version "$EG_VERSION" \
@@ -47,7 +50,7 @@ for j in $(k -n "$NS" get jobs -l app.kubernetes.io/instance="$RELEASE" -o jsonp
   k -n "$NS" delete job "$j" --ignore-not-found >/dev/null
 done
 helm upgrade --install "$RELEASE" charts/ycash-lightwallet --kube-context "$CTX" -n "$NS" --create-namespace \
-  -f charts/ycash-lightwallet/values-kind.yaml ${SET[@]+"${SET[@]}"} --wait --timeout 15m
+  "${VF[@]}" ${SET[@]+"${SET[@]}"} --wait --timeout 15m
 echo "== waiting for the node, the bootstrap job and lightwalletd"
 k -n "$NS" rollout status statefulset/"$RELEASE"-ycashd --timeout=10m
 k -n "$NS" wait --for=condition=complete job/"$RELEASE"-bootstrap --timeout=10m
@@ -59,7 +62,7 @@ if ARM=$(k -n "$NS" get job -l app.kubernetes.io/component=arm-yellowback -o nam
   echo "== waiting for the arming Job, then the upgrade that makes the node the quoting pool"
   k -n "$NS" wait --for=condition=complete "$ARM" --timeout=20m
   helm upgrade --install "$RELEASE" charts/ycash-lightwallet --kube-context "$CTX" -n "$NS" \
-    -f charts/ycash-lightwallet/values-kind.yaml --wait --timeout 15m
+    "${VF[@]}" --wait --timeout 15m
   k -n "$NS" rollout status statefulset/"$RELEASE"-ycashd --timeout=10m
 fi
 echo "== every workload of the release rolled out, no pod failing (ROLLOUT_TIMEOUT=${ROLLOUT_TIMEOUT:-10m} each)"

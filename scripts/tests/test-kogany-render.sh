@@ -47,4 +47,13 @@ has "$pruned" 'tx_retention = 34560' 'kogany pruned: the infrastructure retentio
 if helm template t "$CHART" "${KOG[@]}" --set kogany.storageMode=pruned >/dev/null 2>&1; then echo "FAIL refusal: pruned behind lightwalletd-dd"; fail=1; else echo "ok   refusal: pruned behind lightwalletd-dd and yindex (decision 7)"; fi
 if helm template t "$CHART" "${KOG[@]}" "${NOCLIENTS[@]}" --set kogany.storageMode=pruned --set kogany.retention=1000 >/dev/null 2>&1; then echo "FAIL refusal: a retention below the floor"; fail=1; else echo "ok   refusal: a retention below Zakura's regtest floor 1,001"; fi
 if helm template t "$CHART" "${KOG[@]}" --set kogany.storageMode=thin >/dev/null 2>&1; then echo "FAIL refusal: an unknown storage mode"; fail=1; else echo "ok   refusal: an unknown storage mode"; fi
+# The kind path (make kind-up-kogany): its own cluster, never the ycash one, with no host ports (the
+# ycash cluster holds 443/9067/18832), and kind-up.sh given exactly the two value files rendered above.
+dry=$(make -s -n kind-up-kogany 2>/dev/null)
+has "$dry" 'VALUES="values-kind.yaml values-kind-kogany.yaml"' 'kind-up-kogany: kind-up.sh gets values-kind.yaml + values-kind-kogany.yaml'
+has "$dry" 'scripts/kind-up.sh ycash-kogany ' 'kind-up-kogany: into the ycash-kogany cluster by default'
+has "$dry" 'kind load docker-image --name ycash-kogany ycash/koganyd:local' 'kind-load-kogany: loads koganyd:local'
+has "$(make -s -n kind-down-kogany)" 'kind delete cluster --name ycash-kogany' 'kind-down-kogany: deletes ycash-kogany only'
+has "$(cat kind/kind-kogany.yaml)" 'name: ycash-kogany' 'kind/kind-kogany.yaml: the ycash-kogany cluster'
+hasnt "$(cat kind/kind-kogany.yaml)" 'extraPortMappings' 'kind/kind-kogany.yaml: no host ports'
 exit $fail
