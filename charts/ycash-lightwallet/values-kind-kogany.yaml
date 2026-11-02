@@ -1,0 +1,11 @@
+# kind with kogany behind lightwalletd-dd and yindex (workspace kogany plan W9-c), on top of
+# values-kind.yaml:  helm template t . -f values-kind.yaml -f values-kind-kogany.yaml
+# `make image-zakurad` (kogany's zakurad --features ycash) + `make kind-load` first. The ycashd
+# StatefulSet becomes kogany's test rig (connect= kogany): it keeps the wallet, mines, arms YED.
+nodeLine: kogany
+kogany:
+  # = values-kind.yaml's ycashd -nuparams: every upgrade at 1, Vault (6d5b7a31) at 1. Falcon
+  # (-pqfalcon=1 there) has no kogany key yet (kogany plan finding W3-c/F-1).
+  activationHeights: { Overwinter: 1, Sapling: 1, Ycash: 1, Blossom: 1, Heartwood: 1, Canopy: 1, Vault: 1 }
+  storage: { size: 5Gi }
+  resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { memory: 3Gi } }
