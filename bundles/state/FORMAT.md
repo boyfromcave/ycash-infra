@@ -233,7 +233,7 @@ format upgrade on the copy. Restore a snapshot only into a kogany build of the s
 
 ## Contract
 
-- **Source.** kogany's `[state] cache_dir`, with zakurad stopped. At a fixed height the producer
+- **Source.** kogany's `[state] cache_dir`, with koganyd stopped. At a fixed height the producer
   stops it with `[state] debug_stop_at_height = H`, so the finalized tip is exactly `H`. At the
   network tip it is stopped at its tip `H`. The blocks above its finalized tip then sit in the non-finalized
   state, which kogany restores from `non_finalized_state/` on reopen.

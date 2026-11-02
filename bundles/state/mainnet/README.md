@@ -87,7 +87,7 @@ periodic: every snapshot here is either an epoch boundary another tool compares 
 
 kogany's sync-gate driver (W1-Y8) owns the kogany node; nothing here starts it. For a snapshot at H
 the driver runs kogany with `[state] debug_stop_at_height = H` (Zakura `zakura-state` config). The
-finalized state then stops exactly at H and zakurad exits. Then:
+finalized state then stops exactly at H and koganyd exits. Then:
 
 ```bash
 python3 -I snapshot.py kogany --cache $WS/wt/.data/kogany-mainnet/state --height H --blockhash <hash at H> \

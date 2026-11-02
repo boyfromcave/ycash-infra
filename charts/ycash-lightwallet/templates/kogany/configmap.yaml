@@ -16,7 +16,7 @@
 {{- fail "kogany.storageMode pruned: this kogany backs lightwalletd-dd and yindex, which need an archive node (pruning assessment decision 7); set lightwalletd.replicas=0 and yindex.enabled=false, or keep archive" }}
 {{- end }}
 {{- end }}
-# zakurad.toml for the kogany node (workspace kogany plan W9-c): Ycash regtest, the legacy P2P stack
+# koganyd.toml for the kogany node (workspace kogany plan W9-c): Ycash regtest, the legacy P2P stack
 # only (kogany plan K-11), no RPC authentication (ClusterIP only), the state on the PVC. The YED
 # attestor set the arming Job records is added at start (statefulset.yaml), as ycashd's
 # -yellowbackattestorset.
@@ -27,7 +27,7 @@ metadata:
   labels: {{- include "yc.labels" . | nindent 4 }}
     app.kubernetes.io/component: kogany
 data:
-  zakurad.toml: |
+  koganyd.toml: |
     [network]
     listen_addr = "0.0.0.0:{{ .Values.kogany.p2p.port }}"
     initial_testnet_peers = []
