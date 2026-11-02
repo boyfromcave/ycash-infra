@@ -7,6 +7,10 @@ YCASH_DD    ?= $(WORKSPACE)/ycash-dd
 LWD         ?= $(WORKSPACE)/lightwalletd-dd
 # kogany (the third node line; nodeLine kogany, values-kind-kogany.yaml): its own docker/Dockerfile
 KOGANY      ?= $(WORKSPACE)/kogany
+# cargo jobs inside the koganyd build (its Dockerfile's CARGO_BUILD_JOBS): Docker Desktop's default 8 GB VM
+# swaps itself to a standstill at one job per CPU (rocksdb + the LTO crates), more so beside a kind
+# cluster. Empty = one per CPU.
+KOGANY_JOBS ?= 4
 # The node line the images are built from, as a branch: each tree must have it checked out or be on a
 # branch that contains it (`make line` checks). LINE is a shorthand for the branch names only:
 # LINE=vault -> upgrade/vault, LINE=quantum -> upgrade/quantum-vaults.
@@ -84,8 +88,8 @@ image-ycashd: line ## ycashd from YCASH6 (BRANCH) and its contrib/docker/ycashd/
 	@test -f $(YCASHD_DOCKERFILE) || { echo "$(YCASHD_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH6) yet"; exit 1; }
 	s=$$(scripts/image-stamp.sh hash $(STAMP_ycashd)) && docker build --platform $(PLATFORM) -f $(YCASHD_DOCKERFILE) --build-arg JOBS=$(JOBS) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
 
-image-koganyd: ## kogany's koganyd (--features ycash) from KOGANY and its docker/Dockerfile (runtime stage), for nodeLine kogany; the chart runs koganyd itself. Fails at dependency resolution until boyfromcave/zakura-common-ycash is on GitHub (kogany plan K-2)
-	docker build --platform $(PLATFORM) -f $(KOGANY)/docker/Dockerfile --target runtime --build-arg FEATURES="default-release-binaries ycash" -t $(REGISTRY)/koganyd:$$(git -C $(KOGANY) rev-parse --short HEAD) -t $(REGISTRY)/koganyd:local $(KOGANY)
+image-koganyd: ## kogany's koganyd (--features ycash) from KOGANY and its docker/Dockerfile (runtime stage), for nodeLine kogany; the chart runs koganyd itself. KOGANY_JOBS caps its cargo jobs (default 4)
+	docker build --platform $(PLATFORM) -f $(KOGANY)/docker/Dockerfile --target runtime --build-arg FEATURES="default-release-binaries ycash" --build-arg CARGO_BUILD_JOBS=$(KOGANY_JOBS) -t $(REGISTRY)/koganyd:$$(git -C $(KOGANY) rev-parse --short HEAD) -t $(REGISTRY)/koganyd:local $(KOGANY)
 	@docker run --rm --platform $(PLATFORM) --entrypoint koganyd $(REGISTRY)/koganyd:local --version || { echo "$(REGISTRY)/koganyd:local has no koganyd: kogany's docker/Dockerfile must build --bin koganyd under --features ycash (its zakurad exits 2 there)"; exit 1; }
 
 image-ycashd-legacy: line ## the v4.5.0 tree YCASH_DD (BRANCH), same Dockerfile shape, tagged ycashd-legacy

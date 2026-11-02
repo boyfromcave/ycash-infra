@@ -21,7 +21,7 @@ if [ "$(grep -cF 'YINDEX_RPC_URL, value: "http://t-kogany:18232"' <<<"$kog")" = 
 else
   echo "FAIL kogany: yindex"; fail=1
 fi
-has "$kog" '- { name: YCASHD_CONF_EXTRA, value: "connect=t-kogany:18233\n" }' 'kogany: ycashd is the test rig, connect= kogany'
+has "$kog" '- { name: YCASHD_CONF_EXTRA, value: "connect=t-kogany:18344\n" }' 'kogany: ycashd is the test rig, connect= kogany'
 has "$kog" '- { name: YCASHD_LISTEN, value: "0" }' 'kogany: the rig does not listen'
 has "$kog" 'rollout restart statefulset/t-kogany' 'kogany: the arming Job rolls kogany'
 has "$kog" 'RPC_URL, value: "http://t-ycashd:18832/"' 'kogany: the wallet RPC (faucet, arming) stays on ycashd'
