@@ -1,4 +1,4 @@
-# Mainnet snapshots (`ycash-state/2`, `kogany-state/1`)
+# Mainnet snapshots (`ycash-state/2`, `kogany-state/1`, `kogany-state/2`)
 
 ## In plain words
 
@@ -14,7 +14,7 @@ Nothing here changes the node. It uses `-stopatheight`, the `stop` RPC and the r
 
 | What | Where |
 |---|---|
-| The format | [../FORMAT.md](../FORMAT.md), "format v2" and "kogany-state/1" |
+| The format | [../FORMAT.md](../FORMAT.md), "format v2", "kogany-state/1" and "kogany-state/2" (archive or pruned) |
 | Pause the node at each height, clone its files | `supervise.py` |
 | Statement, tarball, manifest, verify | `snapshot.py` (`all`, or `statement`, `pack`, `finalize`; `kogany`) |
 | Check a bundle | `python3 -I ../verify.py --tree DIR` |
@@ -98,14 +98,32 @@ python3 -I snapshot.py kogany --cache $WS/wt/.data/kogany-mainnet/state --height
 `non_finalized_state/mainnet`. In practice, clone it first with `cp -c` (seconds) and pack the
 clone, so kogany can resume at once. The bundle records the
 state format (`30.2.0`) from the database's `version` file, and is valid only for that format
-(FORMAT.md). It also includes the non-finalized blocks whenever there are any (a tip snapshot).
+(FORMAT.md). It also includes the non-finalized blocks whenever there are any (a tip snapshot). The
+bundle is `kogany-state/2` and names its storage mode: `--storage-mode archive` (the default) for a
+cache written in Archive mode.
+
+**A pruned bundle beside the archive one** (FORMAT.md "kogany-state/2"; workspace pruning
+assessment, decisions 6 and 8): clone the stopped cache, prune the clone offline with the same
+kogany build's `zakura-prune-state`, and pack it with the lowest retained height the prune printed:
+
+```bash
+cp -c -R $WS/wt/.data/kogany-mainnet/state <scratch>/state
+zakura-prune-state --cache-dir <scratch>/state --network mainnet --tx-retention 34560 --confirm
+python3 -I snapshot.py kogany --cache <scratch>/state --height H --blockhash <hash at H> \
+  --out <snapdir>/<H>/kogany-pruned --version <kogany commit> \
+  --storage-mode pruned --lowest-retained-height <the summary's "new lowest retained height">
+```
+
+Restore a pruned bundle only into a kogany configured `[state.storage_mode.pruned] tx_retention = N`
+(N at least 10,000): Zakura refuses to open it in Archive mode.
 
 ## Publishing (for the chart's snapshotter and the restore)
 
 `publish-s3.sh DIR s3://<bucket>/<prefix>` uploads one verified bundle:
 - `ycash-state/2`: to `<prefix>/main/<H>/`, then `<prefix>/main/latest/manifest.json` when H is the
   newest;
-- `kogany-state/1`: to `<prefix>/kogany-main/<H>/` and `latest-<state_format>/`.
+- `kogany-state/1` and archive `kogany-state/2`: to `<prefix>/kogany-main/<H>/` and `latest-<state_format>/`;
+- pruned `kogany-state/2`: to `<prefix>/kogany-main-pruned/<H>/` and `latest-<state_format>/` there.
 
 This is the layout `charts/ycash-testnet` `snapshot.sh publish-s3` uses, with `main` as the network.
 The script refuses to overwrite a published height and uploads the manifest and `SHA256SUMS` last.
@@ -176,3 +194,19 @@ kogany 1.7.0+383.g081e264c2 (`kogany-state/1`, Zakura state format 30.2.0):
 | 3,087,341 (tip) | `0000002ba6d9…338461bf` | 22,206,647,600 | `484ad481…bcd68fad` | 1,001 |
 
 The kogany manifests are in `records/<H>/kogany/` (the tip: `records/kogany-tip-3087341/kogany/`).
+
+The pruned pair at the tip (`kogany-state/2`, 2026-11-02): a clone of the tip cache above, pruned
+offline with `zakura-prune-state --tx-retention 34560` (the kogany `kc/pruned` build, the same state
+format 30.2.0), then packed. The prune kept raw transactions from 3,051,782 (finalized tip 3,086,341
+minus 34,560, plus one) and took the state directory from 24 GB to 6.7 GB in 104 s (a debug build); packing took four
+minutes. The clone opened in Pruned mode (offline, no peers) at the tip, `getblockchaininfo`
+`"pruned": true`, `"pruneheight": 3051782`, `getblock` below it answered `-32603 Block not available
+(pruned data)` at every verbosity and above it the block; the same clone in Archive mode was refused
+at start ("this database has been pruned and cannot be opened in archive storage mode").
+
+| Height | Block | Mode | Lowest retained | Tarball bytes | Tarball sha256 | Non-finalized blocks |
+|---|---|---|---|---|---|---|
+| 3,087,341 (tip) | `0000002ba6d9…338461bf` | archive (`kogany-state/1`) | all | 22,206,647,600 | `484ad481…bcd68fad` | 1,001 |
+| 3,087,341 (tip) | `0000002ba6d9…338461bf` | pruned (`kogany-state/2`) | 3,051,782 | 5,429,931,325 | `79035357…01dcdb73` | 1,001 |
+
+Its manifest is in `records/kogany-tip-3087341/kogany-pruned/`.

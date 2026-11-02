@@ -3,7 +3,8 @@
 # W9-c): values-kind.yaml + values-kind-kogany.yaml. lightwalletd-dd and yindex read the kogany node,
 # the ycashd StatefulSet is its test rig (connect= kogany, no listen) and keeps the wallet (the miner,
 # the arming Job and the faucet still reach ycashd), the arming Job rolls kogany, zakurad.toml carries
-# ycashd's activation heights; with nodeLine ycash6 nothing kogany renders; the refusals hold.
+# ycashd's activation heights; with nodeLine ycash6 nothing kogany renders; the refusals hold; the
+# storage mode is archive unless kogany.storageMode=pruned (and then only without lightwalletd-dd/yindex).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 CHART=charts/ycash-lightwallet
@@ -35,4 +36,15 @@ has "$kind" '- { name: YCASHD_RPC_HOST, value: "t-ycashd" }' 'ycash6: lightwalle
 if helm template t "$CHART" -f "$CHART/values-kind.yaml" --set nodeLine=kogany >/dev/null 2>&1; then echo "FAIL refusal: kogany without activation heights"; fail=1; else echo "ok   refusal: kogany without activation heights"; fi
 if helm template t "$CHART" -f "$CHART/values-eks.yaml" -f "$CHART/values-kind-kogany.yaml" >/dev/null 2>&1; then echo "FAIL refusal: kogany off regtest"; fail=1; else echo "ok   refusal: kogany off regtest (K-19)"; fi
 if helm template t "$CHART" -f "$CHART/values-kind.yaml" --set nodeLine=zcashd >/dev/null 2>&1; then echo "FAIL refusal: an unknown node line"; fail=1; else echo "ok   refusal: an unknown node line"; fi
+# Storage mode (workspace pruning assessment KP-4, decisions 7 and 8): archive by default; pruned renders
+# Zakura's [state.storage_mode.pruned] with the retention, only without lightwalletd-dd and yindex.
+hasnt "$kog" 'storage_mode' 'kogany: archive by default (no storage_mode table)'
+KOG=(-f "$CHART/values-kind.yaml" -f "$CHART/values-kind-kogany.yaml")
+NOCLIENTS=(--set lightwalletd.replicas=0 --set yindex.enabled=false)
+pruned=$(helm template t "$CHART" "${KOG[@]}" "${NOCLIENTS[@]}" --set kogany.storageMode=pruned)
+has "$pruned" '[state.storage_mode.pruned]' 'kogany pruned: the storage_mode table'
+has "$pruned" 'tx_retention = 34560' 'kogany pruned: the infrastructure retention 34,560 by default'
+if helm template t "$CHART" "${KOG[@]}" --set kogany.storageMode=pruned >/dev/null 2>&1; then echo "FAIL refusal: pruned behind lightwalletd-dd"; fail=1; else echo "ok   refusal: pruned behind lightwalletd-dd and yindex (decision 7)"; fi
+if helm template t "$CHART" "${KOG[@]}" "${NOCLIENTS[@]}" --set kogany.storageMode=pruned --set kogany.retention=1000 >/dev/null 2>&1; then echo "FAIL refusal: a retention below the floor"; fail=1; else echo "ok   refusal: a retention below Zakura's regtest floor 1,001"; fi
+if helm template t "$CHART" "${KOG[@]}" --set kogany.storageMode=thin >/dev/null 2>&1; then echo "FAIL refusal: an unknown storage mode"; fail=1; else echo "ok   refusal: an unknown storage mode"; fi
 exit $fail

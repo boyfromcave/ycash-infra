@@ -9,4 +9,5 @@ The tarballs are not in git:
 - the tarballs are published to the object store (`../publish-s3.sh`), or rebuilt byte for byte from
   the capture's clone (`snapshot.py pack`).
 
-`kogany/` beside a height holds that height's `kogany-state/1` manifest and sums, when there is one.
+`kogany/` beside a height holds that height's `kogany-state/1` manifest and sums, when there is one;
+`kogany-pruned/` a pruned `kogany-state/2` bundle's (the tip only, so far).

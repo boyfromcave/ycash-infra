@@ -3,13 +3,14 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://www.opensource.org/licenses/mit-license.php .
 """Turn a captured mainnet datadir (supervise.py) into a `ycash-state/2` bundle, or a stopped kogany
-state cache into a `kogany-state/1` bundle (bundles/state/FORMAT.md).
+state cache into a `kogany-state/2` bundle, archive or pruned (bundles/state/FORMAT.md).
 
   snapshot.py statement  --capture S/H --bin BINDIR [--height H]   statement-ycash6.json, treestate.json
   snapshot.py pack       --capture S/H                              the tarball, its tree hash
   snapshot.py finalize   --capture S/H [--version V]                manifest.json, SHA256SUMS
   snapshot.py all        --capture S/H --bin BINDIR                 the three, then verify.py
   snapshot.py kogany     --cache DIR --height H --blockhash HASH --out DIR [--ycash-statement FILE]
+                         [--storage-mode archive|pruned --lowest-retained-height L]
 
 S/H is a capture directory: `datadir/main/{blocks,chainstate,vaults,...}` (the clone taken at the
 stop, never modified), `capture.json`; the bundle is written to `S/H/bundle/`.
@@ -37,7 +38,7 @@ import tarfile
 import time
 
 FORMAT = "ycash-state/2"
-KOGANY_FORMAT = "kogany-state/1"
+KOGANY_FORMAT = "kogany-state/2"
 TOP_DIRS = ("blocks", "chainstate", "vaults", "yellowback")
 LEFT_OUT = re.compile(r"(^|/)(LOCK|LOG|LOG\.old.*)$")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,7 +48,7 @@ STATE_DIR = os.path.dirname(HERE)
 # block UPGRADE_YCASH.hashActivationBlock at 570,000, the chain-supply checkpoint block at 2,800,000).
 # The same table is vendored in verify.py and in kogany's qa/kogany_checkpoints.py.
 sys.path.insert(0, STATE_DIR)
-from verify import MAINNET_PINS, canonical, tree_line  # noqa: E402
+from verify import MAINNET_PINS, canonical, check_storage_mode, kogany_tarball_name, tree_line  # noqa: E402
 
 
 def clone_tree(src, dst):
@@ -354,7 +355,16 @@ def run_verify(out, full=True):
 
 
 def kogany(a):
-    """A stopped kogany (Zakura) state cache at H as a `kogany-state/1` bundle (FORMAT.md)."""
+    """A stopped kogany (Zakura) state cache at H as a `kogany-state/2` bundle (FORMAT.md). The storage
+    mode and the lowest retained height are the producer's to state (the database holds them in RocksDB,
+    which this stdlib tool does not read): `getblockchaininfo.pruned` / `pruneheight` before the stop, or
+    the `zakura-prune-state` summary's "new lowest retained height" for a cache pruned offline."""
+    mode = getattr(a, "storage_mode", "archive") or "archive"
+    low = getattr(a, "lowest_retained_height", None)
+    if mode == "pruned" and low is None:
+        die("--storage-mode pruned needs --lowest-retained-height (the node's pruneheight)")
+    if mode == "archive" and low is not None:
+        die("--lowest-retained-height is for --storage-mode pruned")
     cache = os.path.abspath(a.cache)
     vdir = None
     for major in sorted(os.listdir(os.path.join(cache, "state")), reverse=True):
@@ -398,14 +408,20 @@ def kogany(a):
             if not LEFT_OUT.search(p):
                 entries.append((p, False))
     entries.sort(key=lambda e: e[0].encode())
-    name = "kogany-main-%d-state-%s.tar.gz" % (a.height, sv)
+    m = {"format": KOGANY_FORMAT, "line": "kogany", "network": "main", "height": a.height,
+         "blockhash": a.blockhash, "state_format": sv, "producer": "ycash-infra/mainnet-snapshot",
+         "version": a.version, "agrees_with": None, "non_finalized_blocks": len(nf_files),
+         "storage_mode": mode, "lowest_retained_height": low}
+    errors = []
+    check_storage_mode(m, errors)
+    if errors:
+        shutil.rmtree(stage)
+        die("; ".join(errors))
+    name = kogany_tarball_name(m)
     tree = pack_tree(stage, "state", entries, os.path.join(out, name))
     shutil.rmtree(stage)
-    m = {"format": KOGANY_FORMAT, "line": "kogany", "network": "main", "height": a.height,
-         "blockhash": a.blockhash, "state_format": sv, "tarball": name,
-         "sha256": sha256_file(os.path.join(out, name)), "bytes": os.path.getsize(os.path.join(out, name)),
-         "tree_sha256": tree, "producer": "ycash-infra/mainnet-snapshot", "version": a.version,
-         "agrees_with": None, "non_finalized_blocks": len(nf_files)}
+    m.update({"tarball": name, "sha256": sha256_file(os.path.join(out, name)),
+              "bytes": os.path.getsize(os.path.join(out, name)), "tree_sha256": tree})
     if a.ycash_statement:
         y = load(a.ycash_statement)
         if y["height"] != a.height or y["blockhash"] != a.blockhash:  # the tip: compare the same height
@@ -438,6 +454,10 @@ def main(argv=None):
     sp.add_argument("--version", default="", help="the kogany release or commit that wrote the state")
     sp.add_argument("--ycash-statement", help="statement-ycash6.json at the same height, to agree with")
     sp.add_argument("--no-check-stopped", dest="check_stopped", action="store_false")
+    sp.add_argument("--storage-mode", choices=("archive", "pruned"), default="archive",
+                    help="the cache's Zakura storage mode (default archive)")
+    sp.add_argument("--lowest-retained-height", type=int,
+                    help="pruned: the lowest height whose raw transactions the cache keeps (pruneheight)")
     a = ap.parse_args(argv)
     if a.cmd == "statement":
         statement(a)
