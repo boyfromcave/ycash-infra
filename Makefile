@@ -47,8 +47,12 @@ DOMAIN      ?= lite.example.org
 # kind-up / kind-reset-chain / demo: how long each Deployment and StatefulSet of the release may take
 # to roll out before the target fails (scripts/kind-check-release.sh)
 ROLLOUT_TIMEOUT ?= 10m
+# kind-up-kogany / kind-load-kogany / kind-down-kogany: the kogany backend (nodeLine kogany) in its own
+# cluster from kind/kind-kogany.yaml (one node, no host ports), beside CLUSTER's
+KOGANY_CLUSTER ?= ycash-kogany
+KOGANY_VALUES  := values-kind.yaml values-kind-kogany.yaml
 
-.PHONY: help lint-kogany image-koganyd line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner miners-test
+.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner miners-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -134,6 +138,21 @@ kind-load: image-check ## push the local images into the cluster (refuses stale 
 
 kind-up: kind-create kind-load ## cluster + gateway + cert-manager + the chart (values-kind.yaml); fails unless every workload rolls out (ROLLOUT_TIMEOUT=10m each) and no pod is failing
 	ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) scripts/kind-up.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
+
+kind-create-kogany: ## the kogany backend's kind cluster KOGANY_CLUSTER (default ycash-kogany) from kind/kind-kogany.yaml
+	kind get clusters | grep -qx $(KOGANY_CLUSTER) || kind create cluster --name $(KOGANY_CLUSTER) --config kind/kind-kogany.yaml
+
+kind-load-kogany: image-check ## push koganyd:local (make image-koganyd) and the images the kogany backend still runs (ycashd: its test rig and wallet; lightwalletd, yindex; web, faucet if built) into KOGANY_CLUSTER
+	@docker image inspect $(REGISTRY)/koganyd:local >/dev/null 2>&1 || { echo "$(REGISTRY)/koganyd:local missing: make image-koganyd KOGANY=<tree>"; exit 1; }
+	kind load docker-image --name $(KOGANY_CLUSTER) $(REGISTRY)/koganyd:local $(REGISTRY)/ycashd:local $(REGISTRY)/lightwalletd:local $(REGISTRY)/yindex:local
+	-kind load docker-image --name $(KOGANY_CLUSTER) $(REGISTRY)/web:local
+	-kind load docker-image --name $(KOGANY_CLUSTER) $(REGISTRY)/faucet:local
+
+kind-up-kogany: kind-create-kogany kind-load-kogany ## kind-up for the kogany backend: KOGANY_CLUSTER + add-ons + the chart with values-kind.yaml + values-kind-kogany.yaml (lightwalletd-dd and yindex read koganyd)
+	VALUES="$(KOGANY_VALUES)" ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) scripts/kind-up.sh $(KOGANY_CLUSTER) $(NAMESPACE) $(RELEASE)
+
+kind-down-kogany: ## delete KOGANY_CLUSTER (never CLUSTER)
+	kind delete cluster --name $(KOGANY_CLUSTER)
 
 kind-cert: ## a browser-trusted certificate for https://localhost from mkcert's local CA as the gateway's TLS Secret (mkcert -install touches the system trust store)
 	scripts/kind-cert.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)

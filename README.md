@@ -169,6 +169,25 @@ price and `mint_availability` lists classes A, B, C; the web wallet mints, sends
 RPC: plan §1.2. A `helm upgrade` from a chart without K0c's payout lookup restarts the node without
 its pool flag; `make kind-personas-up` again puts it back (it is resumable).
 
+### kogany on kind (the third node line, regtest only)
+
+```bash
+make image-koganyd KOGANY=<kogany tree> KOGANY_JOBS=4   # ycash/koganyd:local (koganyd --features ycash)
+make kind-up-kogany     # cluster ycash-kogany + add-ons + the chart with values-kind.yaml + values-kind-kogany.yaml
+make kind-down-kogany   # deletes ycash-kogany only
+```
+
+`kind-up-kogany` is `kind-up` for `nodeLine: kogany` in a cluster of its own, `KOGANY_CLUSTER`
+(default `ycash-kogany`, from `kind/kind-kogany.yaml`: one node and no host ports, so it runs beside
+the `ycash` cluster, which holds ports 443, 9067 and 18832). `kind-load-kogany` loads `koganyd:local`
+and the images the kogany backend still runs: `ycashd:local` is kogany's test rig (`connect=` kogany,
+no listen) and keeps the wallet the miner, the bootstrap and arming Jobs and the faucet use (kogany is
+wallet-less); `lightwalletd:local` and `yindex:local` read koganyd's RPC. `scripts/kind-up.sh` takes
+the chart's value files as `VALUES="values-kind.yaml values-kind-kogany.yaml"`. With no host ports,
+reach it through a port-forward, e.g.
+`kubectl --context kind-ycash-kogany -n ycash port-forward svc/ycash-kogany 18232` and a JSON-RPC
+`getblockchaininfo` on `127.0.0.1:18232` (no RPC authentication; ClusterIP only).
+
 ### The demo kit (`make demo`)
 
 `make demo` is the kind cluster as a thing a person tests in a browser: idempotent, it creates
@@ -247,7 +266,7 @@ images/miner/         the testnet GPU miner launcher: downloads lolMiner (or, on
 yindex/               Go: the address index (ingester, Postgres store, gRPC server for the three address methods)
 charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml, values-testnet.yaml (over values-eks.yaml), values-{yb-fast,yb-slow,legacy}.yaml (one release per testnet); gateway.extraListeners puts the testnet faucet and status hosts on its gateway
 charts/ycash-testnet/       the testnets' network roles: ycash6 seeds, the ycash-dd verifier, the prefix restore, and per network the faucet, probe, status page, snapshotter and alerts (flags); values-{yb-fast,yb-slow,legacy}.yaml; not yet run on a cluster (its README)
-kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host)
+kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host); kind/kind-kogany.yaml the kogany backend's (one node, no host ports)
 scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), kind-personas.py (K0c), wait-for.sh, vast-fleet.py (the Vast.ai miner fleet; tests/ with a stand-in Vast API)
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: module/ (VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons as helm_release; one namespace per network) and a thin example root
