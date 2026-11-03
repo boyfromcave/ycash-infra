@@ -30,7 +30,6 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import shutil
 import subprocess
 import sys
@@ -93,11 +92,11 @@ class Node:
 
     def __init__(self, bindir, datadir, rpcport):
         self.bindir, self.datadir, self.rpcport = bindir, datadir, rpcport
-        self.password = secrets.token_hex(16)
+        # No rpcuser/rpcpassword: ycashd writes a .cookie that ycash-cli reads from -datadir.
         with open(os.path.join(datadir, "ycash.conf"), "w") as f:
-            f.write("server=1\nrpcbind=127.0.0.1\nrpcallowip=127.0.0.1\nrpcport=%d\nrpcuser=snapshot\n"
-                    "rpcpassword=%s\nlisten=0\nconnect=127.0.0.1:9\ndnsseed=0\ndisablewallet=1\nshowmetrics=0\n"
-                    % (rpcport, self.password))
+            f.write("server=1\nrpcbind=127.0.0.1\nrpcallowip=127.0.0.1\nrpcport=%d\n"
+                    "listen=0\nconnect=127.0.0.1:9\ndnsseed=0\ndisablewallet=1\nshowmetrics=0\n"
+                    % rpcport)
         self.proc = None
 
     def cli(self, *args, check=True):

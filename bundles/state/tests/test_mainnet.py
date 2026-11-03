@@ -138,7 +138,7 @@ class Mainnet(unittest.TestCase):
             f.write("#!/bin/sh\necho \"$*\" >> %s\n"
                     "case \"$2\" in ls) exit 1 ;; esac\n"
                     "[ \"$4\" = - ] && exit 1\nexit 0\n" % log)
-        os.chmod(fake, 0o755)
+        os.chmod(fake, 0o700)
         r = subprocess.run(["bash", os.path.join(STATE, "mainnet", "publish-s3.sh"), self.out, "s3://bucket-x/snap"],
                            env=dict(os.environ, AWS=fake), capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
