@@ -79,7 +79,7 @@ ycashd:
 # kogany is a qualified line (plan K-19); values-kind-kogany.yaml is the kind recipe.
 nodeLine: ycash6              # ycash6 | kogany
 kogany:
-  rpc: { port: 18232 }        # no RPC authentication on kogany (enable_cookie_auth = false): ClusterIP only
+  rpc: { port: 18832 }        # no RPC authentication on kogany (enable_cookie_auth = false): ClusterIP only
   p2p: { port: 18344 }       # Ycash regtest nDefaultPort (ycash6 src/chainparams.cpp:822); kogany refuses 18233, Zcash testnet's
   # koganyd.toml's network.network.params.activation_heights, which must equal ycashd's -nuparams
   # (both nodes validate the same chain). Overwinter, Sapling, Ycash, Blossom, Heartwood, Canopy, Vault.

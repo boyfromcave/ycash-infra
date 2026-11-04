@@ -14,9 +14,9 @@ fail=0
 has() { if grep -qF -- "$2" <<<"$1"; then echo "ok   $3"; else echo "FAIL $3 (missing: $2)"; fail=1; fi; }
 hasnt() { if grep -qF -- "$2" <<<"$1"; then echo "FAIL $3 (present: $2)"; fail=1; else echo "ok   $3"; fi; }
 has "$kog" '- { name: YCASHD_RPC_HOST, value: "t-kogany" }' 'kogany: lightwalletd-dd reads kogany'
-has "$kog" '- { name: YCASHD_RPC_PORT, value: "18232" }' 'kogany: on kogany.rpc.port'
-has "$kog" 'until nc -z t-kogany 18232' 'kogany: lightwalletd-dd waits for kogany'
-if [ "$(grep -cF 'YINDEX_RPC_URL, value: "http://t-kogany:18232"' <<<"$kog")" = 2 ]; then
+has "$kog" '- { name: YCASHD_RPC_PORT, value: "18832" }' 'kogany: on kogany.rpc.port'
+has "$kog" 'until nc -z t-kogany 18832' 'kogany: lightwalletd-dd waits for kogany'
+if [ "$(grep -cF 'YINDEX_RPC_URL, value: "http://t-kogany:18832"' <<<"$kog")" = 2 ]; then
   echo "ok   kogany: yindex (serve and ingest) reads kogany"
 else
   echo "FAIL kogany: yindex"; fail=1
