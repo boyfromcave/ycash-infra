@@ -51,6 +51,7 @@ if [ -d $TESTNET ]; then
     helm template t $TESTNET -f $TESTNET/values-eks.yaml -f $TESTNET/values-yb-fast.yaml -f $TESTNET/ci/services-values.yaml \
       --set "images.ycashd.digest=$PLACEHOLDER" --set "images.ycashdLegacy.digest=$PLACEHOLDER" \
       --set "images.faucet.digest=$PLACEHOLDER" --set "images.status.digest=$PLACEHOLDER" \
+      --set "images.prefixFrame.digest=$PLACEHOLDER" \
       > "$out/rendered/testnet-services-eks.yaml"
   fi
 fi

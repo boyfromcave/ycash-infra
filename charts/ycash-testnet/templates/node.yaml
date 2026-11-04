@@ -80,12 +80,13 @@ spec:
           resources: {{- toYaml $root.Values.zcashParams.resources | nindent 12 }}
       {{- end }}
       {{- if $pr.enabled }}
-        # prefix-fetch: SHA256SUMS against the pinned sha256, every file against SHA256SUMS, the
-        # manifest's format/network/heights; an empty datadir only (files/prefix-restore.sh)
+        # prefix-fetch: SHA256SUMS against the pinned sha256 and its minisign signature against the
+        # Ycash release key, every file against SHA256SUMS, the manifest's format/network/heights;
+        # an empty datadir only (images/prefix-frame: prefix.sh fetch, files/prefix-restore.sh)
         - name: prefix-fetch
-          image: {{ include "yt.image" (dict "image" $img "key" $r.image) }}
-          imagePullPolicy: {{ $img.pullPolicy }}
-          command: [sh, /opt/ycash/prefix-restore.sh]
+          image: {{ include "yt.image" (dict "image" $root.Values.images.prefixFrame "key" "prefixFrame") }}
+          imagePullPolicy: {{ $root.Values.images.prefixFrame.pullPolicy }}
+          command: [sh, /opt/prefix/prefix.sh, fetch]
           env:
             - { name: DATADIR, value: /var/lib/ycash }
             - { name: PREFIX_BASE_URL, value: {{ required "prefixRestore.baseUrl is required when prefixRestore.enabled" $pr.baseUrl | quote }} }
@@ -99,14 +100,14 @@ spec:
             - { name: home, mountPath: /srv/ycash }
           resources: {{- toYaml $pr.resources | nindent 12 }}
         # prefix-frame: the verified magic-neutral chunks to -loadblock files with the network magic
-        # (bundles/prefix/import/frame.py's image); skipped unless prefix-fetch verified a prefix
+        # (images/prefix-frame: frame.py); skipped unless prefix-fetch verified and checked the signature
         - name: prefix-frame
           image: {{ include "yt.image" (dict "image" $root.Values.images.prefixFrame "key" "prefixFrame") }}
           imagePullPolicy: {{ $root.Values.images.prefixFrame.pullPolicy }}
           command:
             - sh
             - -c
-            - 'set -eu; [ -e "$PREFIX_DIR/VERIFIED" ] || exit 0; [ -e "$PREFIX_DIR/FRAMED" ] && exit 0; rm -rf "$PREFIX_DIR/load"; mkdir -p "$PREFIX_DIR/load"; "$@"; touch "$PREFIX_DIR/FRAMED"'
+            - 'set -eu; [ -e "$PREFIX_DIR/VERIFIED" ] && [ -e "$PREFIX_DIR/SIGNED" ] || exit 0; [ -e "$PREFIX_DIR/FRAMED" ] && exit 0; rm -rf "$PREFIX_DIR/load"; mkdir -p "$PREFIX_DIR/load"; "$@"; touch "$PREFIX_DIR/FRAMED"'
             - prefix-frame
             {{- range $pr.frameCommand }}
             - {{ . | quote }}

@@ -92,27 +92,33 @@ the `/tmp`, `$HOME` and params mounts) with `zcashParams.resources`. `download.z
 file as two parts, so it is not a drop-in `zcashParams.url`; any other host holding the three whole
 files is, since the sums, not the host, are what is trusted.
 
-## The prefix restore (off by default)
+## The prefix restore (on for yb-fast)
 
 The testnet is Zcash testnet's history to block 510,247 and a new Ycash fork after it; the history
 below the fork is not on the testnet's P2P network from the start, so a first node imports it from
 the **prefix bundle** (format `ycash-prefix/1`, `bundles/prefix/` in this repository).
 
+`values-yb-fast.yaml` turns it on with the published `testnet-prefix-v1` bundle
+(`baseUrl` `https://ycash-contributors-object-store.s3.amazonaws.com/snapshots/prefix/testnet-prefix-v1`,
+`sha256sums` `c7b55a2a…cbc403`); `values-yb-slow.yaml` and `values-legacy.yaml` carry a commented
+placeholder for `mainnet-prefix-v1`. Both init containers run `images.prefixFrame`
+([images/prefix-frame](../../images/prefix-frame/README.md)).
+
 With `prefixRestore.enabled`:
-1. `prefix-fetch` (`files/prefix-restore.sh`, in the node image: sh, curl, sha256sum, jq) runs only
-   on an **empty datadir**. A datadir with anything but `lost+found` and a partial `prefix/` is left
+1. `prefix-fetch` (`prefix.sh fetch`: `files/prefix-restore.sh`, then minisign) runs only on an
+   **empty datadir**. A datadir with anything but `lost+found` and a partial `prefix/` is left
    alone and the node starts from what it has.
    - It downloads `SHA256SUMS` from `prefixRestore.baseUrl` and **refuses unless its sha256 equals
      `prefixRestore.sha256sums`**, the pin in the values.
    - It downloads `manifest.json` and every chunk listed, and refuses unless every file checks.
    - It refuses unless the manifest is `ycash-prefix/1`, `zcash-testnet`, heights
      0..`prefixRestore.lastHeight`, with the same chunk set and hashes as `SHA256SUMS`.
+   - It downloads `SHA256SUMS.minisig` and refuses unless it is the Ycash release key's signature
+     (`keys/ycash-release.pub`, key id `02C923A6C593AF18`, baked into the image).
    - A file that fails is deleted, so the pod's restart fetches it whole.
-2. `prefix-frame` (`images.prefixFrame`) turns the magic-neutral chunks (`<LE u32 len><block>`)
-   into `-loadblock` files (`<magic><LE u32 len><block>`, magic `prefixRestore.magic`).
-   - This is `bundles/prefix/import/frame.py`, packaged as an image. **That image does not exist
-     yet**: the render fails if the restore is enabled without it.
-   - `prefixRestore.frameCommand` is an assumed CLI, to align with frame.py once it is written.
+2. `prefix-frame` (`prefix.sh frame`, `bundles/prefix/import/frame.py`) turns the magic-neutral
+   chunks (`<LE u32 len><block>`) into `-loadblock` files (`<magic><LE u32 len><block>`, magic
+   `prefixRestore.magic`), checking every block, the hash chain and the genesis again.
 3. The node starts with `-loadblock` for each framed file. The readiness probe marks the import done
    at `lastHeight`, and the next start drops the flag and the framed copies.
 

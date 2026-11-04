@@ -8,6 +8,11 @@ testnetProfile: fast
 rpc: { port: 18832 }
 p2p: { port: 18833 }
 prefixRestore:
+  # testnet-prefix-v1 (Zcash testnet 0..510,247, ycash-prefix/1): manifest.json, SHA256SUMS,
+  # SHA256SUMS.minisig and the .blocks.gz chunks, flat under baseUrl
+  enabled: true
+  baseUrl: https://ycash-contributors-object-store.s3.amazonaws.com/snapshots/prefix/testnet-prefix-v1
+  sha256sums: c7b55a2a6770df8108d910572cca2dbf643a0418eb0b2d556879928a43cbc403   # sha256 of that SHA256SUMS
   magic: f77962d3                # the prefix is shared (magic-neutral); framed with this network's magic
 seed:
   p2pService: { nodePortBase: 31833 }   # kind (NodePort) only: 31833.. per seed, so the three releases fit one kind cluster

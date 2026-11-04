@@ -8,6 +8,7 @@
 | `ycash/web` | `images/web/Dockerfile` | `yew/web` after `npm run build` |
 | `ycash/faucet` | `images/faucet/Dockerfile` ([README](faucet/README.md): the kind demo's regtest faucet and a testnet's faucet) | `images/faucet` |
 | `ycash/testnet-status` | `images/testnet-status/Dockerfile` ([README](testnet-status/README.md): a testnet's probe and status page) | `images/testnet-status` |
+| `ycash/prefix-frame` (`ghcr.io/<owner>/ycash-prefix-frame`) | `images/prefix-frame/Dockerfile` ([README](prefix-frame/README.md): the testnet prefix restore, download + SHA256SUMS pin + minisign + frame.py; published by `prefix-frame-image.yml`) | this repo (root) |
 | `ghcr.io/<owner>/ycash-miner` | `images/miner/Dockerfile` ([README](miner/README.md): the testnet GPU miner launcher, no miner binary: it downloads lolMiner at start and checks its pinned SHA-256; published by `miner-image.yml`) | `images/miner` |
 | `ycash/personas` | `images/personas/Dockerfile` | see the file |
 
