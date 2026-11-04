@@ -92,6 +92,7 @@ spec:
             - { name: PREFIX_BASE_URL, value: {{ required "prefixRestore.baseUrl is required when prefixRestore.enabled" $pr.baseUrl | quote }} }
             - { name: PREFIX_SUMS_SHA256, value: {{ required "prefixRestore.sha256sums (the sha256 of SHA256SUMS) is required when prefixRestore.enabled" $pr.sha256sums | quote }} }
             - { name: PREFIX_LAST_HEIGHT, value: {{ $pr.lastHeight | quote }} }
+            - { name: PREFIX_NETWORK, value: {{ $pr.network | default "zcash-testnet" | quote }} }
           {{- include "yt.containerSecurity" $root | nindent 10 }}
           volumeMounts:
             - { name: data, mountPath: /var/lib/ycash }
@@ -115,6 +116,7 @@ spec:
           env:
             - { name: PREFIX_DIR, value: /var/lib/ycash/prefix }
             - { name: PREFIX_MAGIC, value: {{ $pr.magic | quote }} }
+            - { name: PREFIX_NETWORK, value: {{ $pr.network | default "zcash-testnet" | quote }} }
           {{- include "yt.containerSecurity" $root | nindent 10 }}
           volumeMounts:
             - { name: data, mountPath: /var/lib/ycash }

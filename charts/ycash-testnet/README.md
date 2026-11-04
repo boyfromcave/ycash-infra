@@ -92,7 +92,7 @@ the `/tmp`, `$HOME` and params mounts) with `zcashParams.resources`. `download.z
 file as two parts, so it is not a drop-in `zcashParams.url`; any other host holding the three whole
 files is, since the sums, not the host, are what is trusted.
 
-## The prefix restore (on for yb-fast)
+## The prefix restore (on for all three networks)
 
 The testnet is Zcash testnet's history to block 510,247 and a new Ycash fork after it; the history
 below the fork is not on the testnet's P2P network from the start, so a first node imports it from
@@ -100,8 +100,13 @@ the **prefix bundle** (format `ycash-prefix/1`, `bundles/prefix/` in this reposi
 
 `values-yb-fast.yaml` turns it on with the published `testnet-prefix-v1` bundle
 (`baseUrl` `https://ycash-contributors-object-store.s3.amazonaws.com/snapshots/prefix/testnet-prefix-v1`,
-`sha256sums` `c7b55a2a…cbc403`); `values-yb-slow.yaml` and `values-legacy.yaml` carry a commented
-placeholder for `mainnet-prefix-v1`. Both init containers run `images.prefixFrame`
+`sha256sums` `c7b55a2a…cbc403`); `values-yb-slow.yaml` and `values-legacy.yaml` turn it on with the
+published `mainnet-prefix-v1` bundle (Ycash mainnet 0..3,079,999 = H_S; `baseUrl`
+`https://ycash-contributors-object-store.s3.amazonaws.com/snapshots/prefix/mainnet-prefix-v1`,
+`sha256sums` `456e8205…4eecd3`, `network` `ycash-mainnet`, `lastHeight` 3079999; 308 chunks, 18.7 GB
+gzipped, 23.1 GB framed, so those two releases set the node volumes to 120 Gi). `prefixRestore.network`
+(default `zcash-testnet`) is passed to both containers as `PREFIX_NETWORK` and to `frame.py --network`.
+Both init containers run `images.prefixFrame`
 ([images/prefix-frame](../../images/prefix-frame/README.md)).
 
 With `prefixRestore.enabled`:
@@ -111,8 +116,10 @@ With `prefixRestore.enabled`:
    - It downloads `SHA256SUMS` from `prefixRestore.baseUrl` and **refuses unless its sha256 equals
      `prefixRestore.sha256sums`**, the pin in the values.
    - It downloads `manifest.json` and every chunk listed, and refuses unless every file checks.
-   - It refuses unless the manifest is `ycash-prefix/1`, `zcash-testnet`, heights
-     0..`prefixRestore.lastHeight`, with the same chunk set and hashes as `SHA256SUMS`.
+   - It refuses unless the manifest is `ycash-prefix/1`, `prefixRestore.network`, heights
+     0..`prefixRestore.lastHeight`, with the same chunk set and hashes as `SHA256SUMS`. A
+     `ycash-mainnet` bundle's one other file, `treestate.json`, must be the manifest's `treestate`
+     with the same sha256; any other unlisted name is refused.
    - It downloads `SHA256SUMS.minisig` and refuses unless it is the Ycash release key's signature
      (`keys/ycash-release.pub`, key id `02C923A6C593AF18`, baked into the image).
    - A file that fails is deleted, so the pod's restart fetches it whole.
