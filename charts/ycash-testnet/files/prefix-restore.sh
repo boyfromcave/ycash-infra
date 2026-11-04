@@ -19,7 +19,7 @@
 # a restore goes only into an empty datadir.
 #
 # Environment: PREFIX_BASE_URL, PREFIX_SUMS_SHA256, PREFIX_LAST_HEIGHT, DATADIR (default
-# /var/lib/ycash). Needs sh, curl, sha256sum and jq (the ycashd images have all four).
+# /var/lib/ycash); PREFIX_CURL_PROTO (default =https) for local tests only. Needs sh, curl, sha256sum and jq (the ycashd images have all four).
 set -eu
 D="${DATADIR:-/var/lib/ycash}"
 P="$D/prefix"
@@ -45,7 +45,7 @@ mkdir -p "$P"
 cd "$P"
 
 fetch() {  # $1 = file name; resumes a partial download, retries transient errors
-  curl -fsSL --proto '=https' --tlsv1.2 --retry 5 --retry-delay 5 -C - -o "$1" "$base/$1" \
+  curl -fsSL --proto "${PREFIX_CURL_PROTO:-=https}" --tlsv1.2 --retry 5 --retry-delay 5 -C - -o "$1" "$base/$1" \
     || { rm -f "$1"; die "download of $1 failed"; }
 }
 

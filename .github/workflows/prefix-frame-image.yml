@@ -1,0 +1,86 @@
+# prefix-frame-image: build the prefix restore image (images/prefix-frame) and push it to
+# ghcr.io/<owner>/ycash-prefix-frame:<sha12>, with build provenance. charts/ycash-testnet's two prefix
+# init containers run it (prefixRestore): `prefix.sh fetch` downloads the prefix bundle and refuses
+# unless SHA256SUMS hashes to the pinned sha256, SHA256SUMS.minisig is the Ycash release key's
+# signature (keys/ycash-release.pub, baked in) and every file checks; frame.py then writes the
+# -loadblock files. It runs only when started by hand, from upgrade/vault.
+#
+# In plain words: a new testnet node starts from a copy of Zcash testnet's early history. This job
+# makes, in public from this repository at one commit, the small container that downloads that copy
+# and checks it is exactly the one the Ycash developers signed, and prints its fingerprint (digest)
+# for the deployment (values-eks.yaml images.prefixFrame.digest). The image holds no secret.
+name: prefix-frame-image
+on:
+  workflow_dispatch: {}
+permissions: {}
+concurrency:
+  group: prefix-frame-image-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/upgrade/vault'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      REPO_OWNER: ${{ github.repository_owner }}
+      SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: the tag and the offline checks
+        id: meta
+        run: |
+          set -euo pipefail
+          sh -n images/prefix-frame/prefix.sh charts/ycash-testnet/files/prefix-restore.sh
+          python3 -I bundles/prefix/import/tests/test_frame.py
+          owner=$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          {
+            echo "image=ghcr.io/$owner/ycash-prefix-frame"
+            echo "tag=ghcr.io/$owner/ycash-prefix-frame:${SHA:0:12}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: build and push
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: images/prefix-frame/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=ycash-prefix-frame (the Ycash testnet prefix restore)
+            org.opencontainers.image.description=Downloads the Ycash testnet prefix bundle (ycash-prefix/1), checks the pinned SHA256SUMS hash, its minisign signature by the Ycash release key and every file, and frames the blocks for ycashd -loadblock. Holds no secret.
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/upgrade/vault/images/prefix-frame/README.md
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: digest
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "image: $IMAGE@$DIGEST"
+          {
+            echo "## prefix-frame-image at $SHA"
+            echo
+            echo "- tag: \`$TAG\`"
+            echo "- by digest (what values-eks.yaml takes as \`images.prefixFrame.digest\`): \`$IMAGE@$DIGEST\`"
+            echo "- verify: \`gh attestation verify oci://$IMAGE@$DIGEST -R $GITHUB_REPOSITORY\`"
+          } >> "$GITHUB_STEP_SUMMARY"

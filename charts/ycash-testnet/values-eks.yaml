@@ -11,6 +11,7 @@
 images:
   ycashd:       { repository: ghcr.io/boyfromcave/ycashd,        tag: "", digest: "" }   # ycash6 release (6.22.0-rcN)
   ycashdLegacy: { repository: ghcr.io/boyfromcave/ycashd-legacy, tag: "", digest: "" }   # ycash-dd at the vault-params tag (plan §2.3)
+  prefixFrame:  { repository: ghcr.io/boyfromcave/ycash-prefix-frame, tag: "", digest: "" }   # prefix-frame-image.yml prints the digest
   # images/faucet and images/testnet-status: not published yet (no workflow builds them; README "The
   # services"); the deployment sets repository and digest when it turns them on
   faucet:       { repository: ghcr.io/boyfromcave/faucet,         tag: "", digest: "" }

@@ -8,6 +8,10 @@ testnetProfile: legacy
 rpc: { port: 19032 }
 p2p: { port: 19033 }
 prefixRestore:
+  # placeholder: this network will restore mainnet-prefix-v1 (not published yet), e.g.
+  # enabled: true
+  # baseUrl: https://ycash-contributors-object-store.s3.amazonaws.com/snapshots/prefix/mainnet-prefix-v1
+  # sha256sums: <sha256 of its SHA256SUMS>
   magic: f77962d5                # the prefix is shared (magic-neutral); framed with this network's magic
 seed:
   p2pService: { nodePortBase: 32033 }   # kind (NodePort) only: 32033.. per seed, so the three releases fit one kind cluster

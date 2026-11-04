@@ -52,7 +52,7 @@ ROLLOUT_TIMEOUT ?= 10m
 KOGANY_CLUSTER ?= ycash-kogany
 KOGANY_VALUES  := values-kind.yaml values-kind-kogany.yaml
 
-.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner miners-test
+.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status image-prefix-frame services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner miners-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -115,6 +115,9 @@ image-web: ## the yew/web static bundle behind nginx (needs yew/web built: scrip
 
 image-faucet: ## the faucet (images/faucet: the kind demo's regtest faucet and a testnet's, FAUCET_MODE; python:3.12-alpine + the standard library)
 	s=$$(scripts/image-stamp.sh hash $(STAMP_faucet)) && docker build --platform $(PLATFORM) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/faucet:$(YINDEX_REV) -t $(REGISTRY)/faucet:local images/faucet
+
+image-prefix-frame: ## the prefix restore image (images/prefix-frame: fetch + SHA256SUMS pin + minisign, frame.py), context the repo root
+	docker build --platform $(PLATFORM) -f images/prefix-frame/Dockerfile -t $(REGISTRY)/prefix-frame:local .
 
 image-testnet-status: ## a testnet's probe and status page (images/testnet-status: python:3.12-alpine + the standard library)
 	s=$$(scripts/image-stamp.sh hash $(STAMP_testnet_status)) && docker build --platform $(PLATFORM) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/testnet-status:$(YINDEX_REV) -t $(REGISTRY)/testnet-status:local images/testnet-status
@@ -277,7 +280,7 @@ lint: lint-testnet lint-kogany ## helm lint + image pins + kubeconform + go vet
 # The testnet value sets leave the release digests to the deploy; lint renders them with a placeholder.
 PLACEHOLDER_DIGEST := sha256:0000000000000000000000000000000000000000000000000000000000000000
 TESTNET_LITE_SET := $(foreach c,ycashd lightwalletd yindex web,--set images.$(c).digest=$(PLACEHOLDER_DIGEST))
-TESTNET_EKS_SET  := --set images.ycashd.digest=$(PLACEHOLDER_DIGEST) --set images.ycashdLegacy.digest=$(PLACEHOLDER_DIGEST)
+TESTNET_EKS_SET  := --set images.ycashd.digest=$(PLACEHOLDER_DIGEST) --set images.ycashdLegacy.digest=$(PLACEHOLDER_DIGEST) --set images.prefixFrame.digest=$(PLACEHOLDER_DIGEST)
 # the three testnets: values-<network>.yaml in both charts, one release (and one namespace) each
 TESTNET_NETWORKS := yb-fast yb-slow legacy
 # every service of charts/ycash-testnet on, with placeholders (ci/services-values.yaml)

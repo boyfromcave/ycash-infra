@@ -29,11 +29,11 @@ images:
   ycashd:       { repository: ycash/ycashd,        tag: local, digest: "", pullPolicy: IfNotPresent }
   # ycash-dd (the v4.5.0 line, the cross-line verifier): `make image-ycashd-legacy`
   ycashdLegacy: { repository: ycash/ycashd-legacy, tag: local, digest: "", pullPolicy: IfNotPresent }
-  # The prefix framer (prefixRestore below). It is the image the prefix import work builds from
-  # bundles/prefix/import (frame.py: the magic-neutral `<LE u32 len><block>` stream to
-  # `<magic><LE u32 len><block>` records for -loadblock). NOT BUILT YET: empty until it exists; the
-  # render fails if prefixRestore.enabled is set without it.
-  prefixFrame:  { repository: "", tag: "", digest: "", pullPolicy: IfNotPresent }
+  # The prefix restore image (prefixRestore below): images/prefix-frame (`make image-prefix-frame`;
+  # published by .github/workflows/prefix-frame-image.yml as ghcr.io/<owner>/ycash-prefix-frame). Both
+  # prefix init containers run it: `prefix.sh fetch` (SHA256SUMS pin + minisign + every file) and
+  # frame.py. On EKS by digest (values-eks.yaml).
+  prefixFrame:  { repository: ycash/prefix-frame,   tag: local, digest: "", pullPolicy: IfNotPresent }
   # images/faucet (`make image-faucet`): the faucet in FAUCET_MODE=testnet
   faucet:       { repository: ycash/faucet,         tag: local, digest: "", pullPolicy: IfNotPresent }
   # images/testnet-status (`make image-testnet-status`): the probe (probe.py) and the status page (status.py)
@@ -157,14 +157,14 @@ zcashParams:
     limits:   { memory: 512Mi }
 
 # ---- prefix restore (plan §4.0): DISABLED BY DEFAULT ------------------------------------------
-# Two init containers on every node pod. `prefix-fetch` (scripts ConfigMap, prefix-restore.sh) runs
-# only on an empty datadir: it downloads SHA256SUMS, refuses unless its sha256 equals sha256sums,
+# Two init containers on every node pod, both images.prefixFrame. `prefix-fetch` (prefix.sh fetch)
+# runs only on an empty datadir: it downloads SHA256SUMS, refuses unless its sha256 equals sha256sums,
 # downloads manifest.json and every chunk SHA256SUMS lists, refuses unless every file checks and the
 # manifest names format ycash-prefix/1, network zcash-testnet and lastHeight, then marks the prefix
-# verified. `prefix-frame` (images.prefixFrame) turns the verified chunks into -loadblock files
+# verified, then refuses unless SHA256SUMS.minisig is the Ycash release key's signature (key id
+# 02C923A6C593AF18, baked into the image). `prefix-frame` (frame.py) turns the verified chunks into -loadblock files
 # with the network magic; the node then imports them once (run.sh) and the readiness probe marks the
-# import done at lastHeight. Off until the prefix-v1 release is published (N3-a) and the framer image
-# exists (N3-b): both are in flight in this repository (bundles/prefix/).
+# import done at lastHeight. Off by default; values-yb-fast.yaml turns it on (testnet-prefix-v1).
 prefixRestore:
   enabled: false
   baseUrl: ""                 # where SHA256SUMS, manifest.json and the chunks are, e.g. the testnet-prefix-v1 release's download URL
@@ -172,9 +172,8 @@ prefixRestore:
   lastHeight: 510247          # the prefix's last height (format v1: Zcash testnet 0..510,247)
   magic: fa1af9bf             # the network magic the framer writes: today's testnet magic on both lines; N1/T-2 changes it
   # The framer's command; Kubernetes expands $(PREFIX_DIR) and $(PREFIX_MAGIC). It reads the
-  # verified chunks in $(PREFIX_DIR) and writes *.dat files into $(PREFIX_DIR)/load. Align with
-  # bundles/prefix/import/frame.py's CLI when that image is built.
-  frameCommand: [python3, /opt/prefix/frame.py, --magic, "$(PREFIX_MAGIC)", --manifest, "$(PREFIX_DIR)/manifest.json", --out-dir, "$(PREFIX_DIR)/load"]
+  # verified chunks in $(PREFIX_DIR) and writes the -loadblock files into $(PREFIX_DIR)/load.
+  frameCommand: [sh, /opt/prefix/prefix.sh, frame, --prefix, "$(PREFIX_DIR)", --out, "$(PREFIX_DIR)/load", --magic, "$(PREFIX_MAGIC)"]
   resources:
     requests: { cpu: 250m, memory: 256Mi }
     limits:   { memory: 1Gi }
