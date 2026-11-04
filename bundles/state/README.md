@@ -8,10 +8,11 @@ on its fingerprints before it is published. [FORMAT.md](FORMAT.md) is the exact 
 
 | What | Where |
 |---|---|
-| The format (`ycash-state/1`) | [FORMAT.md](FORMAT.md) |
+| The format (`ycash-state/1`; `ycash-state/2` for mainnet; `kogany-state/1`; `kogany-state/2`, archive or pruned) | [FORMAT.md](FORMAT.md) |
+| Mainnet snapshots: the supervisor, the packer, the S3 upload, the restore, the recorded manifests | [mainnet/README.md](mainnet/README.md), `mainnet/records/` |
 | The producer: the snapshotter and bundle verifier | `charts/ycash-testnet` `snapshotter` (CronJob), its steps in `charts/ycash-testnet/files/snapshot.sh` |
 | An offline checker of a bundle directory | `verify.py` (`python3 -I bundles/state/verify.py DIR`) |
-| Tests: every snapshotter step against a stand-in node, `verify.py` | `tests/` (`make state-test`) |
+| Tests: every snapshotter step against a stand-in node, `verify.py`, the mainnet tool | `tests/` (`make state-test`) |
 | The consumer (restore into a datadir) | `ycash-bootstrap` in the node repositories (testnet plan §4.4, N2) |
 
 The snapshotter has not yet run against a real node: the steps are tested with the stand-in in

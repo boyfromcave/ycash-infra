@@ -1,0 +1,10 @@
+{
+  "blockhash_logged": "0000014ff36f36de24e2ef0503d88d05de50c3021f2aba01c7954c327ac3eeee",
+  "clone_seconds": 0.2,
+  "datadir": "$WS/wt/.data/ycash-mainnet",
+  "height": 3087294,
+  "method": "stop-rpc-at-tip",
+  "pause_seconds": 0.2,
+  "restarted_at": "2026-11-02T11:34:36Z",
+  "stopped_at": "2026-11-02T11:34:36Z"
+}

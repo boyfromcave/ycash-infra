@@ -1,5 +1,5 @@
 name: ci
-on: { push: { branches: [upgrade/vault, main] }, pull_request: {} }
+on: { push: { branches: [upgrade/vault, main, vaults/kogany-compat] }, pull_request: {} }
 permissions: {}
 jobs:
   lint:
@@ -24,6 +24,9 @@ jobs:
       # the testnet renders (render-only until N1): charts/ycash-testnet kind + EKS values and the
       # lightwallet chart's values-testnet.yaml, helm lint + kubeconform (placeholder release digests)
       - run: make lint-testnet
+      # the kogany backend (nodeLine kogany, workspace kogany plan W9-c), render-only: helm lint,
+      # kubeconform, scripts/tests/test-kogany-render.sh
+      - run: make lint-kogany
       # the testnet chart's scripts (run.sh, ready.sh, live.sh, prefix-restore.sh, zcash-params.sh, snapshot.sh) are POSIX sh
       - run: shellcheck -s sh charts/ycash-testnet/files/*.sh
       # the Zcash parameter mirror: SHA256SUMS = the chart's copy, the chart's init script (zcash-params.sh)

@@ -146,6 +146,39 @@ block is where the coordinator records progress. Here:
   `bundles/state/`; its key-holding parts wait for T-9.
 
 
+### 2.2 Mainnet snapshots (2026-11-02, `kc/mainnet-snapshots`)
+
+**In plain words.** A Ycash mainnet node is being synced on the workspace machine anyway, for the
+kogany port. Instead of syncing again later, it is paused for seconds at a few agreed blocks and a
+checked copy of its state is packed at each. The copies serve three purposes:
+- the shadow-fork testnets' starting state;
+- a fast start for mainnet operators;
+- restart points for the kogany sync gate.
+
+- **Format.** `ycash-state/2` (`bundles/state/FORMAT.md`), because v1 cannot hold a mainnet bundle:
+  - mainnet's files sit at the datadir root;
+  - v1 requires a second-line (ycash-dd) statement, which takes a separate full mainnet sync;
+  - v1 has no place for mainnet's compiled pins.
+
+  v2 keeps v1's tarball encoding, extracts with `--strip-components=1`, requires the `ycash6`
+  statement, and adds the compiled pins, a tree hash tying the tarball to the stated datadir, and
+  `treestate.json`. kogany's state cache gets its own `kogany-state/1`, valid only for the Zakura
+  state format it records (`30.2.0`).
+- **Tools.** `bundles/state/mainnet/`:
+  - `supervise.py`: `-stopatheight` per height, then an APFS copy-on-write clone and an immediate
+    restart, so the pause is seconds;
+  - `snapshot.py`: statement, pack, finalize, verify; and the `kogany` packer;
+  - `publish-s3.sh`: `<base>/main/<H>/` and `latest/`, the snapshotter's layout.
+
+  `make state-test` covers them offline.
+- **Heights.** 570,000 (the fork), 1,100,006 (Canopy), 2,275,000 (the YDF mandate's end),
+  2,800,000 (the chain-supply checkpoint), 3,079,999 (**proposed H_S, pending the Yellowback lead
+  architect**), and the tip. The reasons are in `bundles/state/mainnet/README.md`.
+- **Records.** `bundles/state/mainnet/records/<H>/` holds the manifests, statements and sums. The
+  tarballs stay outside git, in `wt/.snapshots/ycash-mainnet/<H>/bundle/`, until published.
+- **Not done here.** No upload: the S3 bucket and role are in ycash-ops. No ycash-dd statement: a
+  second mainnet sync, later.
+
 ## 3. Interfaces
 
 - Clients → gateway: the four gRPC services of `lightwalletd-dd/walletrpc` (unchanged), over

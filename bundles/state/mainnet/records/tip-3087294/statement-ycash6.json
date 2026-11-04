@@ -1,0 +1,11 @@
+{
+  "blockhash": "0000014ff36f36de24e2ef0503d88d05de50c3021f2aba01c7954c327ac3eeee",
+  "chainsupply_zat": 1701037236747473,
+  "chainwork": "0000000000000000000000000000000000000000000000000152daef3e96d2a5",
+  "finalsaplingroot": "6ae117a46d6e3e9dff899fefb970323373315b4b63d94c8bd64ae85ab0709fdf",
+  "height": 3087294,
+  "network": "main",
+  "utxo_hash_serialized": "dcc2265d8d8ad243d128619615a3315ca2786d6a1711fcc1a495d3701601beff",
+  "vault_statehash": "56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f65d",
+  "yed_statehash": null
+}

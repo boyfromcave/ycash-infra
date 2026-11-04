@@ -1,0 +1,80 @@
+{{- if include "yc.kogany" . }}
+# The kogany node (workspace kogany plan W9-c): koganyd --features ycash, one replica, its state on a
+# PVC. kogany's image (kogany docker/Dockerfile, runtime stage) runs as uid 10001; the pod starts
+# koganyd itself rather than through the image's entrypoint (no setpriv under runAsNonRoot).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "yc.fullname" . }}-kogany
+  labels: {{- include "yc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kogany
+spec:
+  serviceName: {{ include "yc.fullname" . }}-kogany
+  replicas: 1
+  updateStrategy: { type: RollingUpdate }
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: kogany
+  template:
+    metadata:
+      labels: {{- include "yc.labels" . | nindent 8 }}
+        app.kubernetes.io/component: kogany
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/kogany/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      {{- include "yc.podSecurity" (list . 10001) | nindent 6 }}
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: koganyd
+          image: {{ include "yc.image" .Values.images.kogany }}
+          imagePullPolicy: {{ .Values.images.kogany.pullPolicy }}
+          {{- include "yc.containerSecurity" . | nindent 10 }}
+          env:
+            {{- if and .Values.regtest.enabled .Values.regtest.armYellowback }}
+            # written by the arming Job (templates/kind/arm.yaml); absent until then
+            - name: YELLOWBACK_ATTESTOR_SET
+              valueFrom: { configMapKeyRef: { name: {{ include "yc.fullname" . }}-yellowback-set, key: setid, optional: true } }
+            {{- end }}
+          command: [sh, -c]
+          args:
+            - |
+              set -eu
+              cp /etc/zakura/koganyd.toml /tmp/koganyd.toml
+              if [ -n "${YELLOWBACK_ATTESTOR_SET:-}" ]; then
+                printf '\n[yellowback]\nattestor_set = "%s"\n' "$YELLOWBACK_ATTESTOR_SET" >> /tmp/koganyd.toml
+              fi
+              exec koganyd -c /tmp/koganyd.toml start
+          ports:
+            - { name: rpc, containerPort: {{ .Values.kogany.rpc.port }} }
+            - { name: p2p, containerPort: {{ .Values.kogany.p2p.port }} }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/zakura }
+            - { name: config, mountPath: /etc/zakura, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          startupProbe:
+            tcpSocket: { port: rpc }
+            periodSeconds: 5
+            failureThreshold: 120
+          readinessProbe:
+            tcpSocket: { port: rpc }
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: rpc }
+            periodSeconds: 30
+            failureThreshold: 5
+          resources: {{- toYaml .Values.kogany.resources | nindent 12 }}
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - name: config
+          configMap: { name: {{ include "yc.fullname" . }}-kogany }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.kogany.storage.className }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ .Values.kogany.storage.size }} } }
+{{- end }}

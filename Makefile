@@ -5,6 +5,12 @@ WORKSPACE   ?= $(abspath ..)
 YCASH6      ?= $(WORKSPACE)/ycash6
 YCASH_DD    ?= $(WORKSPACE)/ycash-dd
 LWD         ?= $(WORKSPACE)/lightwalletd-dd
+# kogany (the third node line; nodeLine kogany, values-kind-kogany.yaml): its own docker/Dockerfile
+KOGANY      ?= $(WORKSPACE)/kogany
+# cargo jobs inside the koganyd build (its Dockerfile's CARGO_BUILD_JOBS): Docker Desktop's default 8 GB VM
+# swaps itself to a standstill at one job per CPU (rocksdb + the LTO crates), more so beside a kind
+# cluster. Empty = one per CPU.
+KOGANY_JOBS ?= 4
 # The node line the images are built from, as a branch: each tree must have it checked out or be on a
 # branch that contains it (`make line` checks). LINE is a shorthand for the branch names only:
 # LINE=vault -> upgrade/vault, LINE=quantum -> upgrade/quantum-vaults.
@@ -41,8 +47,12 @@ DOMAIN      ?= lite.example.org
 # kind-up / kind-reset-chain / demo: how long each Deployment and StatefulSet of the release may take
 # to roll out before the target fails (scripts/kind-check-release.sh)
 ROLLOUT_TIMEOUT ?= 10m
+# kind-up-kogany / kind-load-kogany / kind-down-kogany: the kogany backend (nodeLine kogany) in its own
+# cluster from kind/kind-kogany.yaml (one node, no host ports), beside CLUSTER's
+KOGANY_CLUSTER ?= ycash-kogany
+KOGANY_VALUES  := values-kind.yaml values-kind-kogany.yaml
 
-.PHONY: help line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner miners-test
+.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner miners-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -81,6 +91,10 @@ line: ## check the source trees: on BRANCH (or a branch containing it), one rpcv
 image-ycashd: line ## ycashd from YCASH6 (BRANCH) and its contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
 	@test -f $(YCASHD_DOCKERFILE) || { echo "$(YCASHD_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH6) yet"; exit 1; }
 	s=$$(scripts/image-stamp.sh hash $(STAMP_ycashd)) && docker build --platform $(PLATFORM) -f $(YCASHD_DOCKERFILE) --build-arg JOBS=$(JOBS) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/ycashd:$(YCASHD_REV) -t $(REGISTRY)/ycashd:local $(YCASH6)
+
+image-koganyd: ## kogany's koganyd (--features ycash) from KOGANY and its docker/Dockerfile (runtime stage), for nodeLine kogany; the chart runs koganyd itself. KOGANY_JOBS caps its cargo jobs (default 4)
+	docker build --platform $(PLATFORM) -f $(KOGANY)/docker/Dockerfile --target runtime --build-arg FEATURES="default-release-binaries ycash" --build-arg CARGO_BUILD_JOBS=$(KOGANY_JOBS) -t $(REGISTRY)/koganyd:$$(git -C $(KOGANY) rev-parse --short HEAD) -t $(REGISTRY)/koganyd:local $(KOGANY)
+	@docker run --rm --platform $(PLATFORM) --entrypoint koganyd $(REGISTRY)/koganyd:local --version || { echo "$(REGISTRY)/koganyd:local has no koganyd: kogany's docker/Dockerfile must build --bin koganyd under --features ycash (its zakurad exits 2 there)"; exit 1; }
 
 image-ycashd-legacy: line ## the v4.5.0 tree YCASH_DD (BRANCH), same Dockerfile shape, tagged ycashd-legacy
 	@test -f $(YCASHD_LEGACY_DOCKERFILE) || { echo "$(YCASHD_LEGACY_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH_DD) yet"; exit 1; }
@@ -124,6 +138,21 @@ kind-load: image-check ## push the local images into the cluster (refuses stale 
 
 kind-up: kind-create kind-load ## cluster + gateway + cert-manager + the chart (values-kind.yaml); fails unless every workload rolls out (ROLLOUT_TIMEOUT=10m each) and no pod is failing
 	ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) scripts/kind-up.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
+
+kind-create-kogany: ## the kogany backend's kind cluster KOGANY_CLUSTER (default ycash-kogany) from kind/kind-kogany.yaml
+	kind get clusters | grep -qx $(KOGANY_CLUSTER) || kind create cluster --name $(KOGANY_CLUSTER) --config kind/kind-kogany.yaml
+
+kind-load-kogany: image-check ## push koganyd:local (make image-koganyd) and the images the kogany backend still runs (ycashd: its test rig and wallet; lightwalletd, yindex; web, faucet if built) into KOGANY_CLUSTER
+	@docker image inspect $(REGISTRY)/koganyd:local >/dev/null 2>&1 || { echo "$(REGISTRY)/koganyd:local missing: make image-koganyd KOGANY=<tree>"; exit 1; }
+	kind load docker-image --name $(KOGANY_CLUSTER) $(REGISTRY)/koganyd:local $(REGISTRY)/ycashd:local $(REGISTRY)/lightwalletd:local $(REGISTRY)/yindex:local
+	-kind load docker-image --name $(KOGANY_CLUSTER) $(REGISTRY)/web:local
+	-kind load docker-image --name $(KOGANY_CLUSTER) $(REGISTRY)/faucet:local
+
+kind-up-kogany: kind-create-kogany kind-load-kogany ## kind-up for the kogany backend: KOGANY_CLUSTER + add-ons + the chart with values-kind.yaml + values-kind-kogany.yaml (lightwalletd-dd and yindex read koganyd)
+	VALUES="$(KOGANY_VALUES)" ROLLOUT_TIMEOUT=$(ROLLOUT_TIMEOUT) scripts/kind-up.sh $(KOGANY_CLUSTER) $(NAMESPACE) $(RELEASE)
+
+kind-down-kogany: ## delete KOGANY_CLUSTER (never CLUSTER)
+	kind delete cluster --name $(KOGANY_CLUSTER)
 
 kind-cert: ## a browser-trusted certificate for https://localhost from mkcert's local CA as the gateway's TLS Secret (mkcert -install touches the system trust store)
 	scripts/kind-cert.sh $(CLUSTER) $(NAMESPACE) $(RELEASE)
@@ -233,7 +262,12 @@ docker-noauth: ## print an `export DOCKER_CONFIG=...` that bypasses Docker Deskt
 	@d=$${TMPDIR:-/tmp}/docker-noauth; mkdir -p $$d; python3 -c "import json,sys; c=json.load(open('$(HOME)/.docker/config.json')); c.pop('credsStore',None); c['auths']={}; json.dump(c,open('$$d/config.json','w'))"; \
 	for x in cli-plugins contexts buildx; do [ -e $(HOME)/.docker/$$x ] && ln -sfn $(HOME)/.docker/$$x $$d/$$x; done; echo "export DOCKER_CONFIG=$$d"
 
-lint: lint-testnet ## helm lint + image pins + kubeconform + go vet
+lint-kogany: ## the kogany backend renders (nodeLine kogany, render-only): helm lint + kubeconform over values-kind.yaml + values-kind-kogany.yaml, and scripts/tests/test-kogany-render.sh
+	helm lint $(CHART) -f $(CHART)/values-kind.yaml -f $(CHART)/values-kind-kogany.yaml
+	helm template $(RELEASE) $(CHART) -f $(CHART)/values-kind.yaml -f $(CHART)/values-kind-kogany.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
+	scripts/tests/test-kogany-render.sh
+
+lint: lint-testnet lint-kogany ## helm lint + image pins + kubeconform + go vet
 	helm lint $(CHART) -f $(CHART)/values-kind.yaml
 	scripts/lint-images.sh
 	helm lint $(CHART) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET)

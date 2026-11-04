@@ -15,6 +15,8 @@ images:
   # empty and the multi-arch index digest (linux/amd64 + linux/arm64) is the reference. Bump procedure:
   # docs/plans/ycash-infra-plan.md "Pinned third-party images".
   kubectl:      { repository: bitnami/kubectl,    tag: "", digest: "sha256:999d5eb28f404b45f15117f2a110ff23c6164f76edac261d75d783b6e88252b7", pullPolicy: IfNotPresent }
+  # nodeLine kogany only: kogany's koganyd (--features ycash), `make image-koganyd`
+  kogany:       { repository: ycash/koganyd,      tag: local, pullPolicy: IfNotPresent }
   # kind only (regtest.faucet): images/faucet, `make image-faucet`
   faucet:       { repository: ycash/faucet,       tag: local, pullPolicy: IfNotPresent }
 
@@ -66,6 +68,38 @@ ycashd:
   # readiness: synced (verificationprogress > 0.9999) and within readinessLagBlocks of the best known tip
   readinessLagBlocks: 1
   podDisruptionBudget: { enabled: true, minAvailable: 1 }
+
+# ---- the node line lightwalletd-dd and yindex read (workspace kogany plan W9-c) ----------------
+# ycash6: the ycashd StatefulSet above serves them (the default). kogany: a kogany node (koganyd
+# --features ycash, the third node line, a Rust node of the Zebra lineage) serves them instead, and
+# the ycashd StatefulSet becomes its test rig (kogany plan W9-a): `connect=` kogany and no listen, so
+# every block its miner makes and every transaction its wallet sends reaches the network through
+# kogany, which validates them. The rig keeps the wallet (kogany is wallet-less, plan K-3): the miner,
+# the arming Job and the faucet still talk to ycashd. Regtest only (the render fails otherwise) until
+# kogany is a qualified line (plan K-19); values-kind-kogany.yaml is the kind recipe.
+nodeLine: ycash6              # ycash6 | kogany
+kogany:
+  rpc: { port: 18232 }        # no RPC authentication on kogany (enable_cookie_auth = false): ClusterIP only
+  p2p: { port: 18344 }       # Ycash regtest nDefaultPort (ycash6 src/chainparams.cpp:822); kogany refuses 18233, Zcash testnet's
+  # koganyd.toml's network.network.params.activation_heights, which must equal ycashd's -nuparams
+  # (both nodes validate the same chain). Overwinter, Sapling, Ycash, Blossom, Heartwood, Canopy, Vault.
+  activationHeights: {}
+  logFilter: info
+  # Zakura's [state] storage_mode (workspace docs/plans/kogany/research/pruning-assessment.md,
+  # decisions 4, 7, 8). archive (the default) keeps every raw transaction. pruned keeps them for
+  # `retention` blocks below the finalized tip (Zakura's floor: 10,000 on mainnet and testnet, 1,001
+  # on regtest; the infrastructure's pruned retention is 34,560, 30 days at 75 s) and still enforces
+  # Vault and Yellowback in full. This chart's kogany is lightwalletd-dd's and yindex's backend, which
+  # read every block from Sapling activation and the address index, so the render refuses pruned
+  # while either runs (decision 7: lightwalletd-dd backends stay archive).
+  storageMode: archive        # archive | pruned
+  retention: 34560            # pruned only: koganyd.toml [state.storage_mode.pruned] tx_retention
+  storage:
+    className: ""
+    size: 20Gi
+  resources:
+    requests: { cpu: 250m, memory: 1Gi }
+    limits:   { memory: 4Gi }
 
 # ---- lightwalletd-dd -------------------------------------------------------------------------
 lightwalletd:

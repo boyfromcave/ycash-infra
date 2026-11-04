@@ -1,0 +1,9 @@
+{
+  "clone_seconds": 0.4,
+  "datadir": "$WS/wt/.data/ycash-mainnet",
+  "height": 570000,
+  "method": "stopatheight",
+  "pause_seconds": 0.5,
+  "restarted_at": "2026-11-02T07:34:41Z",
+  "stopped_at": "2026-11-02T07:34:40Z"
+}

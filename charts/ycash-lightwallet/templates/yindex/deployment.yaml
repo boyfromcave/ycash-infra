@@ -27,7 +27,7 @@ spec:
           {{- include "yc.containerSecurity" . | nindent 10 }}
           args: [serve]
           env:
-            - { name: YINDEX_RPC_URL, value: "http://{{ include "yc.rpcHost" . }}:{{ .Values.ycashd.rpc.port }}" }
+            - { name: YINDEX_RPC_URL, value: "http://{{ include "yc.backendHost" . }}:{{ include "yc.backendPort" . }}" }
             - name: YINDEX_RPC_USER
               valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
             - name: YINDEX_RPC_PASSWORD
@@ -75,7 +75,7 @@ spec:
           {{- include "yc.containerSecurity" . | nindent 10 }}
           args: [ingest]
           env:
-            - { name: YINDEX_RPC_URL, value: "http://{{ include "yc.rpcHost" . }}:{{ .Values.ycashd.rpc.port }}" }
+            - { name: YINDEX_RPC_URL, value: "http://{{ include "yc.backendHost" . }}:{{ include "yc.backendPort" . }}" }
             - name: YINDEX_RPC_USER
               valueFrom: { secretKeyRef: { name: {{ include "yc.rpcSecret" . }}, key: rpcuser } }
             - name: YINDEX_RPC_PASSWORD

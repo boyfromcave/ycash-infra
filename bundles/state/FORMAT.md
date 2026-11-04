@@ -135,3 +135,184 @@ make state-test                             # the snapshotter's steps and verify
 
 `verify.py` does not start a node; the state inside the tarball is what the snapshotter's
 `restore-check` (and later `ycash-bootstrap`) checks against the statements with a real one.
+
+---
+
+# Mainnet state bundle, format v2 (`ycash-state/2`)
+
+## In plain words
+
+v2 is the same packed datadir as v1, made for **Ycash mainnet** from one machine. v1 cannot hold it
+for three reasons:
+- mainnet keeps its files at the datadir's root, with no network subdirectory;
+- v1 requires a second statement from the other node line (ycash-dd), which takes a separate full
+  mainnet sync stopped at the same height. The testnet chart gets that from its `verifier-dd`; a
+  single producer cannot;
+- v1 has no place for mainnet's own anchors: the block hashes compiled into the node.
+
+v2 adds those anchors instead:
+- every compiled ycash6 checkpoint at or below the height;
+- a tree hash that ties the tarball, file by file, to the datadir the statement was taken from.
+
+It also adds two optional statement fields that a different node implementation (kogany) can
+reproduce. Producer: `bundles/state/mainnet/` (`supervise.py`, `snapshot.py`; procedure in its README).
+
+## Contract
+
+Everything in v1's "Contract" applies, except what follows.
+
+**Network.** `main` (the testnet names stay allowed). `profile` is empty.
+
+**Tarball contents.** Entries sit under `main/` like any v1 network directory, so a tarball never
+spills into the working directory and v1's entry rules are checked unchanged. Because mainnet's files
+live at the datadir root (ycash6 `src/chainparamsbase.cpp`: mainnet's `strDataDir` is empty), a
+consumer extracts with `tar -xzf <tarball> -C <datadir> --strip-components=1`. The tarball encoding
+(entry order, fixed headers, `gzip -n -6`) is v1's. The producer writes the tar stream itself
+(Python `tarfile`, GNU format) and pipes it through the host's `gzip -n -6`, so the result is
+reproducible from the same datadir with the same tools.
+
+**Height.** Any height. The heights captured and why: `bundles/state/mainnet/README.md`.
+
+**Statements.** At least one statement, and `statement-ycash6.json` is required. A v2 statement may
+add two fields to v1's:
+
+| Field | From the node at `H` |
+|---|---|
+| `finalsaplingroot` | `getblock <blockhash> 1`.`finalsaplingroot` |
+| `chainsupply_zat` | `getblock <blockhash> 1`.`chainSupply.chainValueZat` (`null` when not monitored) |
+
+The `ycash6` statement comes from an APFS copy-on-write clone of the producer's datadir, taken the
+moment the node stopped at `H` (`-stopatheight`). That clone is cloned once more and started offline:
+no peers, no listening, its own RPC port. Any block above `H` is rolled back on that throwaway copy,
+and the fields are read.
+
+Further verifiers (`ycash-dd`, `kogany`) may be added. As in v1, every statement in a bundle is
+byte-identical over the fields the bundle keeps.
+
+**`manifest.json`.** v1's fields with `format: "ycash-state/2"` and
+`producer: "ycash-infra/mainnet-snapshot"`, plus:
+
+| Field | Value |
+|---|---|
+| `commit` | the ycashd commit (`ycashd --version`, e.g. `65cb4ae0f`); `version` is the release (`6.22.0-rc1`) |
+| `pins` | `{height: hash}` for every compiled ycash6 mainnet pin at or below `H`: `checkpointData`, the Ycash fork block 570,000, the chain-supply checkpoint block 2,800,000 (ycash6 `src/chainparams.cpp` at 65cb4ae0f; the table is vendored in `verify.py`). Each was read from the node with `getblockhash` and must equal the table |
+| `tree_sha256` | SHA-256 over one line `<sha256 of the file>  <path>\n` per regular file of the tarball, in tar order. The producer computes it from the clone while packing; `verify.py --tree` recomputes it from the tarball |
+| `treestate` | `"treestate.json"`: `z_gettreestate H` from the same node, canonical JSON, in the bundle directory and in `SHA256SUMS` (the shadow-fork harvest and the kogany sync gate compare it) |
+| `purpose` | optional: why this height (e.g. `"proposed shadow-fork height H_S, decided by the Yellowback lead architect on 2026-11-02 (3,079,999)"`) |
+
+**Files.** The tarball, `manifest.json`, the statements, `treestate.json`, `SHA256SUMS`, and nothing
+else. Signatures (`*.minisig`) sit beside them and are not listed, as in v1.
+
+**Where it is published.** As v1: `<base>/main/<H>/<file>` and `<base>/main/latest/manifest.json`.
+`latest` only ever moves to a higher height (`bundles/state/mainnet/publish-s3.sh`).
+
+## What v2 does not prove
+
+The UTXO set hash at `H` comes from one implementation (ycash6). The independent anchors are:
+- the compiled pins, on the chain the bundle extends;
+- proof of work, checked by the node that restores it;
+- the sync gate's block-by-block comparison with kogany (hash, Sapling root, chain supply), when a
+  `kogany` statement or a `kogany-state/1` bundle at the same height agrees.
+
+A restoring operator who wants more runs `-reindex-chainstate`, which rebuilds the state from the
+bundle's own blocks.
+
+---
+
+# kogany state cache, format v1 (`kogany-state/1`)
+
+## In plain words
+
+A packed copy of a stopped kogany (Zakura lineage) node's finalized state database at a height, so
+the sync gate (plan W1-Y8) or an operator can resume from it instead of syncing from genesis. Zakura's
+database has its own on-disk format version, written in the database's `version` file
+(`30.2.0` for kogany at `kogany-legacy` = Zakura `2b062412c5`). **A kogany snapshot is valid only for
+that state format.** A kogany build whose `DATABASE_FORMAT_VERSION` major differs opens a different
+directory (`state/v<major>/`) and ignores the snapshot. A newer minor or patch version may run its
+format upgrade on the copy. Restore a snapshot only into a kogany build of the same state format.
+
+## Contract
+
+- **Source.** kogany's `[state] cache_dir`, with koganyd stopped. At a fixed height the producer
+  stops it with `[state] debug_stop_at_height = H`, so the finalized tip is exactly `H`. At the
+  network tip it is stopped at its tip `H`. The blocks above its finalized tip then sit in the non-finalized
+  state, which kogany restores from `non_finalized_state/` on reopen.
+- **Tarball** `kogany-main-<H>-state-<state_format>.tar.gz`. Entries sit under
+  `state/v<major>/mainnet/` (relative to `cache_dir`). They include every RocksDB file: `*.sst`,
+  `*.log` (the write-ahead log, which holds data), `CURRENT`, `IDENTITY`, `MANIFEST-*`, `OPTIONS-*`
+  and `version`. They exclude `LOCK`, `LOG` and `LOG.old.*`, the peer cache (`network/`),
+  `identity/` and logs.
+- **The non-finalized state** (`non_finalized_state/mainnet/`, one file per block above the
+  finalized tip) is **required whenever the cache has any**: without it a tip snapshot's state would
+  end below its `height`. Its file count is the manifest's `non_finalized_blocks`, and
+  `verify.py` checks it against the tarball. A bundle without the field counts as 0. The first four
+  bundles (`debug_stop_at_height`, finalized tip exactly at `H`) were packed without the directory
+  and have no such field.
+- **Encoding.** v1's: bytewise order, fixed headers, `gzip -n -6`.
+- **`manifest.json`** (canonical as above):
+  - `format: "kogany-state/1"`, `line: "kogany"`, `network: "main"`;
+  - `height`, `blockhash` (from the node or the sync gate at `H`), `state_format`;
+  - `tarball`, `sha256`, `bytes`, `tree_sha256` (as in v2);
+  - `producer`, `version` (the kogany commit or release that wrote it);
+  - `non_finalized_blocks`: the number of non-finalized block files included;
+  - `agrees_with`: `"ycash6:<sha256 of statement-ycash6.json>"` when the producer checked that the
+    `ycash-state/2` statement at the same height names the same block hash; `null` otherwise.
+  - At a pinned height, `blockhash` must equal ycash6's pin.
+- **`SHA256SUMS`** over the tarball and the manifest.
+- **Published** at `<base>/kogany-main/<H>/<file>` and
+  `<base>/kogany-main/latest-<state_format>/manifest.json`.
+- **Restore**: stop kogany, then
+  `tar -xzf <tarball> -C <cache_dir> && cat <cache_dir>/state/v*/mainnet/version`, where
+  `<cache_dir>` is kogany's `[state] cache_dir`. The version must equal `state_format`.
+
+---
+
+# kogany state cache, format v2 (`kogany-state/2`)
+
+## In plain words
+
+v1, plus the cache's storage mode. A kogany node runs Zakura's **Archive** mode (the default: every
+raw transaction kept) or its **Pruned** mode (raw transactions kept only for a window of blocks below
+the finalized tip; headers, hashes, transaction locations, the UTXO set, nullifiers, trees, the vault
+and YED state stay). A pruned cache is about a third of an archive one on mainnet (raw transactions
+are 18.4 of 25.6 GB), and it is all a node that will run pruned needs: kogany's vault and YED rules
+read the block in hand and the kept state, never an old body (workspace
+`docs/plans/kogany/research/pruning-assessment.md` §3; decisions 4 and 6). A pruned cache cannot seed
+an archive node, lightwalletd-dd's backend, `yindex`, or a check that re-reads old blocks.
+
+## Contract
+
+Everything in v1's "Contract" applies, except what follows.
+
+- **`manifest.json`**: `format: "kogany-state/2"`; `non_finalized_blocks` is required; and:
+
+| Field | Value |
+|---|---|
+| `storage_mode` | `"archive"` or `"pruned"`: the Zakura `[state] storage_mode` the cache was written (or pruned) under |
+| `lowest_retained_height` | archive: `null`. pruned: the lowest height at and above which every raw transaction is in the bundle (Zakura's `lowest_retained_height`, what `getblockchaininfo.pruneheight` reports; `0` while a pruned node has deleted nothing yet). Below it only genesis keeps its body |
+
+  A pruned bundle keeps at least Zakura's Mainnet floor: `lowest_retained_height` is 0, or the
+  finalized tip (`height − non_finalized_blocks`) minus `lowest_retained_height`, plus one, is at
+  least 10,000 (`MIN_PRUNING_RETENTION`). The infrastructure's pruned bundles use a retention of
+  34,560 blocks (30 days at 75 s; decision 8).
+- **Producing a pruned bundle.** Prune a *copy* of a stopped archive cache in place with
+  `zakura-prune-state --cache-dir <copy> --network mainnet --tx-retention <N> --confirm` (the same
+  binary's state format; it deletes the raw transactions below the window with one range tombstone,
+  writes the one-way pruning marker and compacts the range), then pack it with
+  `snapshot.py kogany --storage-mode pruned --lowest-retained-height <the summary's new lowest
+  retained height>`. A node already running pruned is packed the same way with its `pruneheight`.
+  The producer states both fields; `snapshot.py` reads no RocksDB.
+- **Tarball** `kogany-main-<H>-state-<state_format>.tar.gz` for an archive bundle,
+  `kogany-main-<H>-state-<state_format>-pruned.tar.gz` for a pruned one, so both flavours of one
+  height can sit side by side.
+- **Published**: archive as v1 (`<base>/kogany-main/<H>/<file>`,
+  `<base>/kogany-main/latest-<state_format>/manifest.json`); pruned at
+  `<base>/kogany-main-pruned/<H>/<file>` and `<base>/kogany-main-pruned/latest-<state_format>/manifest.json`
+  (`mainnet/publish-s3.sh`).
+- **Restore**: as v1. A **pruned** bundle restores only into a kogany configured
+  `[state.storage_mode.pruned] tx_retention = N` with `N` at least 10,000 (Zakura refuses to open a
+  pruned database in Archive mode, `zakura-state` `finalized_state.rs`, and refuses a retention under
+  its floor at start); the change is one-way, so an archive node needs an archive bundle or a resync.
+  An archive bundle restores into either mode (a pruned node prunes it as it commits).
+- **v1 bundles** stay valid: `kogany-state/1` bundles were all written by archive nodes and carry
+  neither field (`verify.py` refuses a v1 manifest that carries one).

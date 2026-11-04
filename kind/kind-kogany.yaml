@@ -1,0 +1,15 @@
+# kind create cluster --name ycash-kogany --config kind/kind-kogany.yaml   (make kind-up-kogany)
+# The kogany backend's cluster (nodeLine kogany, values-kind-kogany.yaml): one node and no host
+# ports, so it runs beside the `ycash` cluster of kind/kind.yaml (which holds 443, 9067 and 18832)
+# in Docker Desktop's default VM. Reach it with kubectl port-forward (README, "kogany on kind").
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ycash-kogany
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
