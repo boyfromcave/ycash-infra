@@ -101,13 +101,13 @@ case "$MODE" in checkpoints|full) ;; *) die "--mode is checkpoints or full" ;; e
 case "$NETWORK" in
   zcash-testnet) CHAIN=(-testnet); MAGIC=${MAGIC:-fa1af9bf} ;;
   ycash-mainnet) CHAIN=(); MAGIC=${MAGIC:-24e92764}
-    COMPILED=("${COMPILED_MAIN[@]}")
+    COMPILED=(${COMPILED_MAIN[@]+"${COMPILED_MAIN[@]}"})
     while read -r h x; do COMPILED+=("$h:$x"); done < <(python3 -I -c '
 import sys; sys.path.insert(0, sys.argv[1]); import harvest
 for h, x in sorted(harvest.load_main_checkpoints().items()): print(h, x)' "$HERE/..") ;;
   *) die "--network is zcash-testnet or ycash-mainnet" ;;
 esac
-for a in "${EXTRA_CHAIN[@]}"; do
+for a in ${EXTRA_CHAIN[@]+"${EXTRA_CHAIN[@]}"}; do
   [[ $a =~ ^-[a-z]+(=[A-Za-z0-9._:-]+)?$ ]] || die "--chain-arg $a: -name or -name=value, plain characters"
   CHAIN+=("$a")
 done
@@ -129,7 +129,7 @@ NODE_PID=
 T0=$(date +%s)
 T_FRAMED=$T0; T_IMPORTED=$T0
 
-cli() { timeout 600 "$CLI" "${CHAIN[@]}" -datadir="$DD" "$@"; }
+cli() { timeout 600 "$CLI" ${CHAIN[@]+"${CHAIN[@]}"} -datadir="$DD" "$@"; }
 
 debug_log() { find "$DD" -maxdepth 2 -name debug.log -print -quit; }
 
@@ -155,7 +155,7 @@ write_result() {
   local t_end; t_end=$(date +%s)
   local dlog; dlog=$(debug_log || true)
   if [ -n "$dlog" ]; then tail -n 200 "$dlog" > "$STATE/debug-tail.log" || true; fi
-  du -sb "$DD" 2>/dev/null | cut -f1 > "$STATE/datadir_bytes" || true
+  { du -sb "$DD" 2>/dev/null || du -sk "$DD" 2>/dev/null | awk '{print $1*1024}'; } | cut -f1 > "$STATE/datadir_bytes" || true
   python3 -I - "$STATE" "$OUT" "$LINE" "$NODE_SHA" "$MODE" "$FAILURE" "$T0" "$T_FRAMED" "$T_IMPORTED" "$t_end" \
       "$PREFIX/manifest.json" <<'PY'
 import hashlib, json, os, sys
@@ -237,12 +237,12 @@ log "node: $(cat "$STATE/version")"
 
 # 1. Check the prefix as data and frame it.
 expect=()
-for e in "${COMPILED[@]}"; do expect+=(--expect "$e"); done
+for e in ${COMPILED[@]+"${COMPILED[@]}"}; do expect+=(--expect "$e"); done
 log "checking SHA256SUMS and the manifest, framing with magic $MAGIC"
-python3 -I "$HERE/frame.py" --prefix "$PREFIX" --out "$FRAMED" --network "$NETWORK" --magic "$MAGIC" "${expect[@]}" \
+python3 -I "$HERE/frame.py" --prefix "$PREFIX" --out "$FRAMED" --network "$NETWORK" --magic "$MAGIC" ${expect[@]+"${expect[@]}"} \
   --summary "$STATE/summary.json" || fail "the prefix failed its checks (frame.py)"
 T_FRAMED=$(date +%s)
-mapfile -t FILES < <(python3 -I -c 'import json,sys; [print(p) for p in json.load(open(sys.argv[1]))["files"]]' "$STATE/summary.json")
+FILES=(); while IFS= read -r _f; do FILES+=("$_f"); done < <(python3 -I -c 'import json,sys; [print(p) for p in json.load(open(sys.argv[1]))["files"]]' "$STATE/summary.json")
 LAST=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["last_height"])' "$STATE/summary.json")
 TIP=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["tip_hash"])' "$STATE/summary.json")
 log "framed ${#FILES[@]} files, heights 0..$LAST, tip $TIP"
@@ -257,7 +257,7 @@ port=$((20000 + RANDOM % 20000))
   echo "rpcbind=127.0.0.1"
   echo "rpcallowip=127.0.0.1"
 } > "$DD/ycash.conf"
-args=("${CHAIN[@]}" -datadir="$DD" -server=1 -connect=0 -listen=0 -dnsseed=0 -discover=0 -disablewallet=1
+args=(${CHAIN[@]+"${CHAIN[@]}"} -datadir="$DD" -server=1 -connect=0 -listen=0 -dnsseed=0 -discover=0 -disablewallet=1
       -printtoconsole=0 -dbcache="$DBCACHE")
 [ "$MODE" = full ] && args+=(-checkpoints=0)
 [ -n "$PARAMSDIR" ] && args+=(-paramsdir="$PARAMSDIR")
