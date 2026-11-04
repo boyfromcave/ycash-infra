@@ -44,7 +44,7 @@ check() {  # $1 = label, stdin = rendered manifests
 
 TESTNET_LITE_SET=()
 for c in ycashd lightwalletd yindex web; do TESTNET_LITE_SET+=(--set "images.$c.digest=$PLACEHOLDER"); done
-TESTNET_EKS_SET=(--set "images.ycashd.digest=$PLACEHOLDER" --set "images.ycashdLegacy.digest=$PLACEHOLDER")
+TESTNET_EKS_SET=(--set "images.ycashd.digest=$PLACEHOLDER" --set "images.ycashdLegacy.digest=$PLACEHOLDER" --set "images.prefixFrame.digest=$PLACEHOLDER")
 
 helm template t $CHART -f $CHART/values-kind.yaml | check kind || fail=1
 helm template t $CHART -f $CHART/values-eks.yaml "${EKS_SET[@]}" | check eks || fail=1
