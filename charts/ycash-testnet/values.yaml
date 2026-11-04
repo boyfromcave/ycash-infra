@@ -160,20 +160,22 @@ zcashParams:
 # Two init containers on every node pod, both images.prefixFrame. `prefix-fetch` (prefix.sh fetch)
 # runs only on an empty datadir: it downloads SHA256SUMS, refuses unless its sha256 equals sha256sums,
 # downloads manifest.json and every chunk SHA256SUMS lists, refuses unless every file checks and the
-# manifest names format ycash-prefix/1, network zcash-testnet and lastHeight, then marks the prefix
+# manifest names format ycash-prefix/1, prefixRestore.network and lastHeight, then marks the prefix
 # verified, then refuses unless SHA256SUMS.minisig is the Ycash release key's signature (key id
 # 02C923A6C593AF18, baked into the image). `prefix-frame` (frame.py) turns the verified chunks into -loadblock files
 # with the network magic; the node then imports them once (run.sh) and the readiness probe marks the
-# import done at lastHeight. Off by default; values-yb-fast.yaml turns it on (testnet-prefix-v1).
+# import done at lastHeight. Off by default; values-yb-fast.yaml turns it on (testnet-prefix-v1), values-yb-slow.yaml and
+# values-legacy.yaml (mainnet-prefix-v1).
 prefixRestore:
   enabled: false
   baseUrl: ""                 # where SHA256SUMS, manifest.json and the chunks are, e.g. the testnet-prefix-v1 release's download URL
   sha256sums: ""              # sha256 of the SHA256SUMS file itself: the pin; required when enabled
-  lastHeight: 510247          # the prefix's last height (format v1: Zcash testnet 0..510,247)
+  lastHeight: 510247          # the prefix's last height (format v1: Zcash testnet 0..510,247; mainnet-prefix-v1 3,079,999)
+  network: zcash-testnet      # the manifest's network: zcash-testnet (testnet-prefix-v1) | ycash-mainnet (mainnet-prefix-v1)
   magic: fa1af9bf             # the network magic the framer writes: today's testnet magic on both lines; N1/T-2 changes it
-  # The framer's command; Kubernetes expands $(PREFIX_DIR) and $(PREFIX_MAGIC). It reads the
+  # The framer's command; Kubernetes expands $(PREFIX_DIR), $(PREFIX_NETWORK) and $(PREFIX_MAGIC). It reads the
   # verified chunks in $(PREFIX_DIR) and writes the -loadblock files into $(PREFIX_DIR)/load.
-  frameCommand: [sh, /opt/prefix/prefix.sh, frame, --prefix, "$(PREFIX_DIR)", --out, "$(PREFIX_DIR)/load", --magic, "$(PREFIX_MAGIC)"]
+  frameCommand: [sh, /opt/prefix/prefix.sh, frame, --prefix, "$(PREFIX_DIR)", --out, "$(PREFIX_DIR)/load", --network, "$(PREFIX_NETWORK)", --magic, "$(PREFIX_MAGIC)"]
   resources:
     requests: { cpu: 250m, memory: 256Mi }
     limits:   { memory: 1Gi }

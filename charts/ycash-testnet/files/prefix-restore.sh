@@ -14,11 +14,13 @@
 #
 # Refuses (exit 1) when: the pinned sha256 is missing, SHA256SUMS does not hash to it, a file it
 # lists does not check, a name is not a plain file name, or the manifest is not format
-# ycash-prefix/1 / network zcash-testnet / last_height $PREFIX_LAST_HEIGHT with every chunk listed.
+# ycash-prefix/1 / network $PREFIX_NETWORK / last_height $PREFIX_LAST_HEIGHT with every chunk listed
+# (a ycash-mainnet bundle also lists treestate.json: it must be the manifest's treestate, same sha256).
 # Skips (exit 0) when the prefix is already verified, or when the datadir holds anything else:
 # a restore goes only into an empty datadir.
 #
-# Environment: PREFIX_BASE_URL, PREFIX_SUMS_SHA256, PREFIX_LAST_HEIGHT, DATADIR (default
+# Environment: PREFIX_BASE_URL, PREFIX_SUMS_SHA256, PREFIX_LAST_HEIGHT, PREFIX_NETWORK (default
+# zcash-testnet; ycash-mainnet for mainnet-prefix-v1), DATADIR (default
 # /var/lib/ycash); PREFIX_CURL_PROTO (default =https) for local tests only. Needs sh, curl, sha256sum and jq (the ycashd images have all four).
 set -eu
 D="${DATADIR:-/var/lib/ycash}"
@@ -39,6 +41,8 @@ fi
 
 : "${PREFIX_BASE_URL:?PREFIX_BASE_URL is required}"
 : "${PREFIX_LAST_HEIGHT:?PREFIX_LAST_HEIGHT is required}"
+net="${PREFIX_NETWORK:-zcash-testnet}"
+case "$net" in zcash-testnet|ycash-mainnet) ;; *) die "PREFIX_NETWORK $net is not zcash-testnet or ycash-mainnet" ;; esac
 echo "${PREFIX_SUMS_SHA256:-}" | grep -qxE '[0-9a-f]{64}' || die "PREFIX_SUMS_SHA256 is not a sha256 (the pin is required)"
 base="${PREFIX_BASE_URL%/}"
 mkdir -p "$P"
@@ -73,16 +77,25 @@ if ! sha256sum -c --strict SHA256SUMS; then
   die "a file does not match SHA256SUMS"
 fi
 
-jq -e --argjson last "$PREFIX_LAST_HEIGHT" '
-  .format == "ycash-prefix/1" and .network == "zcash-testnet"
+jq -e --argjson last "$PREFIX_LAST_HEIGHT" --arg net "$net" '
+  .format == "ycash-prefix/1" and .network == $net
   and .first_height == 0 and .last_height == $last and (.chunks | length) > 0' manifest.json >/dev/null \
-  || die "manifest.json is not ycash-prefix/1 zcash-testnet 0..$PREFIX_LAST_HEIGHT"
+  || die "manifest.json is not ycash-prefix/1 $net 0..$PREFIX_LAST_HEIGHT"
 for c in $(jq -r '.chunks[] | "\(.file)=\(.gz_sha256)"' manifest.json); do
   f=${c%%=*}; h=${c#*=}
   grep -qxE "$h [ *]$f" SHA256SUMS || die "manifest chunk $f ($h) is not in SHA256SUMS with that hash"
 done
+ts=""
+if [ "$net" = ycash-mainnet ]; then
+  # the mainnet bundle's one non-chunk file: the split block's tree state (FORMAT.md)
+  ts=$(jq -r '.treestate.file // empty' manifest.json)
+  [ "$ts" = treestate.json ] || die "manifest.json names no treestate.json"
+  grep -qxE "$(jq -r .treestate.sha256 manifest.json) [ *]$ts" SHA256SUMS \
+    || die "manifest treestate $ts is not in SHA256SUMS with that hash"
+fi
 for n in $names; do
   [ "$n" = manifest.json ] && continue
+  [ -n "$ts" ] && [ "$n" = "$ts" ] && continue
   jq -e --arg f "$n" 'any(.chunks[]; .file == $f)' manifest.json >/dev/null || die "SHA256SUMS lists $n, the manifest does not"
 done
 

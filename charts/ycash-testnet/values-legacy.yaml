@@ -8,13 +8,19 @@ testnetProfile: legacy
 rpc: { port: 19032 }
 p2p: { port: 19033 }
 prefixRestore:
-  # placeholder: this network will restore mainnet-prefix-v1 (not published yet), e.g.
-  # enabled: true
-  # baseUrl: https://ycash-contributors-object-store.s3.amazonaws.com/snapshots/prefix/mainnet-prefix-v1
-  # sha256sums: <sha256 of its SHA256SUMS>
+  # mainnet-prefix-v1 (Ycash mainnet 0..3,079,999 = H_S, ycash-prefix/1): manifest.json, SHA256SUMS,
+  # SHA256SUMS.minisig, treestate.json and 308 .blocks.gz chunks (~18.7 GB), flat under baseUrl
+  enabled: true
+  baseUrl: https://ycash-contributors-object-store.s3.amazonaws.com/snapshots/prefix/mainnet-prefix-v1
+  sha256sums: 456e820511ade7d9ffd8db41b168ee6063050bb05e2af6a651072bbfb74eecd3   # sha256 of that SHA256SUMS
+  network: ycash-mainnet
+  lastHeight: 3079999
   magic: f77962d5                # the prefix is shared (magic-neutral); framed with this network's magic
 seed:
   p2pService: { nodePortBase: 32033 }   # kind (NodePort) only: 32033.. per seed, so the three releases fit one kind cluster
+  storage: { size: 120Gi }              # mainnet-prefix-v1: 18.7 GB chunks + 23.1 GB framed copies + the imported chain
+verifierDd:
+  storage: { size: 120Gi }
 externalSecrets:
   ycashdRpc: ycash/testnet/legacy/ycashd-rpc   # infra/eks/module, networks = [..., "legacy"]: {rpcuser, rpcpassword}
 # The services (plan §6.2, T-19), off on EKS until the deployment turns them on (README "The services"):
