@@ -20,7 +20,7 @@ ok() { echo "ok - $*"; }
 
 printf 'SEED_NAME=seed-0\nVOLUME_ID=vol-0\nEXTERNAL_IP=192.0.2.10\nSWAP_MB=0\n' > "$O/seed.env"
 cat > "$O/prefix-restore.sh" <<'EOF'
-echo "restore $DATADIR $PREFIX_SUMS_SHA256 $PREFIX_LAST_HEIGHT" >> "$LOG"
+echo "restore $DATADIR $PREFIX_SUMS_SHA256 $PREFIX_LAST_HEIGHT $PREFIX_NETWORK" >> "$LOG"
 mkdir -p "$DATADIR/prefix" && touch "$DATADIR/prefix/VERIFIED"
 EOF
 cat > "$O/frame.py" <<'EOF'
@@ -29,7 +29,7 @@ a = sys.argv[1:]
 out = a[a.index("--out") + 1]
 os.makedirs(out, exist_ok=True)
 open(os.path.join(out, "blk0.dat"), "w").close()
-open(os.environ["LOG"], "a").write("frame %s %s\n" % (a[a.index("--prefix") + 1], a[a.index("--magic") + 1]))
+open(os.environ["LOG"], "a").write("frame %s %s %s\n" % (a[a.index("--prefix") + 1], a[a.index("--network") + 1], a[a.index("--magic") + 1]))
 EOF
 cat > "$T/bin/docker" <<'EOF'
 #!/bin/bash
@@ -54,13 +54,16 @@ chmod +x "$T/bin/docker"
 export PATH="$T/bin:$PATH"
 
 # A config as the module's network_configs output carries it (locals.tf network_config).
-conf() { # name profile p2p rpc magic [image-hex]
-  jq -cn --arg n "$1" --arg p "$2" --argjson p2p "$3" --argjson rpc "$4" --arg m "$5" --arg h "${6:-0000000000000000000000000000000000000000000000000000000000000000}" '{
+conf() { # name profile p2p rpc magic [image-hex]; slow and legacy restore mainnet-prefix-v1, fast testnet-prefix-v1
+  local pn=zcash-testnet ps=c7b55a2a6770df8108d910572cca2dbf643a0418eb0b2d556879928a43cbc403 pl=510247
+  case "$2" in slow|legacy) pn=ycash-mainnet ps=456e820511ade7d9ffd8db41b168ee6063050bb05e2af6a651072bbfb74eecd3 pl=3079999 ;; esac
+  jq -cn --arg n "$1" --arg p "$2" --argjson p2p "$3" --argjson rpc "$4" --arg m "$5" --arg h "${6:-0000000000000000000000000000000000000000000000000000000000000000}" \
+    --arg pn "$pn" --arg ps "$ps" --argjson pl "$pl" '{
     name: $n, profile: $p, network: "testnet", image: ("ghcr.io/example/ycashd@sha256:" + $h),
     p2p_port: $p2p, rpc_port: $rpc, node_args: ("-testnet -testnetprofile=" + $p), dnsseed: false,
     extra_args: "-dbcache=256 -maxconnections=64",
     peers: [("192.0.2.10:" + ($p2p | tostring)), ("192.0.2.11:" + ($p2p | tostring))],
-    prefix: {base_url: "https://example.org/prefix", sums_sha256: "c7b55a2a6770df8108d910572cca2dbf643a0418eb0b2d556879928a43cbc403", last_height: 510247, magic: $m}}'
+    prefix: {base_url: "https://example.org/prefix", sums_sha256: $ps, last_height: $pl, network: $pn, magic: $m}}'
 }
 b64() { base64 -w0; }
 FAST=$(conf yb-fast fast 18833 18832 f77962d3 | b64)
@@ -74,16 +77,17 @@ grep -qx 'YCASHD_EXTRA_ARGS=-port=18833 -externalip=192.0.2.10 -testnet -testnet
 grep -qx 'YCASHD_RPC_PORT=18832' "$env_fast" && grep -qx 'YCASHD_NETWORK=testnet' "$env_fast" && grep -qx 'YCASHD_TESTNET_PROFILE=fast' "$env_fast" && grep -qx 'YCASHD_RPC_BIND=127.0.0.1' "$env_fast" || fail "fast's RPC settings"
 grep -q 'container_name: ycashd-yb-fast' "$O/net/yb-fast/compose.yaml" && grep -q 'image: ghcr.io/example/ycashd@sha256:0000' "$O/net/yb-fast/compose.yaml" || fail "fast's compose file"
 grep -q "\"$D/yb-fast/node:/var/lib/ycash\"" "$O/net/yb-fast/compose.yaml" || fail "fast's own datadir"
-[ "$(grep -c '^restore ' "$LOG")" = 1 ] && grep -q "^frame $D/prefix-cache/data/prefix f77962d3$" "$LOG" || fail "one fetch, framed with d3"
+[ "$(grep -c '^restore ' "$LOG")" = 1 ] && grep -q "^restore $D/prefix-cache/zcash-testnet/data c7b55a2a6770df8108d910572cca2dbf643a0418eb0b2d556879928a43cbc403 510247 zcash-testnet$" "$LOG" && grep -q "^frame $D/prefix-cache/zcash-testnet/data/prefix zcash-testnet f77962d3$" "$LOG" || fail "one fetch of testnet-prefix-v1, framed with d3"
 [ -s "$D/yb-fast/applied.json" ] && [ "$(stat -c %a "$D/yb-fast/rpc.env")" = 600 ] || fail "applied config and a private rpc.env"
 ok "apply fast: prefix fetched and framed, ports, profile, peers without itself"
 
 # 2. apply slow: the cache is reused, framed with slow's magic, its own ports and datadir
 "$SEEDCTL" apply yb-slow "$SLOW" 2>/dev/null
-[ "$(grep -c '^restore ' "$LOG")" = 1 ] || fail "the second network fetched the prefix again"
-grep -q "^frame $D/prefix-cache/data/prefix f77962d4$" "$LOG" || fail "slow framed with d4"
+grep -q "^restore $D/prefix-cache/ycash-mainnet/data 456e820511ade7d9ffd8db41b168ee6063050bb05e2af6a651072bbfb74eecd3 3079999 ycash-mainnet$" "$LOG" || fail "slow fetched mainnet-prefix-v1 as ycash-mainnet"
+grep -q "^frame $D/prefix-cache/ycash-mainnet/data/prefix ycash-mainnet f77962d4$" "$LOG" || fail "slow framed ycash-mainnet with d4"
+[ -e "$D/prefix-cache/zcash-testnet/data/prefix/VERIFIED" ] || fail "slow's fetch evicted fast's cache"
 grep -q -- '-port=18933 .*-testnetprofile=slow .*-addnode=192.0.2.11:18933' "$O/net/yb-slow/node.env" && grep -qx 'YCASHD_RPC_PORT=18932' "$O/net/yb-slow/node.env" || fail "slow's ports"
-ok "apply slow: the verified prefix is shared, its own magic and ports"
+ok "apply slow: its own prefix (ycash-mainnet) in its own cache, its own magic and ports"
 
 # 3. prefix-check: at the prefix's last height the -loadblock flags and framed copies go
 "$SEEDCTL" prefix-check 2>/dev/null

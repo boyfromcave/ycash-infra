@@ -54,7 +54,8 @@ check_config() { # file name
       (.prefix.base_url | test("^https://[A-Za-z0-9._~/%-]+$"))
       and (.prefix.sums_sha256 | test("^[0-9a-f]{64}$"))
       and (.prefix.magic | test("^[0-9a-f]{8}$"))
-      and (.prefix.last_height | type == "number")))
+      and (.prefix.last_height | type == "number")
+      and ((.prefix.network // "zcash-testnet") | test("^(zcash-testnet|ycash-mainnet)$"))))
   ' "$1" >/dev/null || die "config for $2 is not valid"
 }
 
@@ -123,7 +124,7 @@ compose() { local net=$1; shift; docker compose -f "$O/net/$net/compose.yaml" "$
 # prefix-restore.sh: SHA256SUMS against the pin, every file against SHA256SUMS), then frame it with
 # this network's magic into NET/node/prefix/load (frame.py checks every block again).
 bootstrap() { # net file
-  local net=$1 f=$2 N="$D/$1/node" C="$D/prefix-cache" pin other x
+  local net=$1 f=$2 N="$D/$1/node" C pin pnet other x
   [ "$(cfg "$f" .prefix)" != null ] || return 0
   if [ -e "$N/prefix/IMPORTED" ] || [ -e "$N/prefix/FRAMED" ]; then return 0; fi
   other=""
@@ -133,18 +134,21 @@ bootstrap() { # net file
   done
   if [ -n "$other" ]; then log "$net: datadir holds a chain:$other; no bootstrap"; return 0; fi
   pin=$(cfg "$f" .prefix.sums_sha256)
+  pnet=$(cfg "$f" '.prefix.network // "zcash-testnet"')
+  # one cache per prefix network: fast's zcash-testnet and slow/legacy's ycash-mainnet live side by side
+  C="$D/prefix-cache/$pnet"
   if [ "$(cat "$C/PIN" 2>/dev/null || true)" != "$pin" ]; then
     log "prefix cache: new pin $pin, fetching"
     rm -rf "$C"; mkdir -p "$C/data"; echo "$pin" > "$C/PIN"
   fi
   if [ ! -e "$C/data/prefix/VERIFIED" ]; then
-    DATADIR="$C/data" PREFIX_BASE_URL=$(cfg "$f" .prefix.base_url) PREFIX_SUMS_SHA256="$pin" \
+    DATADIR="$C/data" PREFIX_BASE_URL=$(cfg "$f" .prefix.base_url) PREFIX_SUMS_SHA256="$pin" PREFIX_NETWORK="$pnet" \
       PREFIX_LAST_HEIGHT=$(cfg "$f" .prefix.last_height) retry sh "$O/prefix-restore.sh"
     [ -e "$C/data/prefix/VERIFIED" ] || die "the prefix was refused (see above); $net not started"
   fi
   log "$net: framing the prefix with magic $(cfg "$f" .prefix.magic)"
   rm -rf "$N/prefix"; mkdir -p "$N/prefix"
-  python3 -I "$O/frame.py" --prefix "$C/data/prefix" --out "$N/prefix/load" --magic "$(cfg "$f" .prefix.magic)"
+  python3 -I "$O/frame.py" --prefix "$C/data/prefix" --out "$N/prefix/load" --network "$pnet" --magic "$(cfg "$f" .prefix.magic)"
   cfg "$f" .prefix.last_height > "$N/prefix/LAST_HEIGHT"
   touch "$N/prefix/FRAMED"
 }

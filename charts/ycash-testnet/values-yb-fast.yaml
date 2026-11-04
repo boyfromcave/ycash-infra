@@ -26,3 +26,5 @@ faucet:
   route: { host: faucet-fast.example.org }
 status:
   route: { host: status-fast.example.org }
+snapshotter:
+  minHeight: 510248    # the fork: 0..510,247 is testnet-prefix-v1

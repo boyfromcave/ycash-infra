@@ -55,6 +55,10 @@ run "three_testnets_by_default" {
     error_message = "slow and legacy: their ports and magics"
   }
   assert {
+    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).prefix.network == "zcash-testnet" && jsondecode(base64decode(output.network_configs["yb-slow"])).prefix.network == "ycash-mainnet" && jsondecode(base64decode(output.network_configs["yb-slow"])).prefix.last_height == 3079999 && jsondecode(base64decode(output.network_configs["legacy"])).prefix.sums_sha256 == "456e820511ade7d9ffd8db41b168ee6063050bb05e2af6a651072bbfb74eecd3"
+    error_message = "the prefix per profile from the chart's values files: fast zcash-testnet, slow and legacy mainnet-prefix-v1"
+  }
+  assert {
     condition     = jsonencode(jsondecode(base64decode(output.network_configs["legacy"])).peers) == jsonencode(["192.0.2.10:19033", "192.0.2.11:19033", "192.0.2.12:19033"]) && !jsondecode(base64decode(output.network_configs["legacy"])).dnsseed
     error_message = "every host is a peer on the network's own port; testnets have no DNS seed"
   }

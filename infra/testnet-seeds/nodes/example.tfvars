@@ -24,10 +24,7 @@ architecture     = "x86_64"
 instance_type    = "t3a.medium"
 data_volume_size = 80
 
-# the published Zcash-testnet prefix (testnet-prefix-v1), shared by the three testnets; each network
-# frames it with its own magic (f77962d3 / d4 / d5)
-prefix = {
-  base_url    = "https://github.com/example/ycash-infra/releases/download/testnet-prefix-v1"
-  sums_sha256 = "c7b55a2a6770df8108d910572cca2dbf643a0418eb0b2d556879928a43cbc403"
-  last_height = 510247
-}
+# the prefix bootstrap: each profile restores the prefix its chart values file names (fast
+# testnet-prefix-v1, slow and legacy mainnet-prefix-v1) and frames it with its own magic
+# (f77962d3 / d4 / d5); fields set here override the chart's values for fast only
+prefix = {}
