@@ -185,8 +185,8 @@ no listen) and keeps the wallet the miner, the bootstrap and arming Jobs and the
 wallet-less); `lightwalletd:local` and `yindex:local` read koganyd's RPC. `scripts/kind-up.sh` takes
 the chart's value files as `VALUES="values-kind.yaml values-kind-kogany.yaml"`. With no host ports,
 reach it through a port-forward, e.g.
-`kubectl --context kind-ycash-kogany -n ycash port-forward svc/ycash-kogany 18232` and a JSON-RPC
-`getblockchaininfo` on `127.0.0.1:18232` (no RPC authentication; ClusterIP only).
+`kubectl --context kind-ycash-kogany -n ycash port-forward svc/ycash-kogany 18832` and a JSON-RPC
+`getblockchaininfo` on `127.0.0.1:18832` (no RPC authentication; ClusterIP only).
 
 Two things it needs from the images (found on the first run, 2026-11-02): `ycashd:local` must be
 built from ycash6 at or after `2904a2046` (`PROTOCOL_VERSION` 270200). With Vault active from height
