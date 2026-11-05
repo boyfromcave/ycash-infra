@@ -322,7 +322,7 @@ snapshotter:
   schedule: "41 3 * * *"      # daily; a new H_B comes every 1,440 blocks (about 30 h at 75 s)
   every: 1440                 # H_B is a multiple of this (plan §4.3)
   depth: 1000                 # ... at least this many blocks below the tip
-  minHeight: 510248           # never below the fork: the history before it is the prefix bundle's
+  minHeight: 510248           # never below the fork (prefixRestore.lastHeight + 1); values-yb-slow/legacy: 3080000
   height: ""                  # a fixed H_B for a manual run before an rc (kubectl create job --from=cronjob/...)
   force: false                # pack again at a height already bundled
   flavour: full               # full | full-insight (blocks/insight-index too: the producer node runs -insightexplorer)

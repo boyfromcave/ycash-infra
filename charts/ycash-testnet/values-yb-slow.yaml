@@ -31,3 +31,5 @@ faucet:
   route: { host: faucet-slow.example.org }
 status:
   route: { host: status-slow.example.org }
+snapshotter:
+  minHeight: 3080000   # H_S + 1: the first block of its own; 0..3,079,999 is mainnet-prefix-v1

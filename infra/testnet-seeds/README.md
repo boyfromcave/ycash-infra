@@ -145,9 +145,19 @@ A lower `seed_count` alone is refused.
 ### The prefix bootstrap
 
 With `prefix` set, a testnet network's empty datadir is filled from the published, magic-neutral
-Zcash-testnet prefix (`testnet-prefix-v1`, shared by all three testnets). The host downloads it
-once into `/srv/ycash-data/prefix-cache` with the testnet chart's own `prefix-restore.sh`, which
-refuses unless `SHA256SUMS` hashes to the pin and every file checks. Each network then frames it
+prefix its profile restores, read from the testnet chart's values files (the single source:
+`prefixRestore` `baseUrl`, `sha256sums`, `network`, `lastHeight` in `values-yb-fast.yaml`,
+`values-yb-slow.yaml`, `values-legacy.yaml`):
+
+| profile | prefix | network (`frame.py --network`, `PREFIX_NETWORK`) | last height |
+|---|---|---|---|
+| fast | `testnet-prefix-v1` | `zcash-testnet` | 510,247 |
+| slow, legacy | `mainnet-prefix-v1` (~18.7 GB chunks, ~23.1 GB framed per network) | `ycash-mainnet` | 3,079,999 (H_S) |
+
+Fields set in `prefix` override the chart's values for fast only. The host downloads each prefix
+once into `/srv/ycash-data/prefix-cache/<network>` with the testnet chart's own `prefix-restore.sh`, which
+refuses unless `SHA256SUMS` hashes to the pin, every file checks and the manifest names that network
+and last height. Each network then frames it
 with its own magic (`bundles/prefix/import/frame.py`, which checks every block again) and imports
 it with `-loadblock`; the timer drops the flags and the framed copies once the node reaches
 `last_height`. Both scripts come from the same commit of this repository as the module. A refused
@@ -210,7 +220,7 @@ module "nodes" {
   availability_zones = ["<region>a", "<region>b"]
   image              = "ghcr.io/<owner>/ycashd@sha256:<digest>"
   # networks: the default is the three testnets
-  prefix = { base_url = "https://…/testnet-prefix-v1", sums_sha256 = "<pin>", last_height = 510247 }
+  prefix = {}   # bootstrap on; each profile's prefix from the chart's values files
 }
 output "network_configs" { value = module.nodes.network_configs }
 output "all_networks_config" { value = module.nodes.all_networks_config }

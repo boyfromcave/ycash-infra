@@ -146,7 +146,7 @@ variable "root_volume_size" {
 }
 
 variable "data_volume_size" {
-  description = "Data volume (every network's datadir side by side, and the shared verified prefix), GiB, gp3, encrypted. Kept across upgrades, resets and instance replacements. Per testnet a few GB today (the 510,248-block prefix plus the new chain), plus about 1.1 GB per network while its prefix import runs and 1.1 GB for the shared prefix cache."
+  description = "Data volume (every network's datadir side by side, and the shared verified prefix), GiB, gp3, encrypted. Kept across upgrades, resets and instance replacements. fast: a few GB (the 510,248-block testnet prefix plus the new chain, 1.1 GB framed while it imports, 1.1 GB cache). slow and legacy restore mainnet-prefix-v1: about 23 GB framed per network while it imports, 18.7 GB for its cache, and the imported mainnet history; with the bootstrap on all three, size it as the chart does (120 GiB per mainnet-prefix node) or more."
   type        = number
   default     = 80
 }
@@ -181,24 +181,28 @@ variable "extra_args" {
 
 variable "prefix" {
   description = <<-EOT
-    Optional bootstrap from the shared testnet prefix release (bundles/prefix/FORMAT.md; it is
-    magic-neutral, so all three testnets use the same one): on a testnet network's empty datadir the
-    host downloads it once into its own cache, refuses unless SHA256SUMS hashes to sums_sha256 and
-    every file checks, frames it with that network's magic (the profile's, locals.tf) and imports it
-    with -loadblock. A reset reuses the verified cache. Null = no bootstrap: each network syncs from
-    its peers.
+    Turns on the bootstrap from the published prefix (bundles/prefix/FORMAT.md, magic-neutral). Each
+    profile restores the prefix its chart values file names (charts/ycash-testnet/values-yb-fast.yaml,
+    values-yb-slow.yaml, values-legacy.yaml: prefixRestore baseUrl, sha256sums, network, lastHeight):
+    fast testnet-prefix-v1 (zcash-testnet 0..510,247), slow and legacy mainnet-prefix-v1
+    (ycash-mainnet 0..3,079,999). On a testnet network's empty datadir the host downloads it once into
+    a cache per pin, refuses unless SHA256SUMS hashes to the pin, every file checks and the manifest
+    names that network and last height, frames it with that network's magic (the profile's,
+    locals.tf) and imports it with -loadblock. A reset reuses the verified cache. The fields, when
+    set, override the chart's values for the zcash-testnet profile (fast) only. Null = no bootstrap:
+    each network syncs from its peers.
   EOT
   type = object({
-    base_url    = string
-    sums_sha256 = string
-    last_height = number
+    base_url    = optional(string)
+    sums_sha256 = optional(string)
+    last_height = optional(number)
   })
   default = null
   validation {
     condition = var.prefix == null ? true : (
-      can(regex("^https://[A-Za-z0-9._~/%-]+$", var.prefix.base_url)) &&
-      can(regex("^[0-9a-f]{64}$", var.prefix.sums_sha256)) &&
-      var.prefix.last_height > 0
+      (var.prefix.base_url == null || can(regex("^https://[A-Za-z0-9._~/%-]+$", coalesce(var.prefix.base_url, "-")))) &&
+      (var.prefix.sums_sha256 == null || can(regex("^[0-9a-f]{64}$", coalesce(var.prefix.sums_sha256, "-")))) &&
+      (var.prefix.last_height == null || coalesce(var.prefix.last_height, 0) > 0)
     )
     error_message = "prefix: base_url https://..., sums_sha256 64 lowercase hex, last_height > 0."
   }
