@@ -1,0 +1,9 @@
+prefixRestore:
+  # mainnet-prefix-v1 (Ycash mainnet 0..3,079,999 = H_S, ycash-prefix/1): manifest.json, SHA256SUMS,
+  # SHA256SUMS.minisig, treestate.json and 308 .blocks.gz chunks (~18.7 GB), flat under baseUrl
+  enabled: true
+  baseUrl: https://ycash-contributors-object-store.s3.amazonaws.com/snapshots/prefix/mainnet-prefix-v1
+  sha256sums: 456e820511ade7d9ffd8db41b168ee6063050bb05e2af6a651072bbfb74eecd3   # sha256 of that SHA256SUMS
+  network: ycash-mainnet
+  lastHeight: 3079999
+  magic: f77962d5                # the prefix is shared (magic-neutral); framed with this network's magic
