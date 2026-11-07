@@ -43,6 +43,15 @@ where Ycash itself forked:
 
 - **Seed nodes** (always on, fixed addresses): `infra/testnet-seeds`, Terraform for EC2 + Elastic
   IPs. Each host serves all three networks; deploy, upgrade, reset and status per network.
+  The public names, one per network, each with an A record for every seed host:
+
+  | Network | Name | Check |
+  |---|---|---|
+  | testnet-yb-fast | `fastnet-seed.ycash.team` | `nc -vz fastnet-seed.ycash.team 18833` |
+  | testnet-yb-slow | `slownet-seed.ycash.team` | `nc -vz slownet-seed.ycash.team 18933` |
+  | testnet-legacy | `legacy-seed.ycash.team` | `nc -vz legacy-seed.ycash.team 19033` |
+
+  A connection means that network's P2P port is open. RPC stays on `127.0.0.1` (the port one below) and is not part of this check. A name with two addresses answers for one of them per `nc`; both records are in DNS.
 - **Services** (light-wallet backend per network, on demand): `infra/eks/module` plus
   `charts/ycash-lightwallet` and `charts/ycash-testnet`, one namespace per network. The testnet chart
   also carries, per network and behind values flags, the **faucet** (`images/faucet`, testnet mode;
