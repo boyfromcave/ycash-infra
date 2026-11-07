@@ -1,0 +1,7 @@
+prefixRestore:
+  enabled: false
+  baseUrl: ""
+  sha256sums: ""
+  lastHeight: 510247
+  network: zcash-testnet
+  magic: fa1af9bf

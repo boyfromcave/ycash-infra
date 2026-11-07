@@ -239,6 +239,7 @@ eks-validate: ## offline: terraform fmt/validate (example root and module), the 
 
 SEEDS_DIRS := infra/testnet-seeds/ips infra/testnet-seeds/nodes
 seeds-validate: ## offline: terraform fmt/validate for infra/testnet-seeds (ips, nodes), the nodes test (mocked AWS), shellcheck and the offline seedctl test; no credentials, no plan
+	python3 infra/testnet-seeds/nodes/tests/prefix-matches-chart.py
 	terraform fmt -check -recursive infra/testnet-seeds
 	set -e; for d in $(SEEDS_DIRS); do terraform -chdir=$$d init -backend=false -input=false >/dev/null; terraform -chdir=$$d validate; done
 	terraform -chdir=infra/testnet-seeds/nodes test

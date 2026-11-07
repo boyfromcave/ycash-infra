@@ -14,11 +14,12 @@ locals {
     main   = { testnet = false, p2p_port = 8833, rpc_port = 8832, magic = "24e92764", datadir = "" }
   }
 
-  # The prefix each testnet profile restores, read from the testnet chart's own values files (the single
-  # source: the same baseUrl, pin, network and last height the chart's prefixRestore uses; defaults from
-  # values.yaml). fast restores testnet-prefix-v1 (zcash-testnet 0..510,247); slow and legacy restore
-  # mainnet-prefix-v1 (ycash-mainnet 0..3,079,999 = H_S).
-  chart_dir      = "${path.module}/../../../charts/ycash-testnet"
+  # The prefix each testnet profile restores. These files live in this module: a git module
+  # source downloads only this directory, so a path up into charts/ is not available to file().
+  # They match charts/ycash-testnet (make seeds-validate checks the fields used here). fast restores
+  # testnet-prefix-v1 (zcash-testnet 0..510,247); slow and legacy restore mainnet-prefix-v1
+  # (ycash-mainnet 0..3,079,999 = H_S).
+  chart_dir      = "${path.module}/prefix"
   chart_defaults = yamldecode(file("${local.chart_dir}/values.yaml")).prefixRestore
   chart_files    = { fast = "values-yb-fast.yaml", slow = "values-yb-slow.yaml", legacy = "values-legacy.yaml" }
   chart_prefix = { for p, f in local.chart_files : p => merge(
