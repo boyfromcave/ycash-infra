@@ -75,6 +75,16 @@ inside 4 GiB) applies to all of them.
 
 ### What each host is
 
+The public names are `fastnet-seed.ycash.team` (18833), `slownet-seed.ycash.team` (18933) and `legacy-seed.ycash.team` (19033). Each name has an A record for every seed address. From outside:
+
+```bash
+nc -vz fastnet-seed.ycash.team 18833
+nc -vz slownet-seed.ycash.team 18933
+nc -vz legacy-seed.ycash.team 19033
+```
+
+`succeeded` means that network is accepting peers. `nc` uses one of the name's addresses; the other host is the second A record. RPC is not reachable at these names.
+
 - **Inbound:** the P2P port of each enabled network, and nothing else. No SSH, no RPC. A shell is
   `aws ssm start-session --target <instance id>` (SSM Session Manager; the instance role has
   `AmazonSSMManagedInstanceCore` and nothing more).
