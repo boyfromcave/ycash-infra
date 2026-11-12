@@ -245,7 +245,7 @@ class WebImage(unittest.TestCase):
         self.assertIn("default_type application/octet-stream;", body)
         self.assertNotIn("add_header", body)  # it would drop the server's COOP/COEP/CSP headers
         self.assertIn('~^/sapling-params/ "public, max-age=31536000, immutable";', n)
-        self.assertIn("add_header Cache-Control $sapling_params_cache always;", n)
+        self.assertIn("add_header Cache-Control $sapling_params_cache;\n", n)  # not `always`: a 404 is not cached for a year
 
 
 if __name__ == "__main__":
