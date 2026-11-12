@@ -1,0 +1,29 @@
+# gitleaks findings accepted with a reason. One fingerprint per line (<commit>:<file>:<rule>:<line>);
+# only test vectors and public constants belong here, never a real secret.
+
+# yindex/internal/addr/testdata/pq_address_vectors.json: the shared post-quantum address vectors (quantum spec 4.1, D-9): public key hashes and
+# addresses, no secrets; matched by generic-api-key. Checked 2026-11-12.
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:51
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:60
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:105
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:114
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:159
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:168
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:213
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:222
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:267
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:276
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:321
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:330
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:375
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:384
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:429
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:438
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:483
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:492
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:537
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:546
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:591
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:600
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:645
+eb25184131686bdbdd55d57eb960d479b72928f5:yindex/internal/addr/testdata/pq_address_vectors.json:generic-api-key:654
