@@ -67,7 +67,7 @@ compare() { # what address fn
   return 1
 }
 
-# A post-quantum address (53 characters: sq…/tq…/rq…, a TX_PQPKH output, D-Q-20) is refused by
+# A post-quantum address (53 characters: sqf…/sqs…, tqf…/tqs…, rqf…/rqs…, a TX_PQPKH output, D-9) is refused by
 # lightwalletd-dd's own taddr methods (rpcversion 7+), so yindex is compared with the node's address
 # index directly (getaddressbalance / getaddressutxos / getaddresstxids, -insightexplorer): the
 # balance, and the UTXO and txid counts (the txid range bounded to the tip as above).
