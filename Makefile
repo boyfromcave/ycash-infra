@@ -67,7 +67,7 @@ STAMP_ycashd        = $(YCASHD_DOCKERFILE) $(dir $(YCASHD_DOCKERFILE))entrypoint
 STAMP_ycashd_legacy = $(YCASHD_LEGACY_DOCKERFILE) $(dir $(YCASHD_LEGACY_DOCKERFILE))entrypoint.sh
 STAMP_lightwalletd  = $(LWD)/Dockerfile $(LWD)/docker/entrypoint.sh
 STAMP_yindex        = images/yindex/Dockerfile
-STAMP_web           = images/web/Dockerfile images/web/nginx.conf
+STAMP_web           = images/web/Dockerfile images/web/nginx.conf bundles/zcash-params/SHA256SUMS
 STAMP_faucet        = images/faucet/Dockerfile images/faucet/faucet.py images/faucet/fetch-params.py images/faucet/index.html images/faucet/app.js images/faucet/testnet.html images/faucet/testnet.js
 STAMP_testnet_status = images/testnet-status/Dockerfile images/testnet-status/probe.py images/testnet-status/status.py images/testnet-status/index.html images/testnet-status/status.js
 # ALLOW_STALE_IMAGES=1 (every image) or =ycashd,lightwalletd (by name): kind-load warns about a stale
@@ -111,7 +111,7 @@ image-yindex: ## the address index
 
 image-web: ## the yew/web static bundle behind nginx (needs yew/web built: scripts/build-core-wasm.sh + `npm run build` there; YEW=… for a worktree)
 	@test -d $(YEW)/web/dist || { echo "yew/web/dist missing: build the web wallet first (cd $(YEW)/web && scripts/build-core-wasm.sh && npm run build)"; exit 1; }
-	s=$$(scripts/image-stamp.sh hash $(STAMP_web)) && docker buildx build --load --platform $(PLATFORM) --build-context dist=$(YEW)/web/dist --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/web:$(WEB_REV) -t $(REGISTRY)/web:local images/web
+	s=$$(scripts/image-stamp.sh hash $(STAMP_web)) && docker buildx build --load --platform $(PLATFORM) --build-context dist=$(YEW)/web/dist --build-context zcash-params=bundles/zcash-params --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/web:$(WEB_REV) -t $(REGISTRY)/web:local images/web
 
 image-faucet: ## the faucet (images/faucet: the kind demo's regtest faucet and a testnet's, FAUCET_MODE; python:3.12-alpine + the standard library)
 	s=$$(scripts/image-stamp.sh hash $(STAMP_faucet)) && docker build --platform $(PLATFORM) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/faucet:$(YINDEX_REV) -t $(REGISTRY)/faucet:local images/faucet

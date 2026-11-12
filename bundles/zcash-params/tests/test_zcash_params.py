@@ -11,6 +11,10 @@
 - charts/ycash-testnet/files/zcash-params.sh, the chart's init container, against a fake curl:
   fetches and verifies, keeps a good file, refetches a bad one, refuses a mismatch, a non-https URL
   and a malformed sums file.
+- images/web serves the two Sapling files at /sapling-params/ (the web wallet's default source,
+  yew WEB-REAL HIGH-2): fetched at build time from the release, checked against SHA256SUMS (the
+  named build context the Makefile passes), 404 when missing (no index.html fallback), octet-stream,
+  a year and immutable.
 """
 
 import hashlib
@@ -209,6 +213,39 @@ class InitContainer(unittest.TestCase):
         r = self.run_init()
         self.assertEqual(r.returncode, 1)
         self.assertIn("REFUSED: sapling-output.params hashes to", r.stderr)
+
+
+WEB_DOCKERFILE = os.path.join(REPO, "images/web/Dockerfile")
+WEB_NGINX = os.path.join(REPO, "images/web/nginx.conf")
+MAKEFILE = os.path.join(REPO, "Makefile")
+
+
+class WebImage(unittest.TestCase):
+    def test_fetches_the_sapling_files_from_the_release_against_the_sums(self):
+        d = read(WEB_DOCKERFILE)
+        self.assertIn("ARG ZCASH_PARAMS_URL=" + BASE + "\n", d)
+        self.assertIn("COPY --from=zcash-params SHA256SUMS", d)
+        self.assertIn("sha256sum -c SHA256SUMS", d)
+        self.assertIn("COPY --from=sapling-params /sapling-params/ /usr/share/nginx/html/sapling-params/", d)
+        self.assertNotIn("sprout", d)
+        for name in ("sapling-spend.params", "sapling-output.params"):
+            self.assertIn(name, d)
+        # no sum is restated in the Dockerfile: SHA256SUMS is the single source
+        self.assertIsNone(re.search(r"[0-9a-f]{64}", d.split("@sha256:")[0] + re.sub(r"@sha256:[0-9a-f]{64}", "", d)))
+        mk = read(MAKEFILE)
+        self.assertIn("--build-context zcash-params=bundles/zcash-params", mk)
+        self.assertRegex(mk, r"STAMP_web *=.*bundles/zcash-params/SHA256SUMS")
+
+    def test_nginx_serves_them_as_files_never_the_page(self):
+        n = read(WEB_NGINX)
+        loc = re.search(r"location /sapling-params/ \{([^}]*\{ \}[^}]*)\}", n)
+        self.assertIsNotNone(loc, "no /sapling-params/ location")
+        body = loc.group(1)
+        self.assertIn("try_files $uri =404;", body)
+        self.assertIn("default_type application/octet-stream;", body)
+        self.assertNotIn("add_header", body)  # it would drop the server's COOP/COEP/CSP headers
+        self.assertIn('~^/sapling-params/ "public, max-age=31536000, immutable";', n)
+        self.assertIn("add_header Cache-Control $sapling_params_cache always;", n)
 
 
 if __name__ == "__main__":
