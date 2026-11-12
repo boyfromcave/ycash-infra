@@ -56,7 +56,8 @@ func (c *Client) Call(ctx context.Context, method string, out any, params ...any
 
 // Block is getblock <hash> 2: the transactions decoded, scriptPubKey.addresses present when the
 // node runs with -insightexplorer (the address index) or for any standard P2PKH/P2SH output, and,
-// on the post-quantum line, for a TX_PQPKH output as its plain PQ address (sq…/tq…/rq…, D-Q-20).
+// on the post-quantum line, for a TX_PQPKH output as its plain PQ address (sqf…/sqs…, tqf…/tqs…,
+// rqf…/rqs…, D-Q-20, D-9).
 type Block struct {
 	Hash              string `json:"hash"`
 	Height            int64  `json:"height"`
