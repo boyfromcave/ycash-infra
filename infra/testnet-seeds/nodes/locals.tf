@@ -45,16 +45,28 @@ locals {
   # ignores peers' getheaders and refuses getblocktemplate, so no one can join and no miner can
   # restart the chain.
   network_config = { for k, n in local.enabled : k => {
-    name       = k
-    profile    = n.profile
-    network    = n.testnet ? "testnet" : "mainnet"
-    image      = coalesce(n.image, var.image)
-    p2p_port   = n.p2p_port
-    rpc_port   = n.rpc_port
-    node_args  = n.testnet ? "-testnet -testnetprofile=${n.profile}" : ""
-    dnsseed    = !n.testnet
-    extra_args = trimspace(join(" ", compact([n.testnet ? "-maxtipage=999999999" : "", var.extra_args, n.extra_args])))
-    peers      = [for s in local.seed_keys : format("%s:%d", var.seeds[s].public_ip, n.p2p_port)]
+    name      = k
+    profile   = n.profile
+    network   = n.testnet ? "testnet" : "mainnet"
+    image     = coalesce(n.image, var.image)
+    p2p_port  = n.p2p_port
+    rpc_port  = n.rpc_port
+    node_args = n.testnet ? "-testnet -testnetprofile=${n.profile}" : ""
+    dnsseed   = !n.testnet
+    # A pool's node builds the block template for the pool's payout address and holds no wallet:
+    # -mineraddress must then not be required to be a wallet address (-minetolocalwallet=0).
+    extra_args = trimspace(join(" ", compact([n.testnet ? "-maxtipage=999999999" : "", var.extra_args, n.extra_args,
+    n.pool == null ? "" : "-disablewallet -mineraddress=${n.pool.payout} -minetolocalwallet=0"])))
+    peers = [for s in local.seed_keys : format("%s:%d", var.seeds[s].public_ip, n.p2p_port)]
+    # The yolo pool beside this network's node (files/seedctl render), or null.
+    pool = n.pool == null ? null : {
+      image       = n.pool.image
+      payout      = n.pool.payout
+      port        = n.pool.port
+      status_port = n.pool.port + 1
+      text        = n.pool.text
+      share_ratio = n.pool.share_ratio
+    }
     prefix = n.testnet && n.bootstrap && var.prefix != null ? {
       base_url    = local.profile_prefix[n.profile].base_url
       sums_sha256 = local.profile_prefix[n.profile].sums_sha256

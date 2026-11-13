@@ -157,3 +157,64 @@ run "refuses_a_tag_override" {
   }
   expect_failures = [var.networks]
 }
+
+# The pool host (README.md, "The pool"): one host, fast only, a yolo pool beside its node.
+run "pool_host" {
+  variables {
+    seeds = {
+      "seed-0" = { allocation_id = "eipalloc-00000000000000000", public_ip = "192.0.2.20" }
+    }
+    networks = {
+      yb-fast = {
+        profile    = "fast"
+        extra_args = "-listen=0 -addnode=fastnet-seed.example.org:18833"
+        pool = {
+          image       = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          payout      = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb"
+          share_ratio = 32
+        }
+      }
+    }
+    p2p_ingress_cidrs = []
+  }
+  assert {
+    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args == "-maxtipage=999999999 -dbcache=256 -maxconnections=64 -listen=0 -addnode=fastnet-seed.example.org:18833 -disablewallet -mineraddress=smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb -minetolocalwallet=0"
+    error_message = "a pool's node: no wallet, the payout address as -mineraddress, not required to be a wallet address"
+  }
+  assert {
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).pool) == jsonencode({ image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", port = 3333, status_port = 3334, text = "", share_ratio = 32 })
+    error_message = "the pool's config: image, payout, stratum port 3333, status page on 3334"
+  }
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.p2p) == 0 && jsonencode([for r in aws_vpc_security_group_ingress_rule.stratum : [r.from_port, r.cidr_ipv4]]) == jsonencode([[3333, "0.0.0.0/0"]])
+    error_message = "inbound: the stratum port to everyone, no P2P (the pool's node only connects out), nothing else"
+  }
+  assert {
+    condition     = output.networks["yb-fast"].pool_port == 3333
+    error_message = "the networks output names the stratum port"
+  }
+}
+
+run "no_pool_no_stratum_port" {
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.stratum) == 0 && jsondecode(base64decode(output.network_configs["yb-fast"])).pool == null
+    error_message = "the seeds (no pool) open no stratum port and carry pool = null"
+  }
+}
+
+run "refuses_a_pool_on_mainnet" {
+  command = plan
+  variables {
+    networks = { main = { profile = "main", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "t1ExampleExampleExampleExample1234" } } }
+    prefix   = null
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_a_pool_by_tag_or_on_a_node_port" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo:latest", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", port = 18832 } } }
+  }
+  expect_failures = [var.networks]
+}

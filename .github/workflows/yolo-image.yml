@@ -1,0 +1,107 @@
+# yolo-image: build the stratum pool image (yolo) from the yolo repository at one commit and push it
+# to ghcr.io/<owner>/yolo:<sha12>, with build provenance.
+#
+# In plain words: the testnet pool host (infra/testnet-seeds/nodes with a network's `pool`) runs the
+# Ycash mining pool, yolo, from a ready-made Docker image beside its own node. This job makes that
+# image, in public, from one exact commit of yolo's source code, with this repository's
+# images/yolo/Dockerfile, and publishes it on GitHub's container registry together with a signed
+# record of how it was built. It runs only when started by hand, from upgrade/vault.
+#
+# AGENTS.md rule 5: the image is built from the yolo tree at a pinned commit on its upgrade/vault
+# (checked through the GitHub API before the build); no yolo source is copied here. The package must
+# be made public once (package settings) so the pool host can pull it without credentials. Deploys
+# happen elsewhere (the pool's `image` takes the printed digest); this job only publishes the image.
+name: yolo-image
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: full 40-hex commit SHA on the yolo repository's upgrade/vault
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: yolo-image-${{ inputs.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/upgrade/vault'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      REF: ${{ inputs.ref }}
+      REPO_OWNER: ${{ github.repository_owner }}
+    steps:
+      - name: check the input and that the commit is on upgrade/vault
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "$REF" | grep -qxE '[0-9a-f]{40}' || { echo "ref must be a full 40-hex commit SHA" >&2; exit 1; }
+          owner=$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          # compare REF...upgrade/vault: "identical" or "ahead" means REF is an ancestor of the branch
+          status=$(gh api "repos/$owner/yolo/compare/$REF...upgrade/vault" --jq .status)
+          case "$status" in identical|ahead) ;; *) echo "$REF is not on $owner/yolo upgrade/vault ($status)" >&2; exit 1 ;; esac
+          {
+            echo "image=ghcr.io/$owner/yolo"
+            echo "tag=ghcr.io/$owner/yolo:${REF:0:12}"
+            echo "repo=$owner/yolo"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ steps.meta.outputs.repo }}
+          ref: ${{ inputs.ref }}
+          path: src
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: build and push
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: src
+          file: images/yolo/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ inputs.ref }}
+            org.opencontainers.image.title=yolo (Ycash stratum pool)
+            org.opencontainers.image.description=yolo, the Ycash solo stratum pool (Equihash 192,7), for the Ycash testnet pool host. It reaches its node only through the stock mining RPCs.
+            org.opencontainers.image.documentation=https://github.com/${{ steps.meta.outputs.repo }}/blob/upgrade/vault/README.md
+            org.opencontainers.image.licenses=MIT
+            org.ycash.yolo.repository=https://github.com/${{ steps.meta.outputs.repo }}
+            org.ycash.yolo.revision=${{ inputs.ref }}
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: digest
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "image: $IMAGE@$DIGEST"
+          {
+            echo "## yolo-image: yolo at $REF"
+            echo
+            echo "- tag: \`$TAG\`"
+            echo "- by digest (what a network's \`pool.image\` takes): \`$IMAGE@$DIGEST\`"
+            echo "- verify: \`gh attestation verify oci://$IMAGE@$DIGEST -R $GITHUB_REPOSITORY\`"
+          } >> "$GITHUB_STEP_SUMMARY"

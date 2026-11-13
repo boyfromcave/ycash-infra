@@ -50,7 +50,21 @@ case "$1" in
 esac
 exit 0
 EOF
-chmod +x "$T/bin/docker"
+cat > "$T/bin/curl" <<'EOF'
+#!/bin/bash
+echo "curl $*" >> "$LOG"
+case "$*" in
+  *127.0.0.1:3334/status*) echo '{"nodeUp":true,"height":510432,"templateAgeSeconds":0,"miners":2,"connections":2,"accepted":1,"rejected":0,"lastSubmitVerdict":"accepted","payout":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","equihash":"192,7","shares":9}' ;;
+  *) exit 7 ;;
+esac
+EOF
+cat > "$T/bin/iptables" <<'EOF'
+#!/bin/bash
+echo "iptables $*" >> "$LOG"
+[ "$1" != -C ] || grep -qF -- "iptables -I OUTPUT 1 ${*:3}" "$LOG"
+EOF
+sed 's/iptables/ip6tables/g' "$T/bin/iptables" > "$T/bin/ip6tables"
+chmod +x "$T/bin/docker" "$T/bin/curl" "$T/bin/iptables" "$T/bin/ip6tables"
 export PATH="$T/bin:$PATH"
 
 # A config as the module's network_configs output carries it (locals.tf network_config).
@@ -137,4 +151,33 @@ if "$SEEDCTL" stop '../x' 2>/dev/null; then fail "accepted a bad network name"; 
 INJ=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c '.extra_args = "-x\nYCASHD_RPC_BIND=0.0.0.0"' | b64)
 if "$SEEDCTL" apply yb-fast "$INJ" 2>/dev/null; then fail "accepted a newline in extra_args"; fi
 ok "refuses a tag, a foreign config, a bad name, an injected line"
+# 10. a pool beside fast (the pool host): yolo in the same compose project, the node's credential in
+#     a private pool.conf (never on a command line), status with a pool field; removing the pool removes it
+POOLED=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c '.pool = {image: "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout: "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", port: 3333, status_port: 3334, text: "testnet pool", share_ratio: 32}' | b64)
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$POOLED" 2>"$T/err" || { cat "$T/err"; fail "apply with a pool"; }
+c="$O/net/yb-fast/compose.yaml"
+grep -q 'container_name: yolo-yb-fast' "$c" && grep -q 'image: ghcr.io/example/yolo@sha256:2222' "$c" && grep -q 'depends_on: \[ycashd\]' "$c" || fail "the yolo service: $(cat "$c")"
+grep -qF 'command: ["--conf", "/etc/yolo/pool.conf", "--payout", "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", "--bind", "0.0.0.0", "--port", "3333", "--status-port", "3334", "--status-bind", "127.0.0.1", "--max-connections", "64", "--max-per-ip", "4", "--log", "info", "--share-ratio", "32", "--text", "testnet pool"]' "$c" || fail "yolo's command line: $(grep command "$c")"
+grep -q 'read_only: true' "$c" && grep -q 'cap_drop: \[ALL\]' "$c" && grep -qF "\"$D/yb-fast/pool.conf:/etc/yolo/pool.conf:ro\"" "$c" || fail "yolo is read-only, no capabilities, the conf mounted read-only"
+pw=$(sed -n 's/^YCASHD_RPC_PASSWORD=//p' "$D/yb-fast/rpc.env")
+grep -qx "rpcpassword=$pw" "$D/yb-fast/pool.conf" && grep -qx 'rpcport=18832' "$D/yb-fast/pool.conf" && grep -qx 'rpcconnect=127.0.0.1' "$D/yb-fast/pool.conf" && [ "$(stat -c %a "$D/yb-fast/pool.conf")" = 400 ] || fail "pool.conf: the node's credential, its RPC port on loopback, mode 0400"
+! grep -q "$pw" "$c" || fail "the RPC password is on yolo's command line"
+grep -q '127.0.0.1:3334/status' "$LOG" || fail "apply waits for the pool's status page"
+grep -qx 'iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner 2004 -j REJECT' "$LOG" \
+  && grep -qx 'ip6tables -I OUTPUT 1 -d fd00:ec2::254/128 -m owner --uid-owner 2004 -j REJECT' "$LOG" || fail "yolo's uid is refused the metadata service"
+"$SEEDCTL" boot 2>/dev/null
+[ "$(grep -c '^iptables -I' "$LOG")" = 1 ] || fail "the metadata rule is installed once, not again at boot"
+s=$("$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -r '.pool.accepted')" = 1 ] && [ "$(echo "$s" | jq -r '.pool.container')" = running ] && [ "$(echo "$s" | jq -r '.pool.payout')" = smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb ] || fail "status with a pool: $s"
+ok "a pool beside fast: compose service, private pool.conf, status page waited for and reported"
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null
+! grep -q yolo "$O/net/yb-fast/compose.yaml" && grep -q 'docker rm -f yolo-yb-fast' "$LOG" && [ "$("$SEEDCTL" status yb-fast | jq -r 'has("pool")')" = false ] || fail "a pool removed from the config"
+ok "a pool removed from the config is removed from the host"
+BADPOOL=$(echo "$POOLED" | base64 -d | jq -c '.pool.payout = "x;reboot"' | b64)
+if "$SEEDCTL" apply yb-fast "$BADPOOL" 2>/dev/null; then fail "accepted a shell character in the payout"; fi
+BADPOOL=$(echo "$POOLED" | base64 -d | jq -c '.pool.image = "ghcr.io/example/yolo:latest"' | b64)
+if "$SEEDCTL" apply yb-fast "$BADPOOL" 2>/dev/null; then fail "accepted a pool image by tag"; fi
+ok "refuses a pool image by tag and a bad payout"
 echo "seedctl: all checks passed"

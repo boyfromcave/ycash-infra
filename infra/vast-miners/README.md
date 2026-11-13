@@ -27,8 +27,13 @@ private deployment repo                         this repo (public, pinned by com
   fleet.json  (pools, digest, sizes)  ──────►  scripts/vast-fleet.py  ──REST──►  Vast.ai
   workflow: status / reconcile / up /            images/miner (ghcr)               │ rents 1-GPU machines
             down / burst, every 30 min                                               ▼
-  secret VAST_API_KEY (environment)              miner ──stratum──► yolo pool ──RPC──► ycashd (testnet seed)
+  secret VAST_API_KEY (environment)              miner ──stratum──► yolo pool ──RPC──► the pool's own ycashd ──P2P──► seeds
 ```
+
+The pool runs on a pool host of its own on AWS, yolo beside its own node
+([`infra/testnet-seeds/README.md`](../testnet-seeds/README.md), "The pool"); a rented machine runs
+only the miner, connects out to the pool's stratum port (plain TCP, no password) and holds nothing
+of ours.
 
 - A miner is **ours** only if its Vast label is `ycash-<network>-<n>` (a burst miner:
   `ycash-<network>-<n>.until-<YYYYMMDDTHHMMZ>`). Anything else on the account is counted and never

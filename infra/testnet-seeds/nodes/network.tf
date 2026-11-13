@@ -50,9 +50,10 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Inbound: each enabled network's P2P port and nothing else. No SSH, no RPC: every node's RPC binds
-# to 127.0.0.1 on its own port, and an operator reaches a host through SSM, which needs no inbound
-# port. Disabling or removing a network closes its port.
+# Inbound: each enabled network's P2P port (to var.p2p_ingress_cidrs) and, for a network with a
+# pool, its stratum port (to var.pool_ingress_cidrs); nothing else. No SSH, no RPC: every node's RPC
+# binds to 127.0.0.1 on its own port, yolo's status page too, and an operator reaches a host through
+# SSM, which needs no inbound port. Disabling or removing a network (or its pool) closes its port.
 resource "aws_security_group" "seed" {
   name_prefix = "${var.name_prefix}-"
   description = "Seed hosts: inbound P2P of the enabled networks only, egress open"
@@ -72,6 +73,18 @@ resource "aws_vpc_security_group_ingress_rule" "p2p" {
   ip_protocol       = "tcp"
   from_port         = local.enabled[each.value.net].p2p_port
   to_port           = local.enabled[each.value.net].p2p_port
+  cidr_ipv4         = each.value.cidr
+  tags              = var.tags
+}
+
+resource "aws_vpc_security_group_ingress_rule" "stratum" {
+  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.pool != null]), var.pool_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
+
+  security_group_id = aws_security_group.seed.id
+  description       = "stratum ${each.value.net}"
+  ip_protocol       = "tcp"
+  from_port         = local.enabled[each.value.net].pool.port
+  to_port           = local.enabled[each.value.net].pool.port
   cidr_ipv4         = each.value.cidr
   tags              = var.tags
 }

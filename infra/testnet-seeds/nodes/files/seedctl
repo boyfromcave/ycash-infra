@@ -21,6 +21,11 @@
 #   seedctl prefix-check       once a network holds the whole prefix, drop its -loadblock flags
 #                              and the framed copies (a systemd timer runs it every 10 minutes)
 #
+# A network whose config has a `pool` also runs yolo (the stratum pool) in the same compose project,
+# container yolo-NET, host networking: stratum on pool.port, its status page on 127.0.0.1:pool.status_port,
+# the node's RPC on 127.0.0.1 through NET/pool.conf (the node's credential, readable by yolo's uid
+# only). apply, reset, stop, sync and boot act on both containers together; status adds a `pool` field.
+#
 # Layout: /srv/ycash-data (the data volume) holds per network NET/node (the datadir, mounted at
 # /var/lib/ycash), NET/rpc.env (its RPC credential, made here, never leaves the host) and
 # NET/applied.json (the config it last applied), plus prefix-cache/ (the verified prefix, shared).
@@ -32,6 +37,7 @@ O=$R/opt/ycash-seed
 # shellcheck source=/dev/null
 . "$O/seed.env"              # SEED_NAME, EXTERNAL_IP
 UID_NODE=2001                # the image's user (contrib/docker/ycashd/Dockerfile: useradd --uid 2001)
+UID_POOL=2004                # the yolo image's user (images/yolo/Dockerfile: useradd --uid 2004)
 log() { echo "seedctl[$SEED_NAME]: $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 retry() { local n=0; until "$@"; do n=$((n + 1)); [ "$n" -ge 20 ] && return 1; sleep 10; done; }
@@ -56,6 +62,13 @@ check_config() { # file name
       and (.prefix.magic | test("^[0-9a-f]{8}$"))
       and (.prefix.last_height | type == "number")
       and ((.prefix.network // "zcash-testnet") | test("^(zcash-testnet|ycash-mainnet)$"))))
+    and (.pool == null or (
+      (.network == "testnet")
+      and (.pool.image | test("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$"))
+      and (.pool.payout | test("^[1-9A-HJ-NP-Za-km-z]{26,40}$"))
+      and (.pool.port | type == "number") and (.pool.status_port | type == "number")
+      and ((.pool.text // "") | test("^[A-Za-z0-9 ._:/-]{0,60}$"))
+      and ((.pool.share_ratio // 1) | type == "number" and . >= 1 and . == floor)))
   ' "$1" >/dev/null || die "config for $2 is not valid"
 }
 
@@ -116,6 +129,75 @@ services:
     stop_grace_period: 180s
     logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
 YAML
+  [ "$(cfg "$f" .pool)" != null ] && render_pool "$net" "$f"
+  return 0
+}
+
+# The pool beside NET's node: yolo, paying every block to pool.payout (--payout; the node's
+# -mineraddress is the same address, locals.tf), on the node's RPC at 127.0.0.1 with the node's own
+# credential (pool.conf: never on a command line, readable by yolo's uid only). The stratum port is
+# open to the internet: at most 64 sockets, 4 per address; the status page explicitly on loopback.
+# yolo runs with host networking, so the instance metadata service's hop limit of 1 does not keep it
+# away from IMDS: an owner rule refuses every packet from yolo's uid to the metadata addresses
+# (IPv4 and the Nitro IPv6 one). Idempotent; applied before yolo starts, on every apply and boot.
+imds_guard() {
+  iptables -C OUTPUT -d 169.254.169.254/32 -m owner --uid-owner "$UID_POOL" -j REJECT 2>/dev/null \
+    || iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner "$UID_POOL" -j REJECT \
+    || die "could not install the metadata rule for uid $UID_POOL"
+  ip6tables -C OUTPUT -d fd00:ec2::254/128 -m owner --uid-owner "$UID_POOL" -j REJECT 2>/dev/null \
+    || ip6tables -I OUTPUT 1 -d fd00:ec2::254/128 -m owner --uid-owner "$UID_POOL" -j REJECT \
+    || log "warning: no IPv6 metadata rule for uid $UID_POOL (ip6tables unavailable)"
+}
+
+render_pool() { # net file
+  local net=$1 f=$2 R="$O/net/$1" pc="$D/$1/pool.conf" text ratio
+  imds_guard
+  ( umask 077
+    # shellcheck source=/dev/null
+    . "$D/$net/rpc.env"
+    printf 'rpcuser=%s\nrpcpassword=%s\nrpcport=%s\nrpcconnect=127.0.0.1\n' \
+      "$YCASHD_RPC_USER" "$YCASHD_RPC_PASSWORD" "$(cfg "$f" .rpc_port)" > "$pc.new" )
+  if [ "$(id -u)" = 0 ]; then chown "$UID_POOL:$UID_POOL" "$pc.new"; fi
+  chmod 0400 "$pc.new"; mv -f "$pc.new" "$pc"
+  text=$(cfg "$f" '.pool.text // ""')
+  [ -z "$text" ] || text=", \"--text\", \"$text\""
+  ratio=$(cfg "$f" '.pool.share_ratio // 1')
+  [ "$ratio" = 1 ] || text=", \"--share-ratio\", \"$ratio\"$text"
+  cat >> "$R/compose.yaml" <<YAML
+  yolo:
+    image: $(cfg "$f" .pool.image)
+    container_name: yolo-$net
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [ycashd]
+    user: "$UID_POOL:$UID_POOL"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    volumes: ["$pc:/etc/yolo/pool.conf:ro"]
+    command: ["--conf", "/etc/yolo/pool.conf", "--payout", "$(cfg "$f" .pool.payout)", "--bind", "0.0.0.0", "--port", "$(cfg "$f" .pool.port)", "--status-port", "$(cfg "$f" .pool.status_port)", "--status-bind", "127.0.0.1", "--max-connections", "64", "--max-per-ip", "4", "--log", "info"$text]
+    stop_grace_period: 10s
+    logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
+YAML
+}
+
+pool_status() { # net: yolo's /status, cut to what an operator reads ({} when it does not answer)
+  local sp
+  sp=$(cfg "$D/$1/applied.json" '.pool.status_port // empty' 2>/dev/null || true)
+  [ -n "$sp" ] || { echo null; return 0; }
+  curl -fsS --max-time 3 "http://127.0.0.1:$sp/status" 2>/dev/null \
+    | jq -c '{nodeUp, height, templateAgeSeconds, miners, connections, accepted, rejected, lastSubmitVerdict, payout, equihash}' 2>/dev/null \
+    || echo '{}'
+}
+
+wait_pool() { # net seconds
+  local i=0
+  while [ "$i" -lt "$2" ]; do
+    [ "$(pool_status "$1")" != '{}' ] && return 0
+    sleep 5; i=$((i + 5))
+  done
+  return 1
 }
 
 compose() { local net=$1; shift; docker compose -f "$O/net/$net/compose.yaml" "$@"; }
@@ -184,6 +266,13 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   else
     die "$net: RPC did not answer within 15 minutes (docker logs ycashd-$net)"
   fi
+  if [ "$(cfg "$D/$net/applied.json" .pool)" != null ]; then
+    # yolo answers its status page at once; it serves work only once the node is synced with a peer
+    wait_pool "$net" 120 || die "$net: the pool's status page did not answer within 2 minutes (docker logs yolo-$net)"
+    log "$net pool up: $(cfg "$D/$net/applied.json" .pool.image), stratum $EXTERNAL_IP:$(cfg "$D/$net/applied.json" .pool.port)"
+  else
+    docker rm -f "yolo-$net" >/dev/null 2>&1 || true   # a pool removed from the config
+  fi
 }
 
 reset() { # net config-b64
@@ -191,7 +280,7 @@ reset() { # net config-b64
   valid_name "$net"
   log "$net: RESET: stopping and deleting its chain"
   if [ -e "$O/net/$net/compose.yaml" ]; then compose "$net" down --timeout 180 || true; fi
-  docker rm -f "ycashd-$net" >/dev/null 2>&1 || true
+  docker rm -f "ycashd-$net" "yolo-$net" >/dev/null 2>&1 || true
   rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json"
   apply "$net" "$2"
 }
@@ -229,7 +318,7 @@ boot() {
 }
 
 status() { # [net]
-  local nets net st img info peers
+  local nets net st img info peers pool
   nets=${1:-$(applied_nets)}
   for net in $nets; do
     valid_name "$net"
@@ -237,9 +326,16 @@ status() { # [net]
     img=$(docker inspect -f '{{.Config.Image}}' "ycashd-$net" 2>/dev/null || echo -)
     info=$(cli "$net" getblockchaininfo 2>/dev/null | jq -c '{chain, blocks, headers, progress: .verificationprogress}' || echo '{}')
     peers=$(cli "$net" getpeerinfo 2>/dev/null | jq -c '{peers: length, inbound: (map(select(.inbound)) | length)}' || echo '{}')
+    pool=$(pool_status "$net")
+    if [ "$pool" != null ]; then
+      pool=$(jq -c --arg st "$(docker inspect -f '{{.State.Status}}' "yolo-$net" 2>/dev/null || echo absent)" \
+        --arg img "$(docker inspect -f '{{.Config.Image}}' "yolo-$net" 2>/dev/null || echo -)" \
+        '{container: $st, image: $img} + .' <<<"$pool")
+    fi
     jq -cn --arg host "$SEED_NAME" --arg ip "$EXTERNAL_IP" --arg net "$net" --arg st "$st" --arg img "$img" \
-      --argjson info "$info" --argjson peers "$peers" \
-      '{host: $host, ip: $ip, network: $net, container: $st, image: $img} + $info + $peers'
+      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" \
+      '{host: $host, ip: $ip, network: $net, container: $st, image: $img} + $info + $peers
+       + (if $pool == null then {} else {pool: $pool} end)'
   done
 }
 

@@ -175,6 +175,68 @@ bundle stops that network's apply, never another network. The magic must be the 
 into the image for that profile; `prefix_magic_overrides` exists only for an image built before
 the profiles (its single testnet magic, `fa1af9bf`).
 
+## The pool (a network's `pool`)
+
+The same module, called a second time from its own root with its own state, makes a **pool host**:
+one machine that runs a testnet's mining pool, [yolo](https://github.com/boyfromcave/yolo), beside
+a node of its own. Rented GPU miners (`infra/vast-miners`) connect to the pool; the pool hands them
+work from its node and sends the blocks they find back to its node, which relays them to the seeds
+like any other node. The pool host is never a seed: it has its own address, its own state and its
+own deploy layer, so nothing done to it can touch a seed host, and the seed hosts stay P2P-only.
+
+```hcl
+module "pool" {   # e.g. the operator's testnet-pools/nodes root, one host, fast only
+  source            = "git::https://github.com/<owner>/ycash-infra.git//infra/testnet-seeds/nodes?ref=<sha>"
+  seeds             = data.terraform_remote_state.ips.outputs.seeds    # its own ips root, one address
+  name_prefix       = "testnet-pool"
+  vpc_cidr          = "10.78.0.0/16"
+  instance_type     = "t3a.small"
+  data_volume_size  = 30
+  swap_mb           = 2048
+  p2p_ingress_cidrs = []                       # the pool's node only connects out
+  networks = {
+    yb-fast = {
+      profile    = "fast"
+      extra_args = "-listen=0 -addnode=<the network's seed name>:18833"
+      pool       = { image = "ghcr.io/<owner>/yolo@sha256:...", payout = "sm...", port = 3333, share_ratio = 32 }
+    }
+  }
+  prefix = { ... }                             # the same testnet-prefix-v1 pin as the seeds
+  # ...
+}
+```
+
+What a `pool` adds, per host:
+
+- **The node** is the network's ordinary container (`ycashd-<key>`, the same image and the same
+  prefix bootstrap as a seed: testnet-prefix-v1, then the blocks after 510,247 from the seeds),
+  with `-disablewallet -mineraddress=<payout> -minetolocalwallet=0` appended: it builds block
+  templates that pay `payout` and holds no key. No `txindex` or insight index (`getblocktemplate`,
+  `submitblock`, `validateaddress` and `getblockchaininfo` need none).
+- **yolo** in the same compose project (`yolo-<key>`, host networking, uid 2004, read-only root,
+  no capabilities, 256 MiB): `--payout <payout>` (every block pays that transparent address; a
+  miner's stratum username is only a worker name), stratum on `0.0.0.0:<port>` with at most 64
+  sockets in all and 4 per address (`--max-connections 64 --max-per-ip 4`), its status page on
+  `127.0.0.1:<port + 1>` (`--status-bind 127.0.0.1`, explicit), `--share-ratio <share_ratio>` when above 1 (shares keep GPU miners
+  connected between blocks and show the fleet's speed; yolo README, "Shares"), the node's RPC on `127.0.0.1` with the node's own credential from
+  `/srv/ycash-data/<key>/pool.conf` (mode 0400, never on a command line). It reaches the node
+  only through the stock mining RPCs (workspace rule 2). Host networking means the metadata
+  service's hop limit of 1 does not stop yolo, so an iptables owner rule refuses uid 2004 the
+  metadata addresses (169.254.169.254 and fd00:ec2::254): seedctl installs it before it starts yolo,
+  and `setup.sh`'s `ycash-imds-guard.service` from every boot on, before Docker starts.
+- **Inbound**: the stratum port, to `pool_ingress_cidrs` (default everyone: rented miners come
+  from arbitrary addresses). Plain TCP stratum, no TLS, no password: nothing secret crosses it
+  (the miners send a worker name and solutions; the payout address is the pool's), and yolo bounds
+  what any connection can do (connection caps per IP and in all, an 8 KiB line limit, authorize
+  and bad-submit limits, every submit's hash checked before the node sees it; yolo's README,
+  "Exposure").
+- **seedctl** runs both containers together (`apply`, `reset`, `stop`, `sync`, `boot`); `apply`
+  also waits for yolo's status page; `status` adds a `pool` field (container, image, node up,
+  height, miners, accepted, rejected, last verdict).
+
+The image is `ghcr.io/<owner>/yolo`, built from the yolo repository at one commit on its
+`upgrade/vault` by `yolo-image.yml` with [`images/yolo/Dockerfile`](../../images/yolo/Dockerfile).
+
 ## Cost estimate
 
 On-demand prices in us-east-1, as of 2026-10. Other regions are within about 20 percent.
@@ -191,6 +253,9 @@ On-demand prices in us-east-1, as of 2026-10. Other regions are within about 20 
 - CPU credits in `unlimited` mode: a first sync or a reset's import may cost a few cents extra.
 - SSM Session Manager and Run Command: no charge. Terraform state in S3: cents.
 - With `nodes/` torn down and `ips/` kept, the two idle addresses cost ≈ $7.30/month.
+- A pool host (`t3a.small`, 30 GiB data + 20 GiB root, one public IPv4, one network): ≈ $13.70
+  instance + $4.00 storage + $3.65 address ≈ **$21/month**, plus data transfer (stratum traffic is
+  small: a job per block and a share every few seconds per miner).
 - A third host adds ≈ $39. An arm64 `t4g.medium` is ≈ $3/month cheaper per host; it needs an
   arm64 image, which the `node-image` workflow does not build today.
 
