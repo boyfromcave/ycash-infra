@@ -22,7 +22,9 @@
 #               PAYOUT unset -> the username is WORKER (the pool must run with --payout).
 #   MINER       lolminer (default) or miniz. miniz is refused unless MINIZ_URL and MINIZ_SHA256 are
 #               set (in the manifest or the environment).
-#   MINIZ_URL, MINIZ_SHA256  miniZ's official download (https) and its SHA-256, once pinned.
+#   MINIZ_URL, MINIZ_SHA256  miniZ's official download (https; miniz.cc serves it from a query URL,
+#               ?sdm_process_download=1&download_id=<n>) and the SHA-256 of that archive, as miniz.cc's
+#               download page lists it. miniZ mines 192,7 on Nvidia with CUDA, lolMiner with OpenCL.
 #   MINER_ARGS  optional extra miner options, space separated (no pool, user, password or algorithm options).
 #   MINER_UNTIL optional, a burst's end (epoch seconds; the fleet sets it on every burst miner). At that
 #               time the miner is stopped and the container ends its own rental: it destroys its Vast
@@ -35,12 +37,16 @@
 #   MINER_MANIFEST   the manifest (default /opt/ycash-miner/miners.conf).
 #   MINER_CACHE      where the verified download is kept across restarts (default ~/.cache/ycash-miner).
 #   RESTART_DELAY    seconds before a watchdog restart (default 10).
-# Before mining it prints what the container sees: nvidia-smi's GPUs, the OpenCL platforms (clinfo),
-# the miner's own device list (lolMiner --list-devices) and the pool's address and reachability. With
+# Before mining it prints what the container sees: nvidia-smi's GPUs, the driver version and which of
+# its libraries the container runtime mounted, the OpenCL ICD and platforms (clinfo), every OpenCL
+# start-up step a miner takes (cl-probe: context, compile, run; with the driver libraries that failed
+# to load), the miner's own device list (lolMiner --list-devices, miniZ --cuda-info) and the pool's
+# address and reachability. With
 # no usable GPU it exits 70 instead of idling on a rented machine, so Vast shows it exited and the
 # fleet gives it back. (lolMiner mines 192,7 on Nvidia through OpenCL: images/miner/Dockerfile.)
 # lolMiner's exit code 42 (a GPU hung, --watchdog exit) restarts it here, at most 20 times; any other
-# exit ends the container, so the fleet reconcile replaces the machine.
+# lolMiner exit ends the container, so the fleet reconcile replaces the machine. miniZ has no such
+# code: any exit restarts it, at most 20 times.
 # Exit codes of its own: 64 bad configuration, 65 checksum mismatch, 69 download failed, 70 no usable
 # GPU; 0 at the end of a burst (MINER_UNTIL).
 set -euo pipefail
@@ -70,7 +76,8 @@ case "$miner" in
     fi ;;
   *) die "MINER must be lolminer or miniz" ;;
 esac
-[[ $url =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~%/+-]*$ ]] || die "$miner: the download URL must be https:// (got '$url')"
+url_re='^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~%/+-]*(\?[A-Za-z0-9._~%=&+-]*)?$'
+[[ $url =~ $url_re ]] || die "$miner: the download URL must be https:// (got '$url')"
 [[ $sha =~ ^[0-9a-f]{64}$ ]] || die "$miner: the pinned SHA-256 must be 64 lowercase hex characters"
 
 # ---- the pool, the worker, the payout -----------------------------------------------------------------
@@ -106,7 +113,7 @@ if [ -n "${MINER_ARGS:-}" ]; then
   for a in "${extra[@]}"; do
     [[ $a =~ ^[A-Za-z0-9=,._:/*-]+$ ]] || die "MINER_ARGS: unexpected characters in '$a'"
     case "${a%%=*}" in
-      -p|--pool|-u|--user|--pass|--dualpool|--dualuser|--dualpass|-a|--algo|--pers|-c|--coin|--config|--json|--profile|--watchdogscript|--apihost|--apiport|--tls|--socks5|--dns-over-https|--url|--par|--smart-pers|--run|--telemetry)
+      -p|--pool|-u|--user|--pass|--dualpool|--dualuser|--dualpass|-a|--algo|--pers|-c|--coin|--config|--json|--profile|--watchdogscript|--apihost|--apiport|--tls|--socks5|--dns-over-https|--url|--par|--smart-pers|--run|--telemetry|--url2|--server|--port|--worker|--socks|--read-config|--write-config|--donate)
         die "MINER_ARGS: $a is set by this entrypoint or not allowed" ;;
     esac
   done
@@ -119,8 +126,10 @@ case "$miner" in
     cmd=("$bin" --algo EQUI192_7 --pers "$PERS" --pool "$pool" --user "$user" --tls off
          --dns-over-https 0 --apiport 0 --watchdog exit --nocolor --timeprint on "${extra[@]}") ;;
   miniz)
-    # miniZ's form as its documentation gives it (not run here): --url=<user>@<host>:<port> --par=N,K --pers=<string>
-    cmd=("$bin" "--url=$user@$pool" "--par=192,7" "--pers=$PERS" "${extra[@]}") ;;
+    # miniZ's own documentation (miniz.cc/usage, and its FAQ "How to mine Ycash (YEC)?"):
+    # --url=<user>@<host>:<port>, --par=192,7 --pers=ZcashPoW; --telemetry=0 turns its local API
+    # (default port 20000) off, as --apiport 0 does for lolMiner; --nocolour as its --help spells it
+    cmd=("$bin" "--url=$user@$pool" "--par=192,7" "--pers=$PERS" "--telemetry=0" "--nocolour" "${extra[@]}") ;;
 esac
 
 paid="the pool's own address (the pool runs with --payout)"
@@ -181,15 +190,23 @@ fetch() {
     rm -rf "$dir"
     fail "SHA-256 mismatch for $url: got $got, pinned $sha; refusing to run it" 65
   fi
-  case "$url" in
-    *.tar.gz | *.tgz)
-      mkdir -p "$dir/x"
-      tar -xzf "$tmp" -C "$dir/x" --no-same-owner --no-same-permissions || fail "$miner: the archive does not unpack" 65
-      found=$(find "$dir/x" -type f -name "$exe" | head -1)
-      [ -n "$found" ] || fail "$miner: no $exe in the archive" 65
-      mv "$found" "$bin" ;;
-    *) cp "$tmp" "$bin" ;;
-  esac
+  # a gzip archive (by its first bytes: miniz.cc's download URL has no file name), else the binary itself
+  if [ "$(head -c 2 "$tmp" | od -An -tx1 | tr -d ' \n')" = 1f8b ]; then
+    mkdir -p "$dir/x"
+    tar -xzf "$tmp" -C "$dir/x" --no-same-owner --no-same-permissions || fail "$miner: the archive does not unpack" 65
+    found=$(find "$dir/x" -type f -name "$exe" | head -1)
+    [ -n "$found" ] || fail "$miner: no $exe in the archive" 65
+    # miniZ ships its binary's own checksum beside it ("SHA256 (miniZ) = <hex>"): check that too
+    sumfile=$(find "$dir/x" -type f -name "$exe.sha256sum" | head -1)
+    if [ -n "$sumfile" ]; then
+      want=$(sed -n "s/^SHA256 ($exe) = \([0-9a-f]\{64\}\)\$/\1/p" "$sumfile" | head -1)
+      [ -n "$want" ] && [ "$(sha256sum < "$found" | cut -d' ' -f1)" = "$want" ] ||
+        fail "$miner: $exe does not match the checksum file in its archive" 65
+    fi
+    mv "$found" "$bin"
+  else
+    cp "$tmp" "$bin"
+  fi
   chmod 0755 "$bin"
   rm -rf "$dir/x"
   touch "$dir/.verified"
@@ -198,6 +215,52 @@ fetch() {
 fetch
 
 # ---- what the container sees: GPUs, OpenCL, the miner's devices, the pool --------------------------------
+say() { sed "s/^/ycash-miner: $1/"; }
+driver_check() { # the driver and what of it the container runtime mounted; prints only, never fatal
+  local ver lib path out
+  ver=$(sed -n 's/.*Kernel Module[^0-9]*\([0-9][0-9.]*\).*/\1/p' /proc/driver/nvidia/version 2>/dev/null | head -1)
+  if [ -z "$ver" ] && command -v nvidia-smi >/dev/null 2>&1; then
+    ver=$(timeout 30 nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1) || true
+  fi
+  echo "ycash-miner: driver version: ${ver:-unknown}"
+  out=$(awk '$5 ~ /nvidia|cuda|OpenCL/ {print $5}' /proc/self/mountinfo 2>/dev/null | sed 's#.*/##' | sort -u | tr '\n' ' ')
+  echo "ycash-miner: mounted by the runtime: ${out:-nothing}"
+  out=$(ldconfig -p 2>/dev/null | awk '$1 ~ /^lib(nvidia|cuda|OpenCL)/ {print $1}' | sort -u | tr '\n' ' ')
+  echo "ycash-miner: linker cache: ${out:-none}"
+  # the libraries NVIDIA's OpenCL needs to compile and run a kernel; gpucomp is the shared compiler
+  # of newer drivers (NVIDIA Container Toolkit 1.14.0 added it to the compute libraries), compiler the
+  # older drivers' one, so one of the two is expected
+  out=
+  for lib in libcuda.so.1 libnvidia-opencl.so.1 libnvidia-ptxjitcompiler.so.1 libnvidia-nvvm.so.4 \
+             "libnvidia-gpucomp.so.${ver:-?}" "libnvidia-compiler.so.${ver:-?}"; do
+    if ldconfig -p 2>/dev/null | awk -v l="$lib" '$1 == l {f=1} END {exit !f}' ||
+       [ -e "/usr/lib/x86_64-linux-gnu/$lib" ]; then out+="$lib=yes "; else out+="$lib=NO "; fi
+  done
+  echo "ycash-miner: driver libraries: $out"
+  path=$(ldconfig -p 2>/dev/null | awk '$1 == "libnvidia-opencl.so.1" {print $NF; exit}')
+  if [ -n "$path" ]; then
+    out=$(ldd "$path" 2>&1 | grep -E 'not found|error' | tr -s ' \t' ' ' | tr '\n' ';') || true
+    echo "ycash-miner: ldd libnvidia-opencl.so.1: ${out:-every dependency resolves}"
+  fi
+  for f in /etc/OpenCL/vendors/*.icd; do
+    [ -e "$f" ] && echo "ycash-miner: ICD $f: $(tr -d '\n' < "$f")"
+  done
+  echo "ycash-miner: OCL_ICD_VENDORS=${OCL_ICD_VENDORS:-unset} OCL_ICD_FILENAMES=${OCL_ICD_FILENAMES:-unset} LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-unset}"
+  if command -v clinfo >/dev/null 2>&1; then
+    timeout 60 clinfo -l 2>&1 | say "clinfo: " || true
+    timeout 60 clinfo 2>&1 | grep -E '^ *(Platform (Name|Version)|Device (Name|Version)|Driver Version|Device OpenCL C Version|Global memory size|Device PCI bus info)' |
+      tr -s ' ' | say "clinfo: " || true
+  fi
+  if command -v cl-probe >/dev/null 2>&1; then
+    if ! timeout 120 cl-probe 2>&1 | say "cl-probe: "; then :; fi
+    # the libraries the OpenCL start-up asked the dynamic linker for and did not get
+    out=$(LD_DEBUG=libs timeout 120 cl-probe 2>&1 >/dev/null | awk '
+      /find library=/ { sub(/.*find library=/, ""); sub(/ .*/, ""); want[$0] = 1 }
+      /calling init:/ { n = split($NF, a, "/"); got[a[n]] = 1 }
+      END { for (l in want) if (!(l in got)) printf "%s ", l }') || true
+    echo "ycash-miner: cl-probe: libraries asked for and not loaded: ${out:-none}"
+  fi
+}
 gpu_check() { # prints the listings; true when a GPU the miner can use is there
   local smi=-1 ocl=-1 out
   echo "ycash-miner: NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-unset} NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-unset}"
@@ -205,28 +268,35 @@ gpu_check() { # prints the listings; true when a GPU the miner can use is there
   echo "ycash-miner: device nodes: ${out:-none}"
   if command -v nvidia-smi >/dev/null 2>&1; then
     out=$(timeout 60 nvidia-smi -L 2>&1) || true
-    printf '%s\n' "$out" | sed 's/ (UUID: [^)]*)//; s/^/ycash-miner: nvidia-smi: /'
+    printf '%s\n' "$out" | sed 's/ (UUID: [^)]*)//' | say "nvidia-smi: "
     smi=$(printf '%s\n' "$out" | grep -c '^GPU [0-9]' || true)
   else
     echo "ycash-miner: nvidia-smi: not in the container (the NVIDIA runtime mounts it with the utility capability)"
   fi
-  echo "ycash-miner: OpenCL loader: $(ldconfig -p 2>/dev/null | grep -c 'libOpenCL\.so\.1') libOpenCL.so.1, driver: $(ldconfig -p 2>/dev/null | grep -c 'libnvidia-opencl\.so\.1') libnvidia-opencl.so.1; ICDs: $(cat /etc/OpenCL/vendors/*.icd 2>/dev/null | tr '\n' ' ')"
-  if command -v clinfo >/dev/null 2>&1; then
-    timeout 60 clinfo -l 2>&1 | sed 's/^/ycash-miner: clinfo: /' || true
-  fi
-  if [ "$miner" = lolminer ]; then
-    out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "$bin" --list-devices --nocolor 2>&1) || true
-    printf '%s\n' "$out" | grep -v '^[|+]' | sed 's/^/ycash-miner: lolMiner --list-devices: /'
-    if printf '%s\n' "$out" | grep -q 'No OpenCL driver or GPUs detected'; then
-      ocl=0
-    elif [[ $out =~ Number\ of\ OpenCL\ supported\ GPUs:\ ([0-9]+) ]]; then
-      ocl=${BASH_REMATCH[1]}
-    fi
-    # Equihash 192,7 on Nvidia is an OpenCL solver in lolMiner: CUDA alone is not enough
-    if [ "$ocl" -ge 1 ] || { [ "$ocl" = -1 ] && [ "$smi" -ge 1 ]; }; then return 0; fi
-    echo "ycash-miner: lolMiner sees no OpenCL GPU (nvidia-smi: $smi GPU(s), lolMiner OpenCL: $ocl)" >&2
-    return 1
-  fi
+  driver_check
+  case "$miner" in
+    lolminer)
+      out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "$bin" --list-devices --nocolor 2>&1) || true
+      printf '%s\n' "$out" | grep -v '^[|+]' | say "lolMiner --list-devices: "
+      if printf '%s\n' "$out" | grep -q 'No OpenCL driver or GPUs detected'; then
+        ocl=0
+      elif [[ $out =~ Number\ of\ OpenCL\ supported\ GPUs:\ ([0-9]+) ]]; then
+        ocl=${BASH_REMATCH[1]}
+      fi
+      # Equihash 192,7 on Nvidia is an OpenCL solver in lolMiner: CUDA alone is not enough. An Nvidia
+      # card lolMiner can drive with OpenCL is listed with "Drivers: Cuda, OpenCL"
+      if [ "$ocl" -ge 1 ] || printf '%s\n' "$out" | grep -q 'Drivers: *Cuda, OpenCL' ||
+         { [ "$ocl" = -1 ] && [ "$smi" -ge 1 ]; }; then return 0; fi
+      echo "ycash-miner: lolMiner sees no OpenCL GPU (nvidia-smi: $smi GPU(s), lolMiner OpenCL: $ocl); miniZ (MINER=miniz) mines 192,7 with CUDA" >&2
+      return 1 ;;
+    miniz)
+      out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "$bin" --cuda-info --nocolour 2>&1) || true
+      printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^ *$' | say "miniZ --cuda-info: "
+      if printf '%s\n' "$out" | grep -q 'dlopen "libcuda.so.1" failed'; then
+        echo "ycash-miner: miniZ cannot load the CUDA driver (libcuda.so.1)" >&2
+        return 1
+      fi ;;
+  esac
   [ "$smi" -ge 1 ] || { echo "ycash-miner: no GPU (nvidia-smi: $smi)" >&2; return 1; }
 }
 pool_check() { # prints where the pool's name points and whether its port answers; never fatal
@@ -263,9 +333,10 @@ while :; do
   else
     env -u CONTAINER_API_KEY -u CONTAINER_ID "${cmd[@]}" || rc=$?
   fi
-  if [ "$miner" = lolminer ] && [ "$rc" = 42 ] && [ "$restarts" -lt 20 ]; then
+  if { [ "$miner" = lolminer ] && [ "$rc" = 42 ]; } || { [ "$miner" = miniz ] && [ "$rc" != 0 ]; }; then
+    [ "$restarts" -lt 20 ] || { echo "ycash-miner: $miner exited with $rc after 20 restarts" >&2; exit "$rc"; }
     restarts=$((restarts + 1))
-    echo "ycash-miner: lolMiner's watchdog asked for a restart ($restarts/20)" >&2
+    echo "ycash-miner: $miner exited with $rc: restart $restarts/20" >&2
     sleep "${RESTART_DELAY:-10}"
     continue
   fi

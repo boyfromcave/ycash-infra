@@ -14,8 +14,9 @@ The image does **not contain** the mining program. When the container starts, it
 miner from its author's official release page, checks that the download is exactly the version we
 pinned (by its SHA-256 fingerprint), and refuses to run anything else. The default miner is
 **lolMiner**, a free but closed-source miner whose author keeps a **developer fee of 1%** (about 1%
-of the time it mines for its author). **miniZ**, a second miner, is built in as an option but
-switched off until the owner has checked its terms.
+of the time it mines for its author). **miniZ**, a second miner (CUDA; developer fee 2 % on
+Equihash), runs when the fleet pins its download and asks for it (`MINER=miniz`): the fast network
+mines with it, because lolMiner's OpenCL path did not see the card on Vast (GPU burst 2, below).
 
 The container is told only three things: **which pool**, **a worker name** and, optionally, **which
 address gets paid**. It never holds a password, a key or a token, because it runs on rented machines
@@ -25,8 +26,9 @@ whose owners can look inside it.
 
 Neither lolMiner nor miniZ is in this image, in this repository or in any release we publish. At
 start, the entrypoint downloads the miner from its **official source** (lolMiner: its GitHub
-release; miniZ: the download its author publishes, once pinned), checks the file against the
-**SHA-256 pinned** in [`miners.conf`](miners.conf), and runs it unmodified, developer fee included.
+release; miniZ: the download its author publishes on miniz.cc), checks the file against the
+**SHA-256 pinned** in [`miners.conf`](miners.conf) or the fleet file, and runs it unmodified,
+developer fee included.
 A file that does not match is deleted and not run. Each miner's licence and terms apply to whoever
 runs the container; read them before you do.
 
@@ -36,6 +38,7 @@ runs the container; read them before you do.
 |---|---|
 | Base | `buildpack-deps:noble-curl` by digest: Docker's official Ubuntu 24.04 image with `curl` and CA certificates. glibc is needed (both miners are glibc programs). Not a CUDA image: the miners bring their own GPU kernels and need only the driver's libraries, which the NVIDIA container runtime mounts from the host (`NVIDIA_VISIBLE_DEVICES=all`, `NVIDIA_DRIVER_CAPABILITIES=compute,utility`: `compute` mounts `libcuda` and the driver's OpenCL library `libnvidia-opencl.so.1`, `utility` mounts `nvidia-smi`) |
 | OpenCL | `ocl-icd-libopencl1` (the Khronos ICD loader, `libOpenCL.so.1`), `/etc/OpenCL/vendors/nvidia.icd` (`libnvidia-opencl.so.1`) and `clinfo`, from Ubuntu 24.04, versions pinned. See "Why OpenCL" below |
+| [`cl-probe.c`](cl-probe.c) | `/usr/local/bin/cl-probe`, ours, built in a throw-away stage: takes a miner's OpenCL start-up steps one by one (context, queue, compile lolMiner's empty `healthCheck` kernel, run it) and prints each error. See "GPU burst 2" below |
 | [`entrypoint.sh`](entrypoint.sh) | `/usr/local/bin/ycash-miner`: download, check, run (as uid 2005) |
 | [`miners.conf`](miners.conf) | `/opt/ycash-miner/miners.conf`: each miner's official URL and pinned SHA-256 (public values) |
 
@@ -80,13 +83,35 @@ had neither, so lolMiner printed `No OpenCL driver or GPUs detected.` (reproduce
 in that image: `--list-devices`) and never reached the pool. This image prints
 `OpenCL driver detected. Number of OpenCL supported GPUs: N`, 0 without a card.
 
+### GPU burst 2 (2026-11-13): the loader is there, lolMiner still counts 0
+
+With the loader in, a rented RTX 3060 showed: `nvidia-smi` GPU 0; `clinfo -l` **Platform #0: NVIDIA
+CUDA, Device #0: NVIDIA GeForce RTX 3060**; and lolMiner `OpenCL driver detected. Number of OpenCL
+supported GPUs: 0`, `Cuda driver detected. Number of Cuda supported GPUs: 1`, the card listed with
+`Drivers: Cuda` only. lolMiner lists a card it can drive with both as `Drivers: Cuda, OpenCL` (the
+string is in its binary), so its OpenCL detection dropped a device the platform exposes. Listing is
+not using: before lolMiner counts an OpenCL GPU it builds and runs a health-check kernel
+(`__kernel void healthCheck() { }`, with the messages "GPU Health check failed for program build" /
+"... enqueue kernel" in its binary), and on Nvidia the build loads the driver's compiler library
+(`libnvidia-gpucomp.so.<driver>` on current drivers, `libnvidia-compiler.so.<driver>` on old ones),
+which the container runtime mounts only if it knows it (NVIDIA Container Toolkit 1.14.0 added gpucomp
+to the compute libraries). Vast also ran the container with `NVIDIA_VISIBLE_DEVICES=void` and
+`NVIDIA_DRIVER_CAPABILITIES=all`, its own injection, not the values the image and the fleet set.
+The entrypoint now prints, before mining: the driver version, what the runtime mounted
+(`/proc/self/mountinfo`), the driver libraries in the linker cache and the ones OpenCL needs (yes/NO),
+unresolved dependencies of `libnvidia-opencl.so.1` (`ldd`), the `.icd` files, `OCL_ICD_*` and
+`LD_LIBRARY_PATH`, `clinfo -l` and its platform/device summary, and `cl-probe` with the libraries the
+dynamic linker was asked for and did not load (`LD_DEBUG=libs`). It also counts a card listed as
+`Drivers: Cuda, OpenCL` as usable for lolMiner. miniZ mines 192,7 with CUDA and does not need any of
+this, which is why the fast network uses it.
+
 ### Before mining: what it sees, and no GPU means exit 70
 
 Before it mines, the entrypoint prints: the NVIDIA variables, the `/dev/nvidia*` nodes, `nvidia-smi -L`
 (UUIDs left out), the OpenCL loader, driver library and `.icd` entries, `clinfo -l`, lolMiner's own
-`--list-devices`, and where the pool's name resolves and whether its port accepts a TCP connection
+`--list-devices` (miniZ: `--cuda-info`), the driver and OpenCL checks above, and where the pool's name resolves and whether its port accepts a TCP connection
 (an unreachable pool is only a warning: lolMiner keeps retrying). If lolMiner sees no OpenCL GPU
-(miniZ: `nvidia-smi` lists none), it **exits 70 without mining**, so Vast shows the rental exited
+(miniZ: `nvidia-smi` lists none, or miniZ cannot load `libcuda.so.1`), it **exits 70 without mining**, so Vast shows the rental exited
 and the fleet gives it back instead of paying for an idle machine. `MINER_DIAG=1` runs the same
 checks (after the download) and exits 0 or 70 without mining.
 
@@ -104,24 +129,39 @@ instances whose label lost its end time or no longer parses. Without the key the
 exits 0 and the fleet's `expire` destroys the instance. A burst miner started after its end does
 nothing but this.
 
-### miniZ (optional, off by default)
+### miniZ (CUDA; the fast network's miner)
 
 `MINER=miniz` is **refused** until both `MINIZ_URL` (https, miniZ's official download) and
 `MINIZ_SHA256` are set, in `miners.conf` or in the container's environment (the fleet file's
-`miniz_url` / `miniz_sha256`). They are empty on purpose: miniZ's site (miniz.cc) could not be
-reached from the machine that wrote this, and its Terms have not been reviewed. Enable it only after
-the owner has:
-1. read miniZ's Terms on miniz.cc (and its developer fee for 192,7);
-2. confirmed from miniZ's own documentation that it accepts a custom personalization for 192,7;
-3. downloaded the Linux archive from miniZ's official page, `sha256sum`-ed it and pinned both values.
+`miniz_url` / `miniz_sha256`). `miners.conf` leaves them empty: the fleet file is where they are
+pinned, so enabling miniZ stays a reviewed change in ycash-ops.
 
-The command the entrypoint runs is `miniZ --url=<worker or payout>@<host:port> --par=192,7
---pers=ZcashPoW`. These are the flags miniZ's documentation gives for Equihash coins (`--par=N,K`
-selects the variant, `--pers=` the personalization, `--url=user@host:port` the pool) as far as we
-know them; they were **not checked against miniZ's current documentation or run** here. Confirm them
-(step 2) and fix this line if they differ. Its archive is unpacked and the file named `miniZ` run.
-Why offer it at all: a second, independent miner on one of slow's two machines is software diversity
-(a bug in one miner does not stop the network).
+| | |
+|---|---|
+| Version | `v2.5e3` (released 2025-10-28, the latest on https://miniz.cc/download/ on 2026-11-13) |
+| URL | `https://miniz.cc/?sdm_process_download=1&download_id=5200` (the Linux x64 button; it serves `miniZ_v2.5e3_linux-x64.tar.gz`) |
+| SHA-256 | `873f011442df76b9aae541f3c1a385677f5ea75d94a41da08647a7e51f92ae30` (the archive, as the download page lists it and as computed on download); the binary inside, `e458177874c95cc7853c95e65965d33adfebd6a6670ce1d9ac35bd994260f663`, is checked against the archive's own `miniZ.sha256sum` |
+| Command | `miniZ --url=<worker or payout>@<host:port> --par=192,7 --pers=ZcashPoW --telemetry=0 --nocolour` |
+
+The flags are miniZ's own: https://miniz.cc/usage/ ("--url=[[ssl://]user.worker@server:port]",
+"--par= Equihash algorithm parameters", "--pers= Coin personalised string", "--telemetry= ... to
+disable set port to 0"), and its FAQ, "How to mine Ycash (YEC)?": "it should not be necessary to
+add --par=192,7 and --pers=ZcashPoW ... However, this may depend on the pool" (yolo does not send a
+personalization, so both are given). `--help` of v2.5e3 lists the same options and spells the colour
+switch `--nocolour`. Its features page lists Ycash (YEC) under 192,7 and "Developer fee:
+Equihash: 2.0% ... % of mining time". `--cuda-info` lists its CUDA devices before mining. It has no
+watchdog exit code like lolMiner's 42, so any failed exit restarts it (at most 20 times).
+
+**What enabling it agrees to** (https://miniz.cc/terms-and-conditions/, read 2026-11-13): miniZ is
+licensed under **CC BY-ND 4.0**; whoever uses it agrees **not to decompile, disassemble or reverse
+engineer** it or tamper with the binary; it comes **as is**, without warranty or liability; the
+Terms may change without notice; and it mines for its author **2 % of the time** on Equihash (its
+fee servers; on a testnet this is simply 2 % of the card's time spent elsewhere). We do not
+redistribute it (the container downloads it from miniz.cc at start), and the binary is run
+unmodified.
+
+Why offer it at all: a second, independent miner is software diversity (a bug in one miner does not
+stop the network), and it mines 192,7 with CUDA where lolMiner needs OpenCL.
 
 ## Environment
 
@@ -131,7 +171,7 @@ Why offer it at all: a second, independent miner on one of slow's two machines i
 | `WORKER` | no (`ycash-miner`) | this miner's name: letters, digits, `.`, `_`, `-` |
 | `PAYOUT` | no | a transparent address to be paid. See below |
 | `MINER` | no (`lolminer`) | `lolminer` or `miniz` (miniz only once pinned) |
-| `MINIZ_URL`, `MINIZ_SHA256` | for miniz | miniZ's https download and its SHA-256 |
+| `MINIZ_URL`, `MINIZ_SHA256` | for miniz | miniZ's https download (a query URL is allowed: miniz.cc's link) and the archive's SHA-256 |
 | `MINER_ARGS` | no | extra miner options, e.g. `--devices 0`; pool, user, password, algorithm, personalization, API and TLS options are refused |
 | `MINER_UNTIL` | no | a burst's end, epoch seconds (the fleet sets it): stop and end the rental then |
 | `MINER_DRY_RUN` | no | `1`: print what would be downloaded and run, then exit (no download, no GPU) |
@@ -175,8 +215,9 @@ This image is for the Ycash **testnets**. This project does not run or support m
 `make miners-test` runs the entrypoint against a stand-in `curl` and stand-in miners (no network, no
 GPU): a matching download runs, a mismatching one or a failed download refuses and runs nothing, the
 cache is reused and re-checked, miniZ is refused without its pins, the exact commands for both
-miners, the payout rule, the refusals, the restart rule, the GPU and pool listing with exit 70
-when lolMiner has no OpenCL GPU, and the burst end (`MINER_UNTIL`: destroy, else stop, with Vast's
+miners, miniZ from a query URL with its own checksum file checked, the payout rule, the refusals,
+the restart rules, the GPU, driver and pool listing with exit 70 when lolMiner has no OpenCL GPU (a
+card listed as `Drivers: Cuda, OpenCL` counts) or miniZ cannot load CUDA, and the burst end (`MINER_UNTIL`: destroy, else stop, with Vast's
 per-instance key, never printed). CI also builds the image and runs its entrypoint in dry-run mode
 inside it. Without a GPU, `docker run --platform linux/amd64 -e POOL_URL=<pool> -e MINER_DIAG=1
 <image>` downloads lolMiner, prints the checks and exits 70.
@@ -189,5 +230,7 @@ inside it. Without a GPU, `docker run --platform linux/amd64 -e POOL_URL=<pool> 
 3. Check the release notes still list Equihash 192/7 with `--pers`; merge; run `miner-image`; put
    the printed digest into the fleet file.
 
-A fleet can also pin miniZ without a new image: `miniz_url` and `miniz_sha256` in the fleet file
-reach the container as `MINIZ_URL` / `MINIZ_SHA256`.
+miniZ is pinned in the fleet file, not here: `miniz_url` and `miniz_sha256` reach the container as
+`MINIZ_URL` / `MINIZ_SHA256`. To bump it, take the Linux x64 link and the archive's sha256sum from
+https://miniz.cc/download/, download it, check the sum, and change both in ycash-ops
+`miners/fleet.json` (no new image). miniz.cc gives each release a new `download_id`.

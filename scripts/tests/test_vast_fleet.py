@@ -218,9 +218,12 @@ class TestFleetFile(unittest.TestCase):
         raw["miniz_sha256"] = "ab" * 32           # 64 hex: a checksum, not taken for a secret
         fl = self.parse(raw)
         self.assertEqual(fl["networks"]["slow"]["miners"], ["lolminer", "miniz"])
-        raw["miniz_url"] = "http://downloads.example/miniZ.tar.gz"
-        with self.assertRaises(vf.FleetError):
-            self.parse(raw)
+        raw["miniz_url"] = "https://miniz.cc/?sdm_process_download=1&download_id=5200"   # miniz.cc's own link
+        self.parse(raw)
+        for bad in ("http://downloads.example/miniZ.tar.gz", "https://miniz.cc/?a=1;rm", "https://miniz.cc/?a=$(x)"):
+            raw["miniz_url"] = bad
+            with self.assertRaises(vf.FleetError):
+                self.parse(raw)
         raw = fleet_file(fast__comment="ab" * 32)    # the same 64 hex elsewhere is still refused
         with self.assertRaisesRegex(vf.FleetError, "secret"):
             self.parse(raw)
