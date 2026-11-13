@@ -14,8 +14,11 @@ output "instance_ids" {
 }
 
 output "networks" {
-  description = "Per enabled network: profile, ports and image (what network_configs carries, readable)."
-  value       = { for k, c in local.network_config : k => { profile = c.profile, p2p_port = c.p2p_port, rpc_port = c.rpc_port, image = c.image } }
+  description = "Per enabled network: profile, ports and image, and its pool's stratum port and image when it has one (what network_configs carries, readable)."
+  value = { for k, c in local.network_config : k => {
+    profile   = c.profile, p2p_port = c.p2p_port, rpc_port = c.rpc_port, image = c.image,
+    pool_port = c.pool == null ? null : c.pool.port, pool_image = c.pool == null ? null : c.pool.image
+  } }
 }
 
 output "network_configs" {

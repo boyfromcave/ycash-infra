@@ -67,6 +67,14 @@ variable "networks" {
     beside a testnet). Adding or removing a network is one entry. `image` overrides var.image for
     that network; `bootstrap` (default true) imports var.prefix into an empty datadir (testnet
     profiles only); `extra_args` is appended after var.extra_args.
+
+    `pool` (testnet profiles only; default none) runs a yolo stratum pool beside that network's node
+    on every host (README.md, "The pool"): `image` the yolo image by digest (yolo-image.yml),
+    `payout` the transparent address every block pays (yolo --payout; it is also the node's
+    -mineraddress, and the node runs with -disablewallet -minetolocalwallet=0: no key on the host),
+    `port` the stratum port (default 3333, opened to var.pool_ingress_cidrs; yolo's status page is
+    on port + 1, loopback only), `text` an optional coinbase text (yolo --text). The pool reaches the
+    node only through its stock mining RPCs on 127.0.0.1.
   EOT
   type = map(object({
     profile    = string
@@ -74,6 +82,12 @@ variable "networks" {
     image      = optional(string)
     bootstrap  = optional(bool, true)
     extra_args = optional(string, "")
+    pool = optional(object({
+      image  = string
+      payout = string
+      port   = optional(number, 3333)
+      text   = optional(string, "")
+    }))
   }))
   default = {
     yb-fast = { profile = "fast" }
@@ -92,6 +106,22 @@ variable "networks" {
   validation {
     condition     = alltrue([for k, n in var.networks : can(regex("^[A-Za-z0-9=:._,/ +-]*$", n.extra_args))])
     error_message = "networks: extra_args: letters, digits, spaces and = : . _ , / + - only."
+  }
+  validation {
+    condition = alltrue([for k, n in var.networks : n.pool == null ? true : (
+      n.profile != "main" &&
+      can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", n.pool.image)) &&
+      can(regex("^[1-9A-HJ-NP-Za-km-z]{26,40}$", n.pool.payout)) &&
+      n.pool.port >= 1024 && n.pool.port <= 65534 && floor(n.pool.port) == n.pool.port &&
+      !contains([18832, 18833, 18932, 18933, 19032, 19033, 8832, 8833], n.pool.port) &&
+      !contains([18832, 18833, 18932, 18933, 19032, 19033, 8832, 8833], n.pool.port + 1) &&
+      can(regex("^[A-Za-z0-9 ._:/-]{0,60}$", n.pool.text))
+    )])
+    error_message = "networks: pool on a testnet profile only, image pinned by digest, payout a base58 transparent address, port 1024-65534 clear of every node port (port + 1 is the status page), text of at most 60 letters, digits, spaces and . _ : / -."
+  }
+  validation {
+    condition     = length(distinct([for k, n in var.networks : n.pool.port if n.enabled && n.pool != null])) == length([for k, n in var.networks : k if n.enabled && n.pool != null])
+    error_message = "networks: two pools share a stratum port."
   }
   validation {
     condition     = length([for k, n in var.networks : k if n.enabled]) >= 1
@@ -167,6 +197,16 @@ variable "p2p_ingress_cidrs" {
   description = "Who may open a P2P connection, on each enabled network's port. Seeds serve everyone: 0.0.0.0/0. Nothing else is ever opened inbound (no SSH, no RPC; management is SSM)."
   type        = list(string)
   default     = ["0.0.0.0/0"]
+}
+
+variable "pool_ingress_cidrs" {
+  description = "Who may open a stratum connection to a network's pool (networks.<key>.pool.port). Rented GPU miners connect from arbitrary addresses, so the default is everyone; yolo bounds what a connection can do (README.md, \"The pool\"). Only used where a network has a pool."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+  validation {
+    condition     = alltrue([for c in var.pool_ingress_cidrs : can(cidrhost(c, 0))])
+    error_message = "pool_ingress_cidrs: IPv4 CIDRs."
+  }
 }
 
 variable "extra_args" {

@@ -31,6 +31,7 @@ YCASHD_DOCKERFILE ?= $(YCASH6)/contrib/docker/ycashd/Dockerfile
 YCASHD_LEGACY_DOCKERFILE ?= $(YCASH_DD)/contrib/docker/ycashd/Dockerfile
 # the wallet tree: yew/ (the web shell is on its upgrade/vault since yew#14); YEW=… for a worktree
 YEW         ?= $(WORKSPACE)/yew
+YOLO        ?= $(WORKSPACE)/yolo
 CLUSTER     ?= ycash
 NAMESPACE   ?= ycash
 RELEASE     ?= ycash
@@ -52,7 +53,7 @@ ROLLOUT_TIMEOUT ?= 10m
 KOGANY_CLUSTER ?= ycash-kogany
 KOGANY_VALUES  := values-kind.yaml values-kind-kogany.yaml
 
-.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status image-prefix-frame services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner miners-test
+.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status image-prefix-frame services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner image-yolo miners-test
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -348,6 +349,9 @@ zcash-params-test: ## the parameter mirror's offline tests: SHA256SUMS vs the ch
 	YCASH_DD=$(YCASH_DD) python3 -I -m unittest discover -s bundles/zcash-params/tests -v
 
 # --- the testnet GPU miners on Vast.ai (images/miner, scripts/vast-fleet.py, infra/vast-miners) ---
+image-yolo: ## the stratum pool (images/yolo/Dockerfile) from the yolo tree YOLO, for the testnet pool host
+	docker build --platform $(PLATFORM) -f images/yolo/Dockerfile -t $(REGISTRY)/yolo:local $(YOLO)
+
 image-miner: ## the testnet GPU miner launcher (images/miner: no miner binary; downloads lolMiner at start, SHA-256 pinned in miners.conf)
 	docker build --platform linux/amd64 -t $(REGISTRY)/ycash-miner:local images/miner
 
