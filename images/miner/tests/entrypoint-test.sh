@@ -5,10 +5,13 @@
 # download is reused, that MINER=miniz is refused until it is pinned, that it refuses to start
 # without a pool or with credentials in it, builds the Equihash 192,7 / ZcashPoW command for both
 # miners, pays the username the way yolo expects, rejects pool and password options in MINER_ARGS,
-# restarts lolMiner only on its watchdog exit code 42; that it prints what GPUs, OpenCL platforms and
+# restarts lolMiner only on its watchdog exit code 42 and miniZ on any failure; that miniZ is fetched
+# from a query URL (miniz.cc's download link), its archive found by content and its binary checked
+# against the checksum file inside; that it prints what GPUs, driver libraries, OpenCL platforms and
 # miner devices it sees and where the pool resolves, and exits 70 without mining when lolMiner has no
-# OpenCL GPU (GPU burst 1); and that a burst miner (MINER_UNTIL) stops at its end and ends its own
-# rental with Vast's per-instance key (destroy, else stop), never printing that key.
+# OpenCL GPU (GPU bursts 1 and 2) or miniZ cannot load CUDA; that a card lolMiner lists as
+# "Drivers: Cuda, OpenCL" counts as usable; and that a burst miner (MINER_UNTIL) stops at its end and
+# ends its own rental with Vast's per-instance key (destroy, else stop), never printing that key.
 # Run: images/miner/tests/entrypoint-test.sh   (make miners-test, CI)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -23,6 +26,7 @@ cat > "$T/pkg/1.98a/lolMiner" <<'EOF'
 if [ "$1" = --list-devices ]; then
   if [ "${FAKE_OCL:-1}" = none ]; then echo "No OpenCL driver or GPUs detected."; else
     echo "OpenCL driver detected. Number of OpenCL supported GPUs: ${FAKE_OCL:-1}"; fi
+  [ -z "${FAKE_DRIVERS:-}" ] || printf 'Device 0:\n    Drivers: %s\n' "$FAKE_DRIVERS"
   exit 0
 fi
 echo "lolMiner $*" >> "$FAKE_LOG"
@@ -34,14 +38,27 @@ exit "${FAKE_RC:-0}"
 EOF
 cat > "$T/pkgz/miniZ" <<'EOF'
 #!/bin/bash
+if [ "$1" = --cuda-info ]; then
+  if [ "${FAKE_SMI:-1}" = 0 ]; then echo 'dlopen "libcuda.so.1" failed!'; else echo "GPU 0: NVIDIA GeForce RTX 3060"; fi
+  exit 0
+fi
 echo "miniZ $*" >> "$FAKE_LOG"
+n=$(wc -l < "$FAKE_LOG")
+if [ "$n" -le "${FAKE_FAILS:-0}" ]; then exit 1; fi
+exit 0
 EOF
 chmod +x "$T/pkg/1.98a/lolMiner" "$T/pkgz/miniZ"
+echo "SHA256 (miniZ) = $(sha256sum < "$T/pkgz/miniZ" | cut -d' ' -f1)" > "$T/pkgz/miniZ.sha256sum"
 tar -czf "$T/files/lol.tar.gz" -C "$T/pkg" 1.98a
-tar -czf "$T/files/miniz.tar.gz" -C "$T/pkgz" miniZ
+tar -czf "$T/files/miniz.tar.gz" -C "$T/pkgz" miniZ miniZ.sha256sum
+# miniz.cc's download link is a query URL with no file name; the stand-in curl serves its last path part
+cp "$T/files/miniz.tar.gz" "$T/files/?sdm_process_download=1&download_id=5200"
+echo "SHA256 (miniZ) = $(printf '0%.0s' $(seq 64))" > "$T/pkgz/miniZ.sha256sum"
+tar -czf "$T/files/miniz-badsum.tar.gz" -C "$T/pkgz" miniZ miniZ.sha256sum
 printf 'something else' > "$T/files/evil.tar.gz"
 LOLSHA=$(sha256sum < "$T/files/lol.tar.gz" | cut -d' ' -f1)
 MZSHA=$(sha256sum < "$T/files/miniz.tar.gz" | cut -d' ' -f1)
+MZBAD=$(sha256sum < "$T/files/miniz-badsum.tar.gz" | cut -d' ' -f1)
 
 # stand-in curl: "downloads" https://…/<name> from $T/files/<name>; FAKE_NET=down fails like no network.
 # A Vast API call (-X METHOD, the key in a config on stdin) is logged to $FAKE_API as "METHOD URL key=<k>"
@@ -67,6 +84,7 @@ EOF
 cat > "$T/bin/nvidia-smi" <<'EOF'
 #!/bin/bash
 if [ "${FAKE_SMI:-1}" = 0 ]; then echo "No devices were found"; exit 6; fi
+case "$*" in *--query-gpu=driver_version*) echo 550.54.15; exit 0 ;; esac
 echo "GPU 0: NVIDIA GeForce RTX 3060 (UUID: GPU-00000000-1111-2222-3333-444444444444)"
 EOF
 cat > "$T/bin/getent" <<'EOF'
@@ -154,8 +172,24 @@ addr=tmAbCdEfGhJkLmNpQrStUvWxYz123456789
 run POOL_URL=pool.example:3333 WORKER=vast-slow-1 PAYOUT=$addr MINER_ARGS='--devices 0 --keepfree=64'
 if ! { [ "$rc" = 0 ] && grep -q -- "--user $addr --tls off .* --devices 0 --keepfree=64\$" "$T/calls"; }; then fail "payout as username, extra args appended"; fi
 run POOL_URL=pool.example:3333 MINER=miniz MINIZ_URL=https://releases.example/miniz.tar.gz MINIZ_SHA256="$MZSHA" WORKER=vast-slow-1
-if ! { [ "$rc" = 0 ] && grep -qx -- 'miniZ --url=vast-slow-1@pool.example:3333 --par=192,7 --pers=ZcashPoW' "$T/calls"; }; then fail "miniZ, pinned: --url=<worker>@<pool> --par=192,7 --pers=ZcashPoW"; fi
-echo "ok - username = PAYOUT or WORKER; miniZ once pinned runs with --par=192,7 --pers=ZcashPoW"
+if ! { [ "$rc" = 0 ] && grep -qx -- 'miniZ --url=vast-slow-1@pool.example:3333 --par=192,7 --pers=ZcashPoW --telemetry=0 --nocolour' "$T/calls"; }; then fail "miniZ, pinned: --url=<worker>@<pool> --par=192,7 --pers=ZcashPoW --telemetry=0"; fi
+grep -q 'miniZ --cuda-info: GPU 0' "$T/out" || fail "miniZ lists its CUDA devices before mining"
+fresh
+run POOL_URL=pool.example:3333 MINER=miniz MINIZ_URL='https://miniz.example/?sdm_process_download=1&download_id=5200' MINIZ_SHA256="$MZSHA" WORKER=vast-fast-0
+if ! { [ "$rc" = 0 ] && grep -qx -- 'miniZ --url=vast-fast-0@pool.example:3333 --par=192,7 --pers=ZcashPoW --telemetry=0 --nocolour' "$T/calls"; }; then fail "miniZ from a query URL (miniz.cc's download link)"; fi
+run POOL_URL=pool.example:3333 MINER=miniz MINIZ_URL='https://miniz.example/?x=1;rm' MINIZ_SHA256="$MZSHA"
+[ "$rc" = 64 ] || fail "a download URL with a shell character refused"
+fresh
+run POOL_URL=pool.example:3333 MINER=miniz MINIZ_URL=https://releases.example/miniz-badsum.tar.gz MINIZ_SHA256="$MZBAD"
+if ! { [ "$rc" = 65 ] && grep -q 'does not match the checksum file' "$T/out" && [ ! -s "$T/calls" ]; }; then fail "miniZ's own checksum file is checked"; fi
+fresh
+run POOL_URL=pool.example:3333 MINER=miniz MINIZ_URL=https://releases.example/miniz.tar.gz MINIZ_SHA256="$MZSHA" FAKE_FAILS=2
+if ! { [ "$rc" = 0 ] && [ "$(wc -l < "$T/calls")" = 3 ]; }; then fail "miniZ restarts after a failure"; fi
+for m in '--url2=x@y:1' '--read-config' '--donate=5'; do
+  run POOL_URL=pool.example:3333 MINER=miniz MINIZ_URL=https://releases.example/miniz.tar.gz MINIZ_SHA256="$MZSHA" MINER_ARGS="$m"
+  [ "$rc" = 64 ] || fail "MINER_ARGS '$m' refused for miniZ"
+done
+echo "ok - username = PAYOUT or WORKER; miniZ once pinned: query URL, its own checksum file, --par=192,7 --pers=ZcashPoW --telemetry=0, restarts"
 
 run POOL_URL=pool.example:3333 MINER_DRY_RUN=1
 if ! { [ "$rc" = 0 ] && [ ! -s "$T/calls" ] && [ ! -s "$T/downloads" ] && grep -q 'EQUI192_7' "$T/out"; }; then fail "dry run: no download, nothing run"; fi
@@ -168,12 +202,17 @@ echo "ok - dry run; restarts only on lolMiner's watchdog 42"
 # ---- what it sees before mining; no GPU: exit 70, nothing mined ----------------------------------------
 run POOL_URL=pool.example:3333 WORKER=vast-fast-0
 for want in 'nvidia-smi: GPU 0: NVIDIA GeForce RTX 3060$' 'lolMiner --list-devices: OpenCL driver detected. Number of OpenCL supported GPUs: 1' \
-            'pool pool.example:3333: the name does not resolve here' 'a usable GPU is there' 'NVIDIA_DRIVER_CAPABILITIES='; do
+            'pool pool.example:3333: the name does not resolve here' 'a usable GPU is there' 'NVIDIA_DRIVER_CAPABILITIES=' \
+            'driver version: 550.54.15' 'driver libraries: libcuda.so.1=' 'libnvidia-gpucomp.so.550.54.15=' 'OCL_ICD_VENDORS='; do
   grep -q "$want" "$T/out" || fail "before mining it prints: $want"
 done
 if grep -q 'UUID' "$T/out"; then fail "GPU UUIDs are not printed"; fi
 run POOL_URL=pool.example:3333 FAKE_OCL=none
 if ! { [ "$rc" = 70 ] && grep -q 'No OpenCL driver or GPUs detected' "$T/out" && grep -q 'no usable GPU' "$T/out" && [ ! -s "$T/calls" ]; }; then fail "no OpenCL (GPU burst 1): exit 70, nothing mined"; fi
+run POOL_URL=pool.example:3333 FAKE_OCL=0
+if ! { [ "$rc" = 70 ] && grep -q 'miniZ (MINER=miniz) mines 192,7 with CUDA' "$T/out" && [ ! -s "$T/calls" ]; }; then fail "lolMiner, 0 OpenCL GPUs, Cuda only (GPU burst 2): exit 70"; fi
+run POOL_URL=pool.example:3333 FAKE_OCL=0 FAKE_DRIVERS='Cuda, OpenCL'
+if ! { [ "$rc" = 0 ] && [ -s "$T/calls" ]; }; then fail "a card listed as Drivers: Cuda, OpenCL is usable"; fi
 run POOL_URL=pool.example:3333 FAKE_OCL=0 FAKE_SMI=0
 if ! { [ "$rc" = 70 ] && [ ! -s "$T/calls" ]; }; then fail "no GPU at all: exit 70"; fi
 run POOL_URL=pool.example:3333 MINER=miniz MINIZ_URL=https://releases.example/miniz.tar.gz MINIZ_SHA256="$MZSHA" FAKE_SMI=0

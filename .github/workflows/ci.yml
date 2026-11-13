@@ -93,3 +93,19 @@ jobs:
           cat diag.txt
           [ "$rc" = 70 ] || { echo "::error::expected exit 70 without a GPU, got $rc"; exit 1; }
           grep -q 'lolMiner --list-devices: OpenCL driver detected' diag.txt || { echo "::error::lolMiner does not see the OpenCL loader"; exit 1; }
+          grep -q 'cl-probe: no OpenCL platform' diag.txt || { echo "::error::cl-probe did not run"; exit 1; }
+      # miniZ from miniz.cc's own link (a query URL), its SHA-256 and the checksum file inside its archive
+      # checked; without a GPU it cannot load libcuda.so.1 and the entrypoint exits 70 (the values the
+      # ycash-ops fleet file pins: images/miner/README.md "miniZ")
+      - name: no GPU - miniZ is fetched, checked, lists its devices, and the entrypoint exits 70
+        env:
+          MINIZ_URL: https://miniz.cc/?sdm_process_download=1&download_id=5200
+          MINIZ_SHA256: 873f011442df76b9aae541f3c1a385677f5ea75d94a41da08647a7e51f92ae30
+        run: |
+          rc=0
+          docker run --rm -e POOL_URL=pool.example:3333 -e WORKER=ci -e MINER=miniz -e MINIZ_URL -e MINIZ_SHA256 \
+            -e MINER_DIAG=1 ycash-miner:ci > diagz.txt 2>&1 || rc=$?
+          cat diagz.txt
+          [ "$rc" = 70 ] || { echo "::error::expected exit 70 without a GPU, got $rc"; exit 1; }
+          grep -q 'miniz verified' diagz.txt || { echo "::error::miniZ was not downloaded and checked"; exit 1; }
+          grep -q 'miniZ --cuda-info: ' diagz.txt || { echo "::error::miniZ did not list its devices"; exit 1; }

@@ -108,7 +108,8 @@ NET_KEYS = {"count", "gpu_names", "max_dph", "min_reliability", "rental", "pools
 TOP_KEYS = {"format", "image", "disk_gb", "max_start_minutes", "miniz_url", "miniz_sha256", "comment", "networks"}
 MINERS = ("lolminer", "miniz")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-DOWNLOAD_RE = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~%/+-]*$")
+# an https download; a query is allowed (miniz.cc serves miniZ from ?sdm_process_download=1&download_id=<n>)
+DOWNLOAD_RE = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~%/+-]*(\?[A-Za-z0-9._~%=&+-]*)?$")
 FORBIDDEN_ARGS = {"-p", "--pool", "-u", "--user", "--pass", "--dualpool", "--dualuser", "--dualpass",
                   "-a", "--algo", "--pers", "-c", "--coin", "--config", "--json", "--profile",
                   "--watchdogscript", "--apihost", "--apiport", "--tls", "--socks5", "--dns-over-https",

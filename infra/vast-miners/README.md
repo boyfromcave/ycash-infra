@@ -61,7 +61,7 @@ of ours.
 |---|---|
 | `image` | the miner image **by digest** (`ghcr.io/<owner>/ycash-miner@sha256:…`, from `miner-image.yml`); per network `image` overrides it |
 | `disk_gb` | disk per machine (default 8) |
-| `miniz_url`, `miniz_sha256` | miniZ's official https download and its SHA-256; both empty (miniZ off) until the owner has read miniZ's Terms and confirmed its 192,7 flags (`images/miner/README.md`) |
+| `miniz_url`, `miniz_sha256` | miniZ's official https download (miniz.cc's link is a query URL) and the archive's SHA-256; both empty means miniZ is off. Its Terms, fee and 192,7 flags: `images/miner/README.md` "miniZ" |
 | `max_start_minutes` | how long a machine may stay "loading" before it counts as dead (default 30) |
 | `networks.<name>.count` | how many miners always on (0 = none, only bursts) |
 | `gpu_names` | the cards accepted, as Vast names them (`"RTX 3060"`, `"RTX 3070"`, `"RTX A4000"`, …) |
