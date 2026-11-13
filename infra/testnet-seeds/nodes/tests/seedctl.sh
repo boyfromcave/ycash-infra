@@ -54,7 +54,7 @@ cat > "$T/bin/curl" <<'EOF'
 #!/bin/bash
 echo "curl $*" >> "$LOG"
 case "$*" in
-  *127.0.0.1:3334/status*) echo '{"nodeUp":true,"height":510432,"templateAgeSeconds":0,"miners":2,"connections":2,"accepted":1,"rejected":0,"lastSubmitVerdict":"accepted","payout":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","equihash":"192,7","shares":9,"stale":4,"shareRatio":32,"uptimeSeconds":60}' ;;
+  *127.0.0.1:3334/status*) echo '{"nodeUp":true,"height":510432,"templateAgeSeconds":0,"miners":2,"connections":2,"accepted":1,"rejected":0,"lastSubmitVerdict":"accepted","payout":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","equihash":"192,7","shares":9,"stale":4,"highHash":3,"shareRatio":32,"uptimeSeconds":60}' ;;
   *) exit 7 ;;
 esac
 EOF
@@ -169,7 +169,7 @@ grep -qx 'iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner 2004 -
 "$SEEDCTL" boot 2>/dev/null
 [ "$(grep -c '^iptables -I' "$LOG")" = 1 ] || fail "the metadata rule is installed once, not again at boot"
 s=$("$SEEDCTL" status yb-fast)
-[ "$(echo "$s" | jq -r '.pool.accepted')" = 1 ] && [ "$(echo "$s" | jq -c '[.pool.stale, .pool.shares, .pool.shareRatio, (.pool | has("uptimeSeconds"))]')" = '[4,9,32,false]' ] && [ "$(echo "$s" | jq -r '.pool.container')" = running ] && [ "$(echo "$s" | jq -r '.pool.payout')" = smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb ] || fail "status with a pool: $s"
+[ "$(echo "$s" | jq -r '.pool.accepted')" = 1 ] && [ "$(echo "$s" | jq -c '[.pool.stale, .pool.highHash, .pool.shares, .pool.shareRatio, (.pool | has("uptimeSeconds"))]')" = '[4,3,9,32,false]' ] && [ "$(echo "$s" | jq -r '.pool.container')" = running ] && [ "$(echo "$s" | jq -r '.pool.payout')" = smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb ] || fail "status with a pool: $s"
 ok "a pool beside fast: compose service, private pool.conf, status page waited for and reported"
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null
