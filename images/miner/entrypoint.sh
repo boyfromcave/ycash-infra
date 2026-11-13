@@ -37,7 +37,9 @@
 #   MINER_MANIFEST   the manifest (default /opt/ycash-miner/miners.conf).
 #   NO_GPU_GRACE     seconds a container with no usable GPU waits before it destroys its own Vast
 #                    instance (default 600, so `logs` can still read it); 0 = at once. Without
-#                    Vast's per-instance key it just exits 70.
+#                    Vast's per-instance key it just exits 70. After the grace the GPU is checked
+#                    again; only a second failure ends the rental (destroy, tried 3 times with
+#                    VAST_RETRY_DELAY x 1, 2 s between, default 10; then stop).
 #   MINER_CACHE      where the verified download is kept across restarts (default ~/.cache/ycash-miner).
 #   RESTART_DELAY    seconds before a watchdog restart (default 10).
 # Before mining it prints what the container sees: nvidia-smi's GPUs, the driver version and which of
@@ -340,15 +342,34 @@ if [ "$gpu_ok" != 0 ]; then
   if [ "${MINER_DIAG:-}" != 1 ] && [[ ${CONTAINER_ID:-} =~ ^[0-9]{1,12}$ ]] && [ -n "${CONTAINER_API_KEY:-}" ]; then
     grace=${NO_GPU_GRACE:-600}
     [[ $grace =~ ^[0-9]{1,5}$ ]] || grace=600
-    echo "ycash-miner: no usable GPU in this container: not mining; this machine's rental ends in $grace s" >&2
-    sleep "$grace"
-    if vast_self DELETE '{}'; then
-      echo "ycash-miner: this machine's rental is ended (instance destroyed with its own key)"
-    else
-      echo "ycash-miner: Vast refused to destroy the instance; the fleet's expire or down ends it" >&2
+    echo "ycash-miner: no usable GPU in this container: not mining; this machine's rental ends in $grace s unless a second check finds one" >&2
+    # bash is PID 1: without a trap, `docker stop` would wait out the grace
+    trap 'echo "ycash-miner: stopped during the grace period" >&2; exit 70' TERM INT
+    sleep "$grace" &
+    wait "$!"
+    trap - TERM INT
+    # a transient failure (a driver blip at start) must not end a good rental: check again
+    echo "ycash-miner: checking the GPU again before ending the rental"
+    gpu_ok=0
+    gpu_check || gpu_ok=$?
+    if [ "$gpu_ok" != 0 ]; then
+      ended=no
+      delay=${VAST_RETRY_DELAY:-10}
+      [[ $delay =~ ^[0-9]{1,4}$ ]] || delay=10
+      for try in 1 2 3; do
+        if vast_self DELETE '{}'; then ended=destroyed; break; fi
+        echo "ycash-miner: Vast refused to destroy the instance (try $try/3)" >&2
+        [ "$try" = 3 ] || sleep $((delay * try))
+      done
+      if [ "$ended" = no ] && vast_self PUT '{"state": "stopped"}'; then ended=stopped; fi
+      case "$ended" in
+        destroyed) echo "ycash-miner: this machine's rental is ended (instance destroyed with its own key)" ;;
+        stopped) echo "ycash-miner: destroy refused; the instance is stopped (no GPU charge; the fleet's expire destroys it)" ;;
+        *) echo "ycash-miner: Vast refused both destroy and stop; the fleet's expire or down ends it" >&2 ;;
+      esac
     fi
   fi
-  fail "no usable GPU in this container: not mining (exit 70)" 70
+  [ "$gpu_ok" = 0 ] || fail "no usable GPU in this container: not mining (exit 70)" 70
 fi
 echo "ycash-miner: a usable GPU is there"
 if [ "${MINER_DIAG:-}" = 1 ]; then echo "ycash-miner: MINER_DIAG=1: checks only, not mining"; exit 0; fi

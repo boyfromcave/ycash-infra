@@ -121,7 +121,9 @@ Before it mines, the entrypoint prints: the NVIDIA variables, the `/dev/nvidia*`
 (miniZ: `nvidia-smi` lists none, or miniZ cannot load `libcuda.so.1`), it **does not mine**. Vast
 restarts a container that exits (GPU burst 6: the checks ran again and again on a running
 instance), so with Vast's per-instance key the container waits `NO_GPU_GRACE` seconds (default
-600, so `logs` can read it) and then destroys its own instance; without the key it exits 70. `MINER_DIAG=1` runs the same
+600, so `logs` can read it; `docker stop` ends the wait at once), checks the GPU again, and only if
+that fails too destroys its own instance (3 tries, then it stops it as a burst end does); without
+the key it exits 70. `MINER_DIAG=1` runs the same
 checks (after the download) and exits 0 or 70 without mining.
 
 ### The end of a burst (`MINER_UNTIL`)
