@@ -106,7 +106,7 @@ fail() { echo "FAIL: $*" >&2; cat "$T/out" >&2 || true; exit 1; }
 fresh() { rm -rf "$T/cache"; }
 run() { : > "$T/calls"; : > "$T/downloads"; : > "$T/api"; rc=0
   env -u POOL_URL -u WORKER -u PAYOUT -u MINER_ARGS -u MINER_DRY_RUN -u MINER -u MINIZ_URL -u MINIZ_SHA256 \
-    -u MINER_UNTIL -u MINER_DIAG -u CONTAINER_ID -u CONTAINER_API_KEY \
+    -u MINER_UNTIL -u MINER_DIAG -u CONTAINER_ID -u CONTAINER_API_KEY -u NO_GPU_GRACE \
     MINER_CACHE="$T/cache" "$@" ./entrypoint.sh > "$T/out" 2>&1 || rc=$?; }
 
 # ---- configuration refusals (nothing downloaded) -------------------------------------------------
@@ -238,5 +238,9 @@ if [ -e "$T/calls.key" ]; then fail "lolMiner runs without Vast's per-instance k
 grep -q "per-instance key present: yes" "$T/out" || fail "whether the key is there is printed (yes/no only)"
 run POOL_URL=pool.example:3333 MINER_UNTIL=$((now - 5))
 if ! { [ "$rc" = 0 ] && grep -q 'no per-instance Vast key' "$T/out" && [ ! -s "$T/api" ]; }; then fail "no Vast key: just exits"; fi
-echo "ok - MINER_UNTIL: stops mining at the burst's end and destroys (else stops) its own instance; key never printed"
+run POOL_URL=pool.example:3333 FAKE_OCL=0 CONTAINER_ID=4242 CONTAINER_API_KEY="$IKEY" NO_GPU_GRACE=0
+if ! { [ "$rc" = 70 ] && [ ! -s "$T/calls" ] && grep -qx "DELETE https://console.vast.ai/api/v0/instances/4242/ key=$IKEY" "$T/api"; }; then fail "no usable GPU with Vast's key: destroys its own instance (Vast restarts an exited container), exit 70"; fi
+run POOL_URL=pool.example:3333 FAKE_OCL=0 CONTAINER_ID=4242 CONTAINER_API_KEY="$IKEY" NO_GPU_GRACE=0 MINER_DIAG=1
+if ! { [ "$rc" = 70 ] && [ ! -s "$T/api" ]; }; then fail "MINER_DIAG never destroys"; fi
+echo "ok - MINER_UNTIL: stops mining at the burst's end and destroys (else stops) its own instance; key never printed; no GPU: destroys itself after its grace"
 echo "entrypoint-test: all checks passed"
