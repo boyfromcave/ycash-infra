@@ -198,7 +198,7 @@ module "pool" {   # e.g. the operator's testnet-pools/nodes root, one host, fast
     yb-fast = {
       profile    = "fast"
       extra_args = "-listen=0 -addnode=<the network's seed name>:18833"
-      pool       = { image = "ghcr.io/<owner>/yolo@sha256:...", payout = "sm...", port = 3333 }
+      pool       = { image = "ghcr.io/<owner>/yolo@sha256:...", payout = "sm...", port = 3333, share_ratio = 32 }
     }
   }
   prefix = { ... }                             # the same testnet-prefix-v1 pin as the seeds
@@ -216,7 +216,8 @@ What a `pool` adds, per host:
 - **yolo** in the same compose project (`yolo-<key>`, host networking, uid 2004, read-only root,
   no capabilities, 256 MiB): `--payout <payout>` (every block pays that transparent address; a
   miner's stratum username is only a worker name), stratum on `0.0.0.0:<port>`, its status page on
-  `127.0.0.1:<port + 1>`, the node's RPC on `127.0.0.1` with the node's own credential from
+  `127.0.0.1:<port + 1>`, `--share-ratio <share_ratio>` when above 1 (shares keep GPU miners
+  connected between blocks and show the fleet's speed; yolo README, "Shares"), the node's RPC on `127.0.0.1` with the node's own credential from
   `/srv/ycash-data/<key>/pool.conf` (mode 0400, never on a command line). It reaches the node
   only through the stock mining RPCs (workspace rule 2).
 - **Inbound**: the stratum port, to `pool_ingress_cidrs` (default everyone: rented miners come

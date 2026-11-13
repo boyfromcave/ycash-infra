@@ -65,6 +65,7 @@ locals {
       port        = n.pool.port
       status_port = n.pool.port + 1
       text        = n.pool.text
+      share_ratio = n.pool.share_ratio
     }
     prefix = n.testnet && n.bootstrap && var.prefix != null ? {
       base_url    = local.profile_prefix[n.profile].base_url

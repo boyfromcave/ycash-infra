@@ -67,7 +67,8 @@ check_config() { # file name
       and (.pool.image | test("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$"))
       and (.pool.payout | test("^[1-9A-HJ-NP-Za-km-z]{26,40}$"))
       and (.pool.port | type == "number") and (.pool.status_port | type == "number")
-      and ((.pool.text // "") | test("^[A-Za-z0-9 ._:/-]{0,60}$"))))
+      and ((.pool.text // "") | test("^[A-Za-z0-9 ._:/-]{0,60}$"))
+      and ((.pool.share_ratio // 1) | type == "number" and . >= 1 and . == floor)))
   ' "$1" >/dev/null || die "config for $2 is not valid"
 }
 
@@ -136,7 +137,7 @@ YAML
 # -mineraddress is the same address, locals.tf), on the node's RPC at 127.0.0.1 with the node's own
 # credential (pool.conf: never on a command line, readable by yolo's uid only).
 render_pool() { # net file
-  local net=$1 f=$2 R="$O/net/$1" pc="$D/$1/pool.conf" text
+  local net=$1 f=$2 R="$O/net/$1" pc="$D/$1/pool.conf" text ratio
   ( umask 077
     # shellcheck source=/dev/null
     . "$D/$net/rpc.env"
@@ -146,6 +147,8 @@ render_pool() { # net file
   chmod 0400 "$pc.new"; mv -f "$pc.new" "$pc"
   text=$(cfg "$f" '.pool.text // ""')
   [ -z "$text" ] || text=", \"--text\", \"$text\""
+  ratio=$(cfg "$f" '.pool.share_ratio // 1')
+  [ "$ratio" = 1 ] || text=", \"--share-ratio\", \"$ratio\"$text"
   cat >> "$R/compose.yaml" <<YAML
   yolo:
     image: $(cfg "$f" .pool.image)
