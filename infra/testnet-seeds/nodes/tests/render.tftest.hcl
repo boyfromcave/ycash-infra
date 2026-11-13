@@ -170,7 +170,7 @@ run "pool_host" {
         extra_args = "-listen=0 -addnode=fastnet-seed.example.org:18833"
         pool = {
           image       = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-          payout      = "smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13"
+          payout      = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb"
           share_ratio = 32
         }
       }
@@ -178,11 +178,11 @@ run "pool_host" {
     p2p_ingress_cidrs = []
   }
   assert {
-    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args == "-maxtipage=999999999 -dbcache=256 -maxconnections=64 -listen=0 -addnode=fastnet-seed.example.org:18833 -disablewallet -mineraddress=smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13 -minetolocalwallet=0"
+    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args == "-maxtipage=999999999 -dbcache=256 -maxconnections=64 -listen=0 -addnode=fastnet-seed.example.org:18833 -disablewallet -mineraddress=smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb -minetolocalwallet=0"
     error_message = "a pool's node: no wallet, the payout address as -mineraddress, not required to be a wallet address"
   }
   assert {
-    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).pool) == jsonencode({ image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13", port = 3333, status_port = 3334, text = "", share_ratio = 32 })
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).pool) == jsonencode({ image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", port = 3333, status_port = 3334, text = "", share_ratio = 32 })
     error_message = "the pool's config: image, payout, stratum port 3333, status page on 3334"
   }
   assert {
@@ -214,7 +214,7 @@ run "refuses_a_pool_on_mainnet" {
 run "refuses_a_pool_by_tag_or_on_a_node_port" {
   command = plan
   variables {
-    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo:latest", payout = "smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13", port = 18832 } } }
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo:latest", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", port = 18832 } } }
   }
   expect_failures = [var.networks]
 }

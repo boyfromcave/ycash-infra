@@ -54,7 +54,7 @@ cat > "$T/bin/curl" <<'EOF'
 #!/bin/bash
 echo "curl $*" >> "$LOG"
 case "$*" in
-  *127.0.0.1:3334/status*) echo '{"nodeUp":true,"height":510432,"templateAgeSeconds":0,"miners":2,"connections":2,"accepted":1,"rejected":0,"lastSubmitVerdict":"accepted","payout":"smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13","equihash":"192,7","shares":9}' ;;
+  *127.0.0.1:3334/status*) echo '{"nodeUp":true,"height":510432,"templateAgeSeconds":0,"miners":2,"connections":2,"accepted":1,"rejected":0,"lastSubmitVerdict":"accepted","payout":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","equihash":"192,7","shares":9}' ;;
   *) exit 7 ;;
 esac
 EOF
@@ -153,12 +153,12 @@ if "$SEEDCTL" apply yb-fast "$INJ" 2>/dev/null; then fail "accepted a newline in
 ok "refuses a tag, a foreign config, a bad name, an injected line"
 # 10. a pool beside fast (the pool host): yolo in the same compose project, the node's credential in
 #     a private pool.conf (never on a command line), status with a pool field; removing the pool removes it
-POOLED=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c '.pool = {image: "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout: "smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13", port: 3333, status_port: 3334, text: "testnet pool", share_ratio: 32}' | b64)
+POOLED=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c '.pool = {image: "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout: "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", port: 3333, status_port: 3334, text: "testnet pool", share_ratio: 32}' | b64)
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$POOLED" 2>"$T/err" || { cat "$T/err"; fail "apply with a pool"; }
 c="$O/net/yb-fast/compose.yaml"
 grep -q 'container_name: yolo-yb-fast' "$c" && grep -q 'image: ghcr.io/example/yolo@sha256:2222' "$c" && grep -q 'depends_on: \[ycashd\]' "$c" || fail "the yolo service: $(cat "$c")"
-grep -qF 'command: ["--conf", "/etc/yolo/pool.conf", "--payout", "smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13", "--bind", "0.0.0.0", "--port", "3333", "--status-port", "3334", "--status-bind", "127.0.0.1", "--max-connections", "64", "--max-per-ip", "4", "--log", "info", "--share-ratio", "32", "--text", "testnet pool"]' "$c" || fail "yolo's command line: $(grep command "$c")"
+grep -qF 'command: ["--conf", "/etc/yolo/pool.conf", "--payout", "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", "--bind", "0.0.0.0", "--port", "3333", "--status-port", "3334", "--status-bind", "127.0.0.1", "--max-connections", "64", "--max-per-ip", "4", "--log", "info", "--share-ratio", "32", "--text", "testnet pool"]' "$c" || fail "yolo's command line: $(grep command "$c")"
 grep -q 'read_only: true' "$c" && grep -q 'cap_drop: \[ALL\]' "$c" && grep -qF "\"$D/yb-fast/pool.conf:/etc/yolo/pool.conf:ro\"" "$c" || fail "yolo is read-only, no capabilities, the conf mounted read-only"
 pw=$(sed -n 's/^YCASHD_RPC_PASSWORD=//p' "$D/yb-fast/rpc.env")
 grep -qx "rpcpassword=$pw" "$D/yb-fast/pool.conf" && grep -qx 'rpcport=18832' "$D/yb-fast/pool.conf" && grep -qx 'rpcconnect=127.0.0.1' "$D/yb-fast/pool.conf" && [ "$(stat -c %a "$D/yb-fast/pool.conf")" = 400 ] || fail "pool.conf: the node's credential, its RPC port on loopback, mode 0400"
@@ -169,7 +169,7 @@ grep -qx 'iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner 2004 -
 "$SEEDCTL" boot 2>/dev/null
 [ "$(grep -c '^iptables -I' "$LOG")" = 1 ] || fail "the metadata rule is installed once, not again at boot"
 s=$("$SEEDCTL" status yb-fast)
-[ "$(echo "$s" | jq -r '.pool.accepted')" = 1 ] && [ "$(echo "$s" | jq -r '.pool.container')" = running ] && [ "$(echo "$s" | jq -r '.pool.payout')" = smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13 ] || fail "status with a pool: $s"
+[ "$(echo "$s" | jq -r '.pool.accepted')" = 1 ] && [ "$(echo "$s" | jq -r '.pool.container')" = running ] && [ "$(echo "$s" | jq -r '.pool.payout')" = smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb ] || fail "status with a pool: $s"
 ok "a pool beside fast: compose service, private pool.conf, status page waited for and reported"
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null
