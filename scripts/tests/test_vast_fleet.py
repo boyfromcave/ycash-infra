@@ -252,7 +252,8 @@ class TestReconcile(Base):
         self.assertEqual(body["runtype"], "args")
         self.assertIsNone(body["price"])
         self.assertTrue(body["cancel_unavail"])
-        self.assertEqual(body["env"], {"POOL_URL": "pool-b.test1:3333", "WORKER": "vast-slow-1", "MINER": "lolminer"})
+        self.assertEqual(body["env"], {"POOL_URL": "pool-b.test1:3333", "WORKER": "vast-slow-1", "MINER": "lolminer",
+                                       "NVIDIA_DRIVER_CAPABILITIES": "compute,utility"})
         self.assertEqual(rents["ycash-slow-0"][1]["env"]["POOL_URL"], "pool-a.test1:3333")
         self.assertEqual(body["env"]["POOL_URL"], "pool-b.test1:3333")       # round-robin over the pools
         self.assertEqual(body["env"]["WORKER"], "vast-slow-1")
@@ -430,20 +431,191 @@ class TestBurst(Base):
     def test_burst_extends_and_shrinks(self):
         self.set_fleet(fleet_file(slow__count=1))
         self.assertEqual(self.run_fleet("burst", "slow", "3", "--hours", "2"), 0, self.out)
-        self.assertEqual(self.labels(), ["ycash-slow-0", "ycash-slow-1.until-20270115T1000Z",
+        # every slot the burst rents carries its end, slot 0 (within the count) too
+        self.assertEqual(self.labels(), ["ycash-slow-0.until-20270115T1000Z", "ycash-slow-1.until-20270115T1000Z",
                                          "ycash-slow-2.until-20270115T1000Z"])
-        # a later burst of 2 for longer: slot 2 goes, slot 1 is relabelled (no new rental)
+        self.assertIn(f"burst_until={NOW + 2 * 3600}", self.out)
+        self.assertEqual({c["body"]["env"]["MINER_UNTIL"] for c in self.creates()}, {str(NOW + 2 * 3600)})
+        # a later burst of 2 for longer: slot 2 goes; slots 0 and 1 get the new end, and since their
+        # containers end themselves at the old one, new containers
         os.environ["VAST_FLEET_NOW"] = str(NOW + 1200)     # 20 min on: still starting, not stuck
+        st = self.fake.read()
+        st["offers"] += [offer(41, "RTX 3070", 0.111), offer(42, "RTX 3070", 0.112)]
+        self.fake.write(st)
         self.fake.clear()
         self.assertEqual(self.run_fleet("burst", "slow", "2", "--hours", "5"), 0, self.out)
+        self.assertEqual(len(self.fake.calls("DELETE")), 3)
+        self.assertEqual({c["body"]["env"]["MINER_UNTIL"] for c in self.creates()}, {str(NOW + 1200 + 5 * 3600)})
+        self.assertEqual(self.labels(), ["ycash-slow-0.until-20270115T1320Z", "ycash-slow-1.until-20270115T1320Z"])
+
+    def test_burst_within_the_count_is_ended_by_expire(self):
+        # GPU burst 1: fast had count 1 and the burst asked for 1, and the miner was rented as a
+        # permanent fleet slot that expire skipped. Now it is a burst slot like any other.
+        self.set_fleet(fleet_file(fast__count=1))
+        self.assertEqual(self.run_fleet("burst", "fast", "1", "--hours", "1"), 0, self.out)
+        self.assertEqual(self.labels(), ["ycash-fast-0.until-20270115T0900Z"])
+        (c,) = self.creates()
+        self.assertEqual(c["body"]["env"]["MINER_UNTIL"], str(NOW + 3600))
+        self.assertEqual(self.run_fleet("expire"), 0, self.out)
+        self.assertIn("burst_active=1", self.out)
+        # a scheduled reconcile inside the window leaves it a burst slot (no relabel, no replacement)
+        self.fake.clear()
+        self.assertEqual(self.run_fleet("reconcile", "--network", "fast"), 0, self.out)
+        self.assertEqual(self.fake.calls("PUT") + self.fake.calls("DELETE"), [])
+        os.environ["VAST_FLEET_NOW"] = str(NOW + 3600 + 60)
+        self.fake.clear()
+        self.assertEqual(self.run_fleet("expire"), 0, self.out)
+        self.assertEqual(len(self.fake.calls("DELETE")), 1)
         self.assertEqual(self.creates(), [])
-        self.assertEqual(self.labels(), ["ycash-slow-0", "ycash-slow-1.until-20270115T1320Z"])
+        self.assertIn("burst_active=0", self.out)
+        self.assertEqual(self.labels(), [])
+
+    def test_burst_over_within_the_count_becomes_a_fleet_miner_on_reconcile(self):
+        self.set_fleet(fleet_file(fast__count=1))
+        self.assertEqual(self.run_fleet("burst", "fast", "1", "--hours", "1"), 0, self.out)
+        os.environ["VAST_FLEET_NOW"] = str(NOW + 2 * 3600)
+        self.fake.clear()
+        self.assertEqual(self.run_fleet("reconcile", "--network", "fast"), 0, self.out)
+        self.assertEqual(len(self.fake.calls("DELETE")), 1)
+        (c,) = self.creates()
+        self.assertNotIn("MINER_UNTIL", c["body"]["env"])
+        self.assertEqual(self.labels(), ["ycash-fast-0"])
+
+    def test_burst_with_count_zero(self):
+        self.set_fleet(fleet_file(fast__count=0))
+        self.assertEqual(self.run_fleet("burst", "fast", "1", "--hours", "1"), 0, self.out)
+        self.assertEqual(self.labels(), ["ycash-fast-0.until-20270115T0900Z"])
+        # count 0: a scheduled reconcile of every network starts nothing on fast once it is over
+        os.environ["VAST_FLEET_NOW"] = str(NOW + 3600 + 60)
+        self.fake.clear()
+        self.assertEqual(self.run_fleet("reconcile"), 0, self.out)
+        self.assertEqual([c["body"]["label"] for c in self.creates() if "fast" in c["body"]["label"]], [])
+        self.assertNotIn("ycash-fast-0", " ".join(self.labels()))
+
+    def test_burst_keeps_a_running_fleet_slot(self):
+        self.set_fleet(fleet_file(fast__count=1))
+        self.fake.write({"offers": copy.deepcopy(OFFERS), "instances": [
+            inst(801, "ycash-fast-0", extra_env=[["POOL_URL", "pool-a.test0:3333"], ["WORKER", "vast-fast-0"],
+                                                 ["MINER", "lolminer"]])]})
+        self.assertEqual(self.run_fleet("burst", "fast", "2", "--hours", "1"), 0, self.out)
+        self.assertEqual(self.fake.calls("DELETE"), [])
+        self.assertEqual(self.labels(), ["ycash-fast-0", "ycash-fast-1.until-20270115T0900Z"])
+
+    def test_expire_ends_what_lost_its_end_time(self):
+        # H1: a miner of ours with no end time in a slot at or above the count (fast 0: every slot), a
+        # ycash- label rewritten into something that no longer parses (by the miner, which may hold
+        # the per-instance key), a fleet image under a foreign label: expire destroys them all
+        self.set_fleet(fleet_file(fast__count=0, slow__count=1))
+        self.fake.write({"offers": copy.deepcopy(OFFERS), "instances": [
+            inst(1001, "ycash-fast-0"),                              # lost its .until-
+            inst(1002, "ycash-fast-0.until-forever"),               # rewritten
+            inst(1003, "ycash-fast-0 hacked"),                      # rewritten
+            inst(1004, "my-own-job", image_uuid=DIGEST),            # a fleet image under another label
+            inst(1005, "ycash-slow-0"),                             # a fleet slot within count: kept
+            inst(1006, "ycash-slow-1"),                             # above slow's count 1
+            inst(1007, "someone-elses", image_uuid="ghcr.io/other/x@sha256:" + "cd" * 32),
+            inst(1008, None),
+        ]})
+        self.assertEqual(self.run_fleet("expire"), 0, self.out)
+        deleted = sorted(int(c["path"].split("/")[4]) for c in self.fake.calls("DELETE"))
+        self.assertEqual(deleted, [1001, 1002, 1003, 1004, 1006])
+        self.assertIn("burst_active=0", self.out)
+        self.assertEqual(self.creates(), [])
+        # reconcile and down still never touch the strays (only expire, which never rents, does)
+        self.fake.write({"offers": [], "instances": [inst(1002, "ycash-fast-0.until-forever"),
+                                                     inst(1004, "my-own-job", image_uuid=DIGEST)]})
+        self.fake.clear()
+        self.assertEqual(self.run_fleet("down"), 0, self.out)
+        self.assertEqual(self.fake.calls("DELETE"), [])
+
+    def test_expire_ends_a_dead_burst_miner_after_a_while(self):
+        # M4: an exited or stopped burst miner still pays storage; kept 15 minutes for `logs`, then gone
+        self.fake.write({"offers": copy.deepcopy(OFFERS), "instances": [
+            inst(1101, "ycash-fast-0.until-20270115T1000Z", status="exited", start=NOW - 20 * 60),
+            inst(1102, "ycash-fast-1.until-20270115T1000Z", status="exited", start=NOW - 5 * 60),
+            inst(1103, "ycash-fast-2.until-20270115T1000Z", start=NOW - 20 * 60,
+                 intended_status="stopped"),
+            inst(1104, "ycash-fast-3.until-20270115T1000Z", start=NOW - 20 * 60),   # running: kept
+        ]})
+        self.set_fleet(fleet_file(fast__count=0))
+        self.assertEqual(self.run_fleet("expire"), 0, self.out)
+        deleted = sorted(int(c["path"].split("/")[4]) for c in self.fake.calls("DELETE"))
+        self.assertEqual(deleted, [1101, 1103])
+        self.assertIn("burst_active=2", self.out)
 
     def test_burst_limits(self):
         self.assertEqual(self.run_fleet("burst", "legacy", "0", "--hours", "3"), 1)
         self.assertEqual(self.run_fleet("burst", "legacy", "2", "--hours", "500"), 1)
         self.assertEqual(self.run_fleet("burst", "nosuch", "2", "--hours", "3"), 1)
         self.assertEqual(self.creates(), [])
+
+
+class TestLogs(Base):
+    LOG = ("ycash-miner: lolminer 1.98a from https://github.com/x (SHA-256 " + "ab" * 32 + ")\n"
+           "ycash-miner: pool fastnet-pool.test:3333 resolves to 198.51.100.77 2001:db8:0:1::5\n"
+           "::error::from the machine\n"
+           "\x1b[31mNo OpenCL driver or GPUs detected.\x1b[0m\n"
+           f"leaked {KEY}\n")
+
+    def setUp(self):
+        super().setUp()
+        self.fake.write({"offers": copy.deepcopy(OFFERS), "log_delay": 2,
+                         "logs": {"901": self.LOG, "902": "slow log\n"},
+                         "instances": [inst(901, "ycash-fast-0.until-20270115T0900Z"), inst(902, "ycash-slow-0"),
+                                       inst(903, "someone-elses")]})
+
+    def test_logs_scrubbed_and_fetched_without_the_key(self):
+        self.assertEqual(self.run_fleet("logs", "--network", "fast", "--tail", "50"), 0, self.out)
+        reqs = [c for c in self.fake.calls("PUT") if "request_logs" in c["path"]]
+        self.assertEqual([c["path"] for c in reqs], ["/api/v0/instances/request_logs/901/"])
+        self.assertEqual(reqs[0]["body"], {"tail": "50"})
+        gets = [c for c in self.fake.calls("GET") if c["path"].startswith("/instance_logs/")]
+        self.assertEqual(len(gets), 3)                       # polled until uploaded
+        self.assertTrue(all(g["auth"] is None for g in gets))   # the key never goes to the log link
+        self.assertIn("No OpenCL driver or GPUs detected.", self.out)
+        self.assertIn("ycash-fast-0.until-20270115T0900Z: running, up 1h00m", self.out)
+        for leak in (KEY, "198.51.100.77", "2001:db8", "::5", "ab" * 32, "\x1b", "[31m", "instance_logs"):
+            self.assertNotIn(leak, self.out)
+        self.assertNotIn("slow log", self.out)
+
+    def test_logs_switch_workflow_commands_off_in_actions(self):
+        os.environ["GITHUB_ACTIONS"] = "true"
+        self.assertEqual(self.run_fleet("logs", "--network", "fast"), 0, self.out)
+        lines = self.out.splitlines()
+        cmd = lines.index("::error::from the machine")
+        stop = [n for n, line in enumerate(lines) if line.startswith("::stop-commands::")]
+        self.assertEqual(len(stop), 1)
+        token = lines[stop[0]].split("::")[2]
+        self.assertRegex(token, r"^[0-9a-f]{32}$")
+        resume = lines.index(f"::{token}::")
+        self.assertLess(stop[0], cmd)
+        self.assertLess(cmd, resume)
+        self.assertNotIn(token, "\n".join(lines[stop[0] + 1:resume]))
+
+    def test_clock_times_are_not_taken_for_addresses(self):
+        self.assertEqual(vf.scrub("[10:03:51] Connected to pool 2001:db8::7 fe80:0:0:0:1:2:3:4"),
+                         "[10:03:51] Connected to pool <ip> <ip>")
+
+    def test_logs_every_network_and_never_others(self):
+        self.assertEqual(self.run_fleet("logs"), 0, self.out)
+        paths = sorted(c["path"] for c in self.fake.calls("PUT"))
+        self.assertEqual(paths, ["/api/v0/instances/request_logs/901/", "/api/v0/instances/request_logs/902/"])
+        self.assertIn("slow log", self.out)
+        self.assertEqual(self.fake.calls("DELETE"), [])
+
+    def test_logs_limits(self):
+        self.assertEqual(self.run_fleet("logs", "--tail", "0"), 1)
+        self.assertEqual(self.run_fleet("logs", "--tail", "9999"), 1)
+        self.assertEqual(self.fake.calls(), [])
+
+    def test_status_shows_age_and_what_vast_says(self):
+        st = self.fake.read()
+        st["instances"][0]["status_msg"] = "Error response from daemon: pull from 198.51.100.9 | denied"
+        self.fake.write(st)
+        self.assertEqual(self.run_fleet("status"), 0, self.out)
+        self.assertIn("| ycash-fast-0.until-20270115T0900Z | running | 1h00m |", self.out)
+        self.assertIn("Error response from daemon: pull from <ip> / denied", self.out)
+        self.assertNotIn("198.51.100.9", self.out)
 
 
 class TestImage(unittest.TestCase):

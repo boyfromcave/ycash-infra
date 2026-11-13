@@ -24,13 +24,25 @@
 #               set (in the manifest or the environment).
 #   MINIZ_URL, MINIZ_SHA256  miniZ's official download (https) and its SHA-256, once pinned.
 #   MINER_ARGS  optional extra miner options, space separated (no pool, user, password or algorithm options).
+#   MINER_UNTIL optional, a burst's end (epoch seconds; the fleet sets it on every burst miner). At that
+#               time the miner is stopped and the container ends its own rental: it destroys its Vast
+#               instance with the per-instance key Vast puts in every container (CONTAINER_API_KEY,
+#               CONTAINER_ID; scoped to that one instance, never ours), or stops it if destroy is
+#               refused, then exits 0. Without that key it just exits; the fleet's expire destroys it.
 #   MINER_DRY_RUN=1  print what would be downloaded and run, then exit (no download, no GPU).
+#   MINER_DIAG=1     download and check the miner, print the GPU and pool checks below, then exit:
+#                    0 with a usable GPU, 70 without (no mining).
 #   MINER_MANIFEST   the manifest (default /opt/ycash-miner/miners.conf).
 #   MINER_CACHE      where the verified download is kept across restarts (default ~/.cache/ycash-miner).
 #   RESTART_DELAY    seconds before a watchdog restart (default 10).
+# Before mining it prints what the container sees: nvidia-smi's GPUs, the OpenCL platforms (clinfo),
+# the miner's own device list (lolMiner --list-devices) and the pool's address and reachability. With
+# no usable GPU it exits 70 instead of idling on a rented machine, so Vast shows it exited and the
+# fleet gives it back. (lolMiner mines 192,7 on Nvidia through OpenCL: images/miner/Dockerfile.)
 # lolMiner's exit code 42 (a GPU hung, --watchdog exit) restarts it here, at most 20 times; any other
 # exit ends the container, so the fleet reconcile replaces the machine.
-# Exit codes of its own: 64 bad configuration, 65 checksum mismatch, 69 download failed.
+# Exit codes of its own: 64 bad configuration, 65 checksum mismatch, 69 download failed, 70 no usable
+# GPU; 0 at the end of a burst (MINER_UNTIL).
 set -euo pipefail
 
 MANIFEST=${MINER_MANIFEST:-/opt/ycash-miner/miners.conf}
@@ -85,6 +97,9 @@ else
   user=$worker
 fi
 
+until=${MINER_UNTIL:-}
+[ -z "$until" ] || [[ $until =~ ^[0-9]{9,11}$ ]] || die "MINER_UNTIL: a time in epoch seconds"
+
 extra=()
 if [ -n "${MINER_ARGS:-}" ]; then
   read -r -a extra <<< "$MINER_ARGS"
@@ -112,10 +127,42 @@ paid="the pool's own address (the pool runs with --payout)"
 [ -z "$payout" ] || paid=$payout
 echo "ycash-miner: $miner $version from $url (SHA-256 $sha), Equihash 192,7 (personalization $PERS), pool $pool, worker $worker, paid to $paid"
 echo "ycash-miner: the miner is downloaded from its official release and checked, never shipped in this image; it keeps its developer fee"
+[ -z "$until" ] || echo "ycash-miner: a burst miner: it stops and ends its rental at $(date -u -d "@$until" '+%Y-%m-%d %H:%M UTC')"
+haskey=no
+if [ -n "${CONTAINER_API_KEY:-}" ] && [[ ${CONTAINER_ID:-} =~ ^[0-9]{1,12}$ ]]; then haskey=yes; fi
+echo "ycash-miner: Vast's per-instance key present: $haskey (the miner itself runs without it)"
 if [ "${MINER_DRY_RUN:-}" = 1 ]; then
   printf '%q ' "${cmd[@]}"; echo
   exit 0
 fi
+
+# ---- the end of a burst ---------------------------------------------------------------------------------
+# Vast gives every container a key scoped to its own instance (CONTAINER_API_KEY, with CONTAINER_ID):
+# it can stop or destroy that instance and nothing else. It is Vast's, not ours, and never printed,
+# and the miner runs without it in its environment (env -u): the closed-source miner never needs it.
+VAST_API=https://console.vast.ai/api/v0/instances
+vast_self() { # METHOD BODY -> calls the Vast API on this instance with its own key; true on HTTP 2xx
+  printf 'header = "Authorization: Bearer %s"\n' "$CONTAINER_API_KEY" |
+    curl -fsS -K - --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 60 -X "$1" \
+      -H 'Content-Type: application/json' -d "$2" -o /dev/null "$VAST_API/$CONTAINER_ID/" 2>/dev/null
+}
+burst_over() {
+  echo "ycash-miner: the burst is over ($(date -u -d "@$until" '+%Y-%m-%d %H:%M UTC')): mining stopped"
+  if [[ ${CONTAINER_ID:-} =~ ^[0-9]{1,12}$ ]] && [ -n "${CONTAINER_API_KEY:-}" ]; then
+    if vast_self DELETE '{}'; then
+      echo "ycash-miner: this machine's rental is ended (instance destroyed with its own key)"
+    elif vast_self PUT '{"state": "stopped"}'; then
+      echo "ycash-miner: destroy refused; the instance is stopped (no GPU charge; the fleet's expire destroys it)"
+    else
+      echo "ycash-miner: Vast refused both destroy and stop; exiting (the fleet's expire destroys the instance)" >&2
+    fi
+  else
+    echo "ycash-miner: no per-instance Vast key in this container; exiting (the fleet's expire destroys the instance)"
+  fi
+  exit 0
+}
+past_until() { [ -n "$until" ] && [ "$(date +%s)" -ge "$until" ]; }
+if past_until; then burst_over; fi
 
 fetch() {
   local dir=$CACHE/$miner-$sha tmp got
@@ -150,10 +197,72 @@ fetch() {
 }
 fetch
 
+# ---- what the container sees: GPUs, OpenCL, the miner's devices, the pool --------------------------------
+gpu_check() { # prints the listings; true when a GPU the miner can use is there
+  local smi=-1 ocl=-1 out
+  echo "ycash-miner: NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-unset} NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-unset}"
+  out=$(find /dev -maxdepth 1 -name 'nvidia*' 2>/dev/null | sort | tr '\n' ' ')
+  echo "ycash-miner: device nodes: ${out:-none}"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    out=$(timeout 60 nvidia-smi -L 2>&1) || true
+    printf '%s\n' "$out" | sed 's/ (UUID: [^)]*)//; s/^/ycash-miner: nvidia-smi: /'
+    smi=$(printf '%s\n' "$out" | grep -c '^GPU [0-9]' || true)
+  else
+    echo "ycash-miner: nvidia-smi: not in the container (the NVIDIA runtime mounts it with the utility capability)"
+  fi
+  echo "ycash-miner: OpenCL loader: $(ldconfig -p 2>/dev/null | grep -c 'libOpenCL\.so\.1') libOpenCL.so.1, driver: $(ldconfig -p 2>/dev/null | grep -c 'libnvidia-opencl\.so\.1') libnvidia-opencl.so.1; ICDs: $(cat /etc/OpenCL/vendors/*.icd 2>/dev/null | tr '\n' ' ')"
+  if command -v clinfo >/dev/null 2>&1; then
+    timeout 60 clinfo -l 2>&1 | sed 's/^/ycash-miner: clinfo: /' || true
+  fi
+  if [ "$miner" = lolminer ]; then
+    out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "$bin" --list-devices --nocolor 2>&1) || true
+    printf '%s\n' "$out" | grep -v '^[|+]' | sed 's/^/ycash-miner: lolMiner --list-devices: /'
+    if printf '%s\n' "$out" | grep -q 'No OpenCL driver or GPUs detected'; then
+      ocl=0
+    elif [[ $out =~ Number\ of\ OpenCL\ supported\ GPUs:\ ([0-9]+) ]]; then
+      ocl=${BASH_REMATCH[1]}
+    fi
+    # Equihash 192,7 on Nvidia is an OpenCL solver in lolMiner: CUDA alone is not enough
+    if [ "$ocl" -ge 1 ] || { [ "$ocl" = -1 ] && [ "$smi" -ge 1 ]; }; then return 0; fi
+    echo "ycash-miner: lolMiner sees no OpenCL GPU (nvidia-smi: $smi GPU(s), lolMiner OpenCL: $ocl)" >&2
+    return 1
+  fi
+  [ "$smi" -ge 1 ] || { echo "ycash-miner: no GPU (nvidia-smi: $smi)" >&2; return 1; }
+}
+pool_check() { # prints where the pool's name points and whether its port answers; never fatal
+  local host=${pool%:*} addrs
+  addrs=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ') || true
+  if [ -z "$addrs" ]; then
+    echo "ycash-miner: pool $pool: the name does not resolve here (lolMiner keeps retrying)" >&2
+    return 0
+  fi
+  echo "ycash-miner: pool $pool resolves to $addrs"
+  if timeout 10 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$host" "${pool##*:}" 2>/dev/null; then
+    echo "ycash-miner: pool $pool: the stratum port accepts connections"
+  else
+    echo "ycash-miner: pool $pool: no TCP connection within 10 s (lolMiner keeps retrying)" >&2
+  fi
+}
+gpu_ok=0
+gpu_check || gpu_ok=$?
+pool_check
+if [ "$gpu_ok" != 0 ]; then
+  fail "no usable GPU in this container: not mining (exit 70, so the rental shows exited and is given back)" 70
+fi
+echo "ycash-miner: a usable GPU is there"
+if [ "${MINER_DIAG:-}" = 1 ]; then echo "ycash-miner: MINER_DIAG=1: checks only, not mining"; exit 0; fi
+
 restarts=0
 while :; do
   rc=0
-  "${cmd[@]}" || rc=$?
+  if [ -n "$until" ]; then
+    left=$(( until - $(date +%s) ))
+    [ "$left" -gt 0 ] || burst_over
+    timeout --signal=TERM --kill-after=30 "$left" env -u CONTAINER_API_KEY -u CONTAINER_ID "${cmd[@]}" || rc=$?
+    if past_until; then burst_over; fi
+  else
+    env -u CONTAINER_API_KEY -u CONTAINER_ID "${cmd[@]}" || rc=$?
+  fi
   if [ "$miner" = lolminer ] && [ "$rc" = 42 ] && [ "$restarts" -lt 20 ]; then
     restarts=$((restarts + 1))
     echo "ycash-miner: lolMiner's watchdog asked for a restart ($restarts/20)" >&2
