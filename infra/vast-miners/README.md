@@ -90,14 +90,30 @@ python3 -I scripts/vast-fleet.py --fleet fleet.json --dry-run reconcile
 python3 -I scripts/vast-fleet.py --fleet fleet.json reconcile [--network slow]
 python3 -I scripts/vast-fleet.py --fleet fleet.json burst legacy 1 --hours 48
 python3 -I scripts/vast-fleet.py --fleet fleet.json expire            # only ends bursts whose time is up
+python3 -I scripts/vast-fleet.py --fleet fleet.json logs [--network fast] [--tail 200]
 python3 -I scripts/vast-fleet.py --fleet fleet.json down [--network legacy]
 ```
 
 - `reconcile` is idempotent: run it as often as you like; a second run changes nothing.
-- `burst NET N --hours H` runs `N` miners on `NET` until now + `H`. Slots above the file's `count`
-  are labelled with their end time; `reconcile` keeps them until then and destroys them after, and
-  `expire` does only that (it never rents). A later burst on the same network sets a new end time
-  (relabels, no new rental) and gives back slots above its `N`.
+- `burst NET N --hours H` runs `N` miners on `NET` until now + `H` and prints `burst_until=<epoch>`.
+  **Every slot the burst rents** is labelled with its end time, within the file's `count` or above
+  it, and its container gets the same time as `MINER_UNTIL`; only a fleet slot that is already
+  running (within `count`, no end time) is left as it is. (Until 2026-11-13 only slots above `count`
+  got an end time, so a burst within `count` became a permanent miner that `expire` skipped: GPU
+  burst 1.) `reconcile` keeps a burst slot until its end and destroys it after (within `count` the
+  fleet then rents a permanent miner in its place), and `expire` does only the destroying (it never
+  rents). A later burst on the same network sets a new end time and gives back slots above its `N`;
+  a miner whose end time moved gets a new container, because the old one ends itself at the old time.
+- **A burst ends three ways, whichever comes first:** the miner's container stops mining at
+  `MINER_UNTIL` and destroys its own Vast instance with the per-instance key Vast gives every
+  container (`CONTAINER_API_KEY`, scoped to that instance; stop if destroy is refused;
+  `images/miner/README.md`); `expire`, run by the deployment repository's workflows; `down`.
+- `logs` prints each of our miners' container log (the last `--tail` lines, default 200, at most
+  5000): Vast uploads it on request and the script fetches the link it returns, without the key.
+  The key, IPv4/IPv6 addresses and any token-like string of 40 or more characters are masked, terminal
+  codes removed, and a line that would act as a GitHub workflow command is indented.
+- `status` shows each miner's state, how long ago Vast started it, and Vast's own status message
+  (addresses masked).
 - `--dry-run` reads the account and the offers and prints what it would do, changing nothing.
 - In GitHub Actions the key, every instance id and every host address are masked (`::add-mask::`)
   before anything is printed; instances are shown by label only. API errors are cut short and the
@@ -106,9 +122,11 @@ python3 -I scripts/vast-fleet.py --fleet fleet.json down [--network legacy]
   the rest of the run still happens.
 
 The REST calls are the ones the `vastai` CLI 1.10.0 makes (`GET /api/v1/instances/`,
-`POST /api/v0/bundles/`, `PUT /api/v0/asks/<offer>/`, `PUT|DELETE /api/v0/instances/<id>/`), with
+`POST /api/v0/bundles/`, `PUT /api/v0/asks/<offer>/`, `PUT|DELETE /api/v0/instances/<id>/`,
+`PUT /api/v0/instances/request_logs/<id>/`), with
 the standard library only; the CLI itself is not needed. A new instance runs the image's own
-entrypoint (`runtype: args`) with the pool, worker and payout as environment variables.
+entrypoint (`runtype: args`) with the pool, worker and payout as environment variables, plus
+`MINER_UNTIL` on a burst miner and `NVIDIA_DRIVER_CAPABILITIES=compute,utility`.
 
 ## Hash rate and cost (testnet floors)
 
@@ -128,6 +146,7 @@ terms prohibit mining); not built.
 [`scripts/tests/fake_vast.py`](../../scripts/tests/fake_vast.py), a local stand-in for the Vast API
 (nothing is rented): it starts the right number at the cheapest offer under the cap, ignores
 offers over the cap or for other cards, replaces a dead or stuck miner, destroys extras and
-networks no longer in the file, never touches unlabelled instances, bursts and expires, refuses a
+networks no longer in the file, never touches unlabelled instances, bursts and expires (a burst
+within the fleet's count too, and with a count of 0), fetches and masks the logs, refuses a
 fleet file with a secret-looking field, validates `miner` (miniZ only with its pins), replaces a
 miner whose miner or pool changed, and never prints the key (in and outside GitHub Actions).

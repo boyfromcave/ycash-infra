@@ -19,9 +19,15 @@ Actions (python3 -I scripts/vast-fleet.py --fleet FILE ACTION ...):
                         the pools round-robin), replace dead ones, destroy extras and anything
                         labelled ours that the file no longer has. --network NET: that one only
   down [--network NET]  destroy every miner of ours (or one network's)
-  burst NET N --hours H run N miners on NET for H hours (slots above the file's count are labelled
-                        ycash-NET-I.until-YYYYMMDDTHHMMZ and expire by themselves), then reconcile it
+  burst NET N --hours H run N miners on NET for H hours, then reconcile it. Every slot the burst
+                        rents is labelled ycash-NET-I.until-YYYYMMDDTHHMMZ, whatever the file's count,
+                        and its container gets MINER_UNTIL (the same time, epoch seconds), so it ends
+                        itself then; only a fleet slot already running (within count, no until) stays
+                        as it is. Prints burst_until=<epoch>
   expire                destroy only the burst miners whose time is up; never starts one
+  logs [--network NET] [--tail N]
+                        each of our miners' container log (the last N lines, default 200), with the
+                        key, host addresses and long tokens masked
 
 --dry-run prints what would change and changes nothing (it still reads the account and searches
 offers). The API key comes only from the environment, VAST_API_KEY; it is never printed, and in
@@ -35,9 +41,12 @@ The REST API used (as the vastai CLI 1.10.0 calls it, https://console.vast.ai):
   POST   /api/v0/bundles/        search offers (type on-demand | bid)
   PUT    /api/v0/asks/<offer>/   rent an offer (label, image, env, disk, runtype args, price for bid)
 Each miner's environment: POOL_URL, WORKER, MINER (lolminer | miniz; miniz only with the fleet's
-pinned miniz_url / miniz_sha256, passed as MINIZ_URL / MINIZ_SHA256), PAYOUT and MINER_ARGS if set.
+pinned miniz_url / miniz_sha256, passed as MINIZ_URL / MINIZ_SHA256), PAYOUT and MINER_ARGS if set,
+MINER_UNTIL on a burst miner, NVIDIA_DRIVER_CAPABILITIES=compute,utility.
   PUT    /api/v0/instances/<id>/ relabel (a burst's end time)
   DELETE /api/v0/instances/<id>/ destroy
+  PUT    /api/v0/instances/request_logs/<id>/  {"tail": "N"}: Vast uploads the container log and returns
+         result_url, which is fetched (without the key) once it is there
 Standard library only.
 """
 
@@ -78,6 +87,7 @@ MAX_TOTAL = 16
 MAX_PER_NET = 8
 MAX_DPH = 1.0
 MAX_BURST_HOURS = 168
+MAX_LOG_TAIL = 5000
 STARTING = {"", "created", "loading", "scheduling", "starting"}
 SECRET_KEY_RE = re.compile(r"(key|secret|token|pass|auth|cred|private|mnemonic|seed|cookie|bearer)", re.I)
 SECRET_VALUE_RES = [
@@ -384,6 +394,29 @@ class Vast:
     def destroy(self, inst_id):
         self.call("DELETE", f"/api/v0/instances/{int(inst_id)}/", body={})
 
+    def logs(self, inst_id, tail):
+        """The container log's last `tail` lines: Vast uploads it and gives a URL, polled until it is there."""
+        r = self.call("PUT", f"/api/v0/instances/request_logs/{int(inst_id)}/", body={"tail": str(int(tail))})
+        url = r.get("result_url")
+        if not r.get("success", True) or not isinstance(url, str):
+            raise ApiError(f"logs: {self.redact(r.get('msg') or r.get('error') or 'no result_url')}")
+        u = urllib.parse.urlparse(url)
+        if not (u.scheme == "https" or (u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost"))):
+            raise ApiError("logs: the log URL is not https")
+        for _ in range(20):
+            # the URL is a bare download link: the key is never sent with it
+            req = urllib.request.Request(url, method="GET", headers={"User-Agent": "ycash-vast-fleet/1"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (https, or a local stand-in: checked above)
+                    return resp.read(4 * 1024 * 1024).decode(errors="replace")
+            except urllib.error.HTTPError as e:
+                if e.code not in (403, 404):
+                    raise ApiError(f"logs: HTTP {e.code} fetching the uploaded log") from None
+            except (urllib.error.URLError, TimeoutError) as e:
+                raise ApiError(f"logs: {self.redact(e)}") from None
+            time.sleep(3 * self.pace)
+        raise ApiError("logs: Vast did not upload the log within a minute; try again")
+
 
 # ---------------------------------------------------------------------------------------------
 # the plan
@@ -425,9 +458,16 @@ def want_miner(cfg, idx):
     return cfg["miners"][idx % len(cfg["miners"])]
 
 
-def drifted(inst, cfg, idx):
-    """Why a running miner no longer matches the file (its miner or pool changed), or None. Only when
-    the instance's environment is known; an instance without it is left as it is."""
+def until_env(until):
+    """MINER_UNTIL for a burst miner's container (epoch seconds), "" for a fleet miner."""
+    return str(int(until.timestamp())) if until else ""
+
+
+def drifted(inst, cfg, idx, until=None):
+    """Why a running miner no longer matches the file (its miner or pool changed) or its slot (its end
+    time moved: the container ends itself at MINER_UNTIL, so a burst that is lengthened, shortened or
+    made permanent needs a new container), or None. Only when the instance's environment is known; an
+    instance without it is left as it is."""
     env = inst.get("extra_env") or {}
     if not isinstance(env, dict) or "POOL_URL" not in env:
         return None
@@ -435,7 +475,40 @@ def drifted(inst, cfg, idx):
         return f"its miner is now {want_miner(cfg, idx)} in the file"
     if env["POOL_URL"] != cfg["pools"][idx % len(cfg["pools"])]:
         return "its pool changed in the file"
+    if env.get("MINER_UNTIL", "") != until_env(until):
+        return "its end time changed"
     return None
+
+
+def age(inst, now):
+    """How long ago Vast started the instance, e.g. 1h16m, or ?."""
+    started = inst.get("start_date")
+    if not isinstance(started, (int, float)):
+        return "?"
+    m = max(0, int(now.timestamp() - started) // 60)
+    return f"{m // 60}h{m % 60:02d}m" if m >= 60 else f"{m}m"
+
+
+IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+IPV6_RE = re.compile(r"\b(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}\b|\b(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f:]*")
+TOKEN_RE = re.compile(r"[A-Za-z0-9_+/=-]{40,}")
+CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]|\x1b\[[0-9;]*[A-Za-z]")
+
+
+def scrub(text, key=""):
+    """A container log made safe to print: no API key, host address or long token (an instance key,
+    a checksum: masked alike), no terminal control codes, no GitHub workflow command."""
+    if key:
+        text = text.replace(key, "<key>")
+    out = []
+    for line in text.splitlines():
+        line = CTRL_RE.sub("", line)
+        line = TOKEN_RE.sub("<token>", line)
+        line = IPV6_RE.sub("<ip>", IPV4_RE.sub("<ip>", line))
+        if line.lstrip().startswith("::"):
+            line = " " + line          # a line from the machine must not act as a workflow command
+        out.append(line)
+    return "\n".join(out)
 
 
 def offer_price(offer, cfg):
@@ -526,8 +599,13 @@ class Fleet:
         if cfg["extra_args"]:
             env["MINER_ARGS"] = " ".join(cfg["extra_args"])
         env["MINER"] = want_miner(cfg, idx)
+        # the image sets these too; said again here so a host runtime that ignores image ENV still mounts
+        # the driver's CUDA/OpenCL libraries (compute) and nvidia-smi/NVML (utility): images/miner/Dockerfile
+        env["NVIDIA_DRIVER_CAPABILITIES"] = "compute,utility"
         if env["MINER"] == "miniz":
             env.update(cfg["miniz"])
+        if until:
+            env["MINER_UNTIL"] = until_env(until)   # the container ends itself then (images/miner)
         tries = 0
         for offer in self.offer_cache[net]:
             if offer.get("id") in self.used_offers:
@@ -572,7 +650,11 @@ class Fleet:
 
     # -- the reconcile
     def reconcile(self, only=None, burst=None):
-        """burst = (net, n, until): run n miners on net, slots >= count labelled to expire at until."""
+        """burst = (net, n, until): run n miners on net until `until`. Every slot below n that the burst
+        rents carries `until` (in its label and as the container's MINER_UNTIL), within the file's count
+        or above it; a fleet slot already running (within count, no until) is kept as it is. Without a
+        burst, a burst slot keeps its until while it lasts, then is destroyed; within count the fleet
+        then rents a permanent miner in its place."""
         ours, foreign, odd = self.read()
         nets = self.fleet["networks"]
         say(f"{len(ours)} slot(s) of ours, {foreign} other instance(s) on the account (never touched)"
@@ -586,18 +668,24 @@ class Fleet:
                 continue
             count = nets[net]["count"]
             until = max((i["_until"] for i in insts if i["_until"]), default=None)
-            if burst and burst[0] == net and idx >= count:
+            if burst and burst[0] == net:
                 if idx < burst[1]:
-                    until = burst[2]
-                else:
+                    fleet_slot = idx < count and any(i["_until"] is None and not i["_health"].startswith("dead")
+                                                     for i in insts)
+                    until = None if fleet_slot else burst[2]
+                elif idx >= count:
                     for i in insts:
                         self.destroy(i, f"above the burst of {burst[1]}")
                     continue
-            wanted = idx < count or (until is not None and until > self.now)
-            if not wanted:
-                why = "burst over" if until is not None else f"above the fleet's {count}"
+            if until is not None and until <= self.now:
                 for i in insts:
-                    self.destroy(i, why)
+                    self.destroy(i, "burst over")
+                if idx < count:
+                    self.create(net, idx, None)
+                continue
+            if idx >= count and until is None:
+                for i in insts:
+                    self.destroy(i, f"above the fleet's {count}")
                 continue
             alive = sorted((i for i in insts if not i["_health"].startswith("dead")),
                            key=lambda i: (i["_health"] != "running", i.get("start_date") or 0))
@@ -606,14 +694,14 @@ class Fleet:
                     self.destroy(i, i["_health"][6:])
             for i in alive[1:]:
                 self.destroy(i, "a second instance in the same slot")
-            drift = alive and drifted(alive[0], nets[net], idx)
+            drift = alive and drifted(alive[0], nets[net], idx, until)
             if drift:
                 self.destroy(alive[0], drift)
                 alive = []
             if not alive:
-                self.create(net, idx, until if idx >= count else None)
+                self.create(net, idx, until)
                 continue
-            want_label = make_label(net, idx, until if idx >= count else None)
+            want_label = make_label(net, idx, until)
             if alive[0].get("label") != want_label:
                 self.relabel(alive[0], want_label)
         for net, cfg in sorted(nets.items()):
@@ -624,7 +712,7 @@ class Fleet:
                 n = max(n, burst[1])
             for idx in range(n):
                 if (net, idx) not in ours:
-                    until = burst[2] if burst and burst[0] == net and idx >= cfg["count"] else None
+                    until = burst[2] if burst and burst[0] == net and idx < burst[1] else None
                     self.create(net, idx, until)
 
     def down(self, only=None):
@@ -653,7 +741,8 @@ class Fleet:
     def status(self):
         ours, foreign, odd = self.read()
         nets = self.fleet["networks"]
-        lines = ["| miner | state | card | $/h | pool | until |", "|---|---|---|---|---|---|"]
+        lines = ["| miner | state | age | card | $/h | pool | until | Vast says |",
+                 "|---|---|---|---|---|---|---|---|"]
         total, bursts = 0.0, 0
         for (net, idx), insts in sorted(ours.items()):
             cfg = nets.get(net)
@@ -662,9 +751,11 @@ class Fleet:
                 total += price if isinstance(price, (int, float)) else 0
                 bursts += 1 if i["_until"] else 0
                 pool = f"{idx % len(cfg['pools']) + 1}/{len(cfg['pools'])}" if cfg else "-"
-                lines.append(f"| {i.get('label')} | {i['_health']} | {i.get('gpu_name') or '?'} | "
+                msg = scrub(str(i.get("status_msg") or ""), self.api.key).replace("\n", " ").replace("|", "/")
+                lines.append(f"| {i.get('label')} | {i['_health']} | {age(i, self.now)} | {i.get('gpu_name') or '?'} | "
                              f"{price if price is not None else '?'} | {pool} | "
-                             f"{i['_until'].strftime(UNTIL_FMT) if i['_until'] else '-'} |")
+                             f"{i['_until'].strftime(UNTIL_FMT) if i['_until'] else '-'} | "
+                             f"{(msg[:77] + '...') if len(msg) > 80 else (msg or '-')} |")
         for net, cfg in sorted(nets.items()):
             have = sum(1 for (n, _) in ours if n == net)
             note = startable(cfg) if cfg["count"] else None
@@ -678,6 +769,26 @@ class Fleet:
         summary(["## miners: status", ""] + lines)
         output("ours", sum(len(v) for v in ours.values()))
         output("burst_active", bursts)
+
+    def logs(self, only=None, tail=200):
+        """Print each of our miners' container log (the last `tail` lines), scrubbed."""
+        ours, _, _ = self.read()
+        shown = 0
+        for (net, _idx), insts in sorted(ours.items()):
+            if only and net != only:
+                continue
+            for i in insts:
+                shown += 1
+                say(f"===== {i.get('label')}: {i['_health']}, up {age(i, self.now)}, "
+                    f"{i.get('gpu_name') or '?'}; the last {tail} lines of its container log =====")
+                try:
+                    text = self.api.logs(i["id"], tail)
+                except ApiError as e:
+                    self.errors.append(f"logs {i.get('label')}: {e}")
+                    continue
+                say(scrub(text, self.api.key) or "(the log is empty)")
+        if not shown:
+            say("no miner of ours" + (f" on {only}" if only else "") + ": no log to show")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -699,6 +810,9 @@ def main(argv=None):
     p.add_argument("count", type=int)
     p.add_argument("--hours", type=int, required=True)
     sub.add_parser("expire")
+    p = sub.add_parser("logs")
+    p.add_argument("--network")
+    p.add_argument("--tail", type=int, default=200)
     a = ap.parse_args(argv)
 
     # The key is a GitHub environment secret, which Actions masks in every log line on its own;
@@ -724,6 +838,8 @@ def main(argv=None):
                 raise FleetError(f"network {net!r} is not in the fleet file ({', '.join(sorted(nets))})")
         if a.action == "down" and a.network is not None and not NET_RE.match(a.network):
             raise FleetError("down --network: a network name")
+        if a.action == "logs" and not 1 <= a.tail <= MAX_LOG_TAIL:
+            raise FleetError(f"logs --tail: 1 to {MAX_LOG_TAIL} lines")
         burst = None
         if a.action == "burst":
             if not 1 <= a.count <= MAX_PER_NET:
@@ -745,11 +861,14 @@ def main(argv=None):
             f.reconcile(only=a.network)
         elif a.action == "burst":
             say(f"burst: {a.count} miner(s) on {a.network} until {burst[2].strftime(UNTIL_FMT)}")
+            output("burst_until", until_env(burst[2]))
             f.reconcile(only=a.network, burst=burst)
         elif a.action == "down":
             f.down(only=a.network)
         elif a.action == "expire":
             f.expire()
+        elif a.action == "logs":
+            f.logs(only=a.network, tail=a.tail)
         if f.errors:
             for e in f.errors:
                 say(f"::error::{e}" if in_actions() else f"error: {e}")

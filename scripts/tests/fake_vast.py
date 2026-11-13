@@ -11,7 +11,10 @@ every request, so a test can check what the fleet script would have rented or de
   python3 -I scripts/tests/fake_vast.py --state STATE.json --log LOG.jsonl --port-file PORT [--key KEY]
 
 STATE.json: {"instances": [...], "offers": [...], "next_id": 7000001, "credit": true,
-             "fail_offers": [offer ids whose rent fails], "now": <epoch for start_date>}
+             "fail_offers": [offer ids whose rent fails], "now": <epoch for start_date>,
+             "logs": {"<instance id>": "<its container log>"}, "log_delay": <404s before a log is there>}
+PUT /api/v0/instances/request_logs/<id>/ answers a result_url on this server (/instance_logs/<id>.log),
+which is served without the key, as Vast's S3 link is, after log_delay 404s.
 Instances are rows as GET /api/v1/instances/ returns them (extra_env as [name, value] pairs).
 The offer search ignores the price filter on purpose: the script must check the cap itself.
 """
@@ -57,6 +60,21 @@ def make_handler(args):
             with open(args.log, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"method": method, "path": u.path, "query": u.query, "body": body,
                                     "auth": self.headers.get("Authorization")}) + "\n")
+            m = re.match(r"^/instance_logs/([0-9]+)\.log$", u.path)
+            if method == "GET" and m:      # the uploaded log: a bare link, no key
+                with LOCK:
+                    st = self._state()
+                    if st.get("log_delay", 0) > 0:
+                        st["log_delay"] -= 1
+                        self._save(st)
+                        return self._reply(404, {"error": "not yet"})
+                text = st.get("logs", {}).get(m.group(1), "").encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(text)))
+                self.end_headers()
+                self.wfile.write(text)
+                return None
             if self.headers.get("Authorization") != f"Bearer {args.key}":
                 return self._reply(401, {"success": False, "error": "unauthorized",
                                          "msg": "bad key " + str(self.headers.get("Authorization"))})
@@ -105,6 +123,13 @@ def make_handler(args):
                     "extra_env": [[k, v] for k, v in env.items()], "offer_id": oid,
                 })
                 return 200, {"success": True, "new_contract": iid}
+            m = re.match(r"^/api/v0/instances/request_logs/([0-9]+)/$", u.path)
+            if method == "PUT" and m:
+                if not any(i["id"] == int(m.group(1)) for i in insts):
+                    return 404, {"success": False, "error": "no_such_instance", "msg": "no instance"}
+                host = self.headers.get("Host")
+                return 200, {"success": True, "msg": "uploading",
+                             "result_url": f"http://{host}/instance_logs/{m.group(1)}.log"}
             m = re.match(r"^/api/v0/instances/([0-9]+)/$", u.path)
             if m:
                 iid = int(m.group(1))
