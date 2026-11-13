@@ -97,8 +97,12 @@ entrypoint stops the miner and ends its own rental: it destroys its Vast instanc
 destroy is refused (a stopped instance pays no GPU time), with the key Vast puts in every container
 (`CONTAINER_API_KEY` and `CONTAINER_ID`: per instance, able to start, stop or destroy only that
 instance; https://docs.vast.ai/guides/instances/docker-environment). That key is Vast's, not ours,
-and is never printed. Without it the container just exits 0 and the fleet's `expire` destroys the
-instance. A burst miner started after its end does nothing but this.
+and is never printed; the entrypoint prints only whether it is there (yes/no), and the miner runs
+without it (`env -u CONTAINER_API_KEY -u CONTAINER_ID`). The same user can still read it from
+`/proc/1/environ`, so the fleet does not rely on the label staying intact: `expire` destroys our
+instances whose label lost its end time or no longer parses. Without the key the container just
+exits 0 and the fleet's `expire` destroys the instance. A burst miner started after its end does
+nothing but this.
 
 ### miniZ (optional, off by default)
 

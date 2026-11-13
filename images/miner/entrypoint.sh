@@ -128,6 +128,9 @@ paid="the pool's own address (the pool runs with --payout)"
 echo "ycash-miner: $miner $version from $url (SHA-256 $sha), Equihash 192,7 (personalization $PERS), pool $pool, worker $worker, paid to $paid"
 echo "ycash-miner: the miner is downloaded from its official release and checked, never shipped in this image; it keeps its developer fee"
 [ -z "$until" ] || echo "ycash-miner: a burst miner: it stops and ends its rental at $(date -u -d "@$until" '+%Y-%m-%d %H:%M UTC')"
+haskey=no
+if [ -n "${CONTAINER_API_KEY:-}" ] && [[ ${CONTAINER_ID:-} =~ ^[0-9]{1,12}$ ]]; then haskey=yes; fi
+echo "ycash-miner: Vast's per-instance key present: $haskey (the miner itself runs without it)"
 if [ "${MINER_DRY_RUN:-}" = 1 ]; then
   printf '%q ' "${cmd[@]}"; echo
   exit 0
@@ -135,7 +138,8 @@ fi
 
 # ---- the end of a burst ---------------------------------------------------------------------------------
 # Vast gives every container a key scoped to its own instance (CONTAINER_API_KEY, with CONTAINER_ID):
-# it can stop or destroy that instance and nothing else. It is Vast's, not ours, and never printed.
+# it can stop or destroy that instance and nothing else. It is Vast's, not ours, and never printed,
+# and the miner runs without it in its environment (env -u): the closed-source miner never needs it.
 VAST_API=https://console.vast.ai/api/v0/instances
 vast_self() { # METHOD BODY -> calls the Vast API on this instance with its own key; true on HTTP 2xx
   printf 'header = "Authorization: Bearer %s"\n' "$CONTAINER_API_KEY" |
@@ -211,7 +215,7 @@ gpu_check() { # prints the listings; true when a GPU the miner can use is there
     timeout 60 clinfo -l 2>&1 | sed 's/^/ycash-miner: clinfo: /' || true
   fi
   if [ "$miner" = lolminer ]; then
-    out=$(timeout 120 "$bin" --list-devices --nocolor 2>&1) || true
+    out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "$bin" --list-devices --nocolor 2>&1) || true
     printf '%s\n' "$out" | grep -v '^[|+]' | sed 's/^/ycash-miner: lolMiner --list-devices: /'
     if printf '%s\n' "$out" | grep -q 'No OpenCL driver or GPUs detected'; then
       ocl=0
@@ -254,10 +258,10 @@ while :; do
   if [ -n "$until" ]; then
     left=$(( until - $(date +%s) ))
     [ "$left" -gt 0 ] || burst_over
-    timeout --signal=TERM --kill-after=30 "$left" "${cmd[@]}" || rc=$?
+    timeout --signal=TERM --kill-after=30 "$left" env -u CONTAINER_API_KEY -u CONTAINER_ID "${cmd[@]}" || rc=$?
     if past_until; then burst_over; fi
   else
-    "${cmd[@]}" || rc=$?
+    env -u CONTAINER_API_KEY -u CONTAINER_ID "${cmd[@]}" || rc=$?
   fi
   if [ "$miner" = lolminer ] && [ "$rc" = 42 ] && [ "$restarts" -lt 20 ]; then
     restarts=$((restarts + 1))

@@ -26,6 +26,7 @@ if [ "$1" = --list-devices ]; then
   exit 0
 fi
 echo "lolMiner $*" >> "$FAKE_LOG"
+[ -z "${CONTAINER_API_KEY:-}${CONTAINER_ID:-}" ] || echo "lolMiner saw the per-instance key" >> "$FAKE_LOG.key"
 [ -z "${FAKE_SLEEP:-}" ] || sleep "$FAKE_SLEEP"
 n=$(wc -l < "$FAKE_LOG")
 if [ "$n" -le "${FAKE_FAILS:-0}" ]; then exit 42; fi
@@ -194,6 +195,8 @@ if ! { [ "$rc" = 0 ] && grep -q 'burst is over' "$T/out" && [ ! -s "$T/calls" ] 
 if grep -q "$IKEY" "$T/out"; then fail "the per-instance key is never printed"; fi
 run POOL_URL=pool.example:3333 MINER_UNTIL=$((now + 3)) CONTAINER_ID=4242 CONTAINER_API_KEY="$IKEY" FAKE_SLEEP=30 FAKE_API_FAIL=DELETE
 if ! { [ "$rc" = 0 ] && [ "$(wc -l < "$T/calls")" = 1 ] && grep -q '^PUT ' "$T/api" && grep -q 'instance is stopped' "$T/out"; }; then fail "at its end: lolMiner stopped, destroy refused so stopped"; fi
+if [ -e "$T/calls.key" ]; then fail "lolMiner runs without Vast's per-instance key in its environment"; fi
+grep -q "per-instance key present: yes" "$T/out" || fail "whether the key is there is printed (yes/no only)"
 run POOL_URL=pool.example:3333 MINER_UNTIL=$((now - 5))
 if ! { [ "$rc" = 0 ] && grep -q 'no per-instance Vast key' "$T/out" && [ ! -s "$T/api" ]; }; then fail "no Vast key: just exits"; fi
 echo "ok - MINER_UNTIL: stops mining at the burst's end and destroys (else stops) its own instance; key never printed"

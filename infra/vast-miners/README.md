@@ -108,10 +108,19 @@ python3 -I scripts/vast-fleet.py --fleet fleet.json down [--network legacy]
   `MINER_UNTIL` and destroys its own Vast instance with the per-instance key Vast gives every
   container (`CONTAINER_API_KEY`, scoped to that instance; stop if destroy is refused;
   `images/miner/README.md`); `expire`, run by the deployment repository's workflows; `down`.
+- `expire` destroys only what must not run on, and never rents: a burst whose time is up; a burst
+  miner that is dead (exited, stopped: a stopped instance still pays its storage) and was started
+  more than 15 minutes ago, which leaves time for `logs`; any of ours **without an end time** in a
+  slot at or above its network's `count` (a lost or rewritten label must not hide a rented card); and
+  any instance labelled `ycash-…` that no longer parses, or running a fleet image under another
+  label. `reconcile` and `down` still leave such strays alone. It prints `burst_active` = the burst
+  miners still in their window.
 - `logs` prints each of our miners' container log (the last `--tail` lines, default 200, at most
   5000): Vast uploads it on request and the script fetches the link it returns, without the key.
-  The key, IPv4/IPv6 addresses and any token-like string of 40 or more characters are masked, terminal
-  codes removed, and a line that would act as a GitHub workflow command is indented.
+  The key, IPv4/IPv6 addresses and any token-like string of 40 or more characters are masked and
+  terminal codes removed; in GitHub Actions each log is printed between `::stop-commands::<random>`
+  and `::<random>::`, so nothing the machine printed acts as a workflow command. A redirect of the
+  log link is followed only to https.
 - `status` shows each miner's state, how long ago Vast started it, and Vast's own status message
   (addresses masked).
 - `--dry-run` reads the account and the offers and prints what it would do, changing nothing.

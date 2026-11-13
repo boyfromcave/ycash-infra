@@ -501,6 +501,48 @@ class TestBurst(Base):
         self.assertEqual(self.fake.calls("DELETE"), [])
         self.assertEqual(self.labels(), ["ycash-fast-0", "ycash-fast-1.until-20270115T0900Z"])
 
+    def test_expire_ends_what_lost_its_end_time(self):
+        # H1: a miner of ours with no end time in a slot at or above the count (fast 0: every slot), a
+        # ycash- label rewritten into something that no longer parses (by the miner, which may hold
+        # the per-instance key), a fleet image under a foreign label: expire destroys them all
+        self.set_fleet(fleet_file(fast__count=0, slow__count=1))
+        self.fake.write({"offers": copy.deepcopy(OFFERS), "instances": [
+            inst(1001, "ycash-fast-0"),                              # lost its .until-
+            inst(1002, "ycash-fast-0.until-forever"),               # rewritten
+            inst(1003, "ycash-fast-0 hacked"),                      # rewritten
+            inst(1004, "my-own-job", image_uuid=DIGEST),            # a fleet image under another label
+            inst(1005, "ycash-slow-0"),                             # a fleet slot within count: kept
+            inst(1006, "ycash-slow-1"),                             # above slow's count 1
+            inst(1007, "someone-elses", image_uuid="ghcr.io/other/x@sha256:" + "cd" * 32),
+            inst(1008, None),
+        ]})
+        self.assertEqual(self.run_fleet("expire"), 0, self.out)
+        deleted = sorted(int(c["path"].split("/")[4]) for c in self.fake.calls("DELETE"))
+        self.assertEqual(deleted, [1001, 1002, 1003, 1004, 1006])
+        self.assertIn("burst_active=0", self.out)
+        self.assertEqual(self.creates(), [])
+        # reconcile and down still never touch the strays (only expire, which never rents, does)
+        self.fake.write({"offers": [], "instances": [inst(1002, "ycash-fast-0.until-forever"),
+                                                     inst(1004, "my-own-job", image_uuid=DIGEST)]})
+        self.fake.clear()
+        self.assertEqual(self.run_fleet("down"), 0, self.out)
+        self.assertEqual(self.fake.calls("DELETE"), [])
+
+    def test_expire_ends_a_dead_burst_miner_after_a_while(self):
+        # M4: an exited or stopped burst miner still pays storage; kept 15 minutes for `logs`, then gone
+        self.fake.write({"offers": copy.deepcopy(OFFERS), "instances": [
+            inst(1101, "ycash-fast-0.until-20270115T1000Z", status="exited", start=NOW - 20 * 60),
+            inst(1102, "ycash-fast-1.until-20270115T1000Z", status="exited", start=NOW - 5 * 60),
+            inst(1103, "ycash-fast-2.until-20270115T1000Z", start=NOW - 20 * 60,
+                 intended_status="stopped"),
+            inst(1104, "ycash-fast-3.until-20270115T1000Z", start=NOW - 20 * 60),   # running: kept
+        ]})
+        self.set_fleet(fleet_file(fast__count=0))
+        self.assertEqual(self.run_fleet("expire"), 0, self.out)
+        deleted = sorted(int(c["path"].split("/")[4]) for c in self.fake.calls("DELETE"))
+        self.assertEqual(deleted, [1101, 1103])
+        self.assertIn("burst_active=2", self.out)
+
     def test_burst_limits(self):
         self.assertEqual(self.run_fleet("burst", "legacy", "0", "--hours", "3"), 1)
         self.assertEqual(self.run_fleet("burst", "legacy", "2", "--hours", "500"), 1)
@@ -532,11 +574,27 @@ class TestLogs(Base):
         self.assertTrue(all(g["auth"] is None for g in gets))   # the key never goes to the log link
         self.assertIn("No OpenCL driver or GPUs detected.", self.out)
         self.assertIn("ycash-fast-0.until-20270115T0900Z: running, up 1h00m", self.out)
-        for leak in (KEY, "198.51.100.77", "2001:db8", "ab" * 32, "\x1b", "instance_logs"):
+        for leak in (KEY, "198.51.100.77", "2001:db8", "::5", "ab" * 32, "\x1b", "[31m", "instance_logs"):
             self.assertNotIn(leak, self.out)
-        self.assertNotIn("\n::error::from the machine", self.out)
-        self.assertIn(" ::error::from the machine", self.out)
         self.assertNotIn("slow log", self.out)
+
+    def test_logs_switch_workflow_commands_off_in_actions(self):
+        os.environ["GITHUB_ACTIONS"] = "true"
+        self.assertEqual(self.run_fleet("logs", "--network", "fast"), 0, self.out)
+        lines = self.out.splitlines()
+        cmd = lines.index("::error::from the machine")
+        stop = [n for n, line in enumerate(lines) if line.startswith("::stop-commands::")]
+        self.assertEqual(len(stop), 1)
+        token = lines[stop[0]].split("::")[2]
+        self.assertRegex(token, r"^[0-9a-f]{32}$")
+        resume = lines.index(f"::{token}::")
+        self.assertLess(stop[0], cmd)
+        self.assertLess(cmd, resume)
+        self.assertNotIn(token, "\n".join(lines[stop[0] + 1:resume]))
+
+    def test_clock_times_are_not_taken_for_addresses(self):
+        self.assertEqual(vf.scrub("[10:03:51] Connected to pool 2001:db8::7 fe80:0:0:0:1:2:3:4"),
+                         "[10:03:51] Connected to pool <ip> <ip>")
 
     def test_logs_every_network_and_never_others(self):
         self.assertEqual(self.run_fleet("logs"), 0, self.out)

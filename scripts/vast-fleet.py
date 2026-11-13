@@ -24,7 +24,11 @@ Actions (python3 -I scripts/vast-fleet.py --fleet FILE ACTION ...):
                         and its container gets MINER_UNTIL (the same time, epoch seconds), so it ends
                         itself then; only a fleet slot already running (within count, no until) stays
                         as it is. Prints burst_until=<epoch>
-  expire                destroy only the burst miners whose time is up; never starts one
+  expire                destroy only miners that must not run on: bursts whose time is up, burst miners
+                        dead for DEAD_BURST_MINUTES (an exited or stopped one still pays storage), any of
+                        ours without an end time in a slot at or above the network's count (a lost or
+                        rewritten label), and any instance labelled ycash-... that no longer parses or
+                        running a fleet image under another label; never starts one
   logs [--network NET] [--tail N]
                         each of our miners' container log (the last N lines, default 200), with the
                         key, host addresses and long tokens masked
@@ -54,6 +58,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import sys
 import time
 import urllib.error
@@ -88,6 +93,7 @@ MAX_PER_NET = 8
 MAX_DPH = 1.0
 MAX_BURST_HOURS = 168
 MAX_LOG_TAIL = 5000
+DEAD_BURST_MINUTES = 15     # a dead burst miner is kept this long after its start, so `logs` can read it
 STARTING = {"", "created", "loading", "scheduling", "starting"}
 SECRET_KEY_RE = re.compile(r"(key|secret|token|pass|auth|cred|private|mnemonic|seed|cookie|bearer)", re.I)
 SECRET_VALUE_RES = [
@@ -309,6 +315,16 @@ def startable(cfg):
 # ---------------------------------------------------------------------------------------------
 # the Vast REST API
 
+class _SameSchemeRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect of the uploaded log only to https (or the local stand-in)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        u = urllib.parse.urlparse(newurl)
+        if not (u.scheme == "https" or (u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost"))):
+            raise urllib.error.URLError("the log link redirects away from https")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class Vast:
     def __init__(self, key, url=None, pace=None):
         if not key:
@@ -403,11 +419,12 @@ class Vast:
         u = urllib.parse.urlparse(url)
         if not (u.scheme == "https" or (u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost"))):
             raise ApiError("logs: the log URL is not https")
+        opener = urllib.request.build_opener(_SameSchemeRedirect)
         for _ in range(20):
             # the URL is a bare download link: the key is never sent with it
             req = urllib.request.Request(url, method="GET", headers={"User-Agent": "ycash-vast-fleet/1"})
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (https, or a local stand-in: checked above)
+                with opener.open(req, timeout=30) as resp:  # https, or a local stand-in: checked above; redirects too
                     return resp.read(4 * 1024 * 1024).decode(errors="replace")
             except urllib.error.HTTPError as e:
                 if e.code not in (403, 404):
@@ -490,23 +507,28 @@ def age(inst, now):
 
 
 IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
-IPV6_RE = re.compile(r"\b(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}\b|\b(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f:]*")
+IPV6_RE = re.compile(r"(?<![\w:])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![\w:])")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+/=-]{40,}")
-CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]|\x1b\[[0-9;]*[A-Za-z]")
+CTRL_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _ipv6(m):
+    """An IPv6 address (two colons in a row, or three or more colons), not a clock time like 10:03:51."""
+    t = m.group(0)
+    return "<ip>" if "::" in t or t.count(":") >= 3 else t
 
 
 def scrub(text, key=""):
     """A container log made safe to print: no API key, host address or long token (an instance key,
-    a checksum: masked alike), no terminal control codes, no GitHub workflow command."""
+    a checksum: masked alike), no terminal control codes. Workflow commands in it are switched off by
+    Fleet.logs (::stop-commands::), not here: the runner trims leading spaces before it parses."""
     if key:
         text = text.replace(key, "<key>")
     out = []
     for line in text.splitlines():
         line = CTRL_RE.sub("", line)
         line = TOKEN_RE.sub("<token>", line)
-        line = IPV6_RE.sub("<ip>", IPV4_RE.sub("<ip>", line))
-        if line.lstrip().startswith("::"):
-            line = " " + line          # a line from the machine must not act as a workflow command
+        line = IPV6_RE.sub(_ipv6, IPV4_RE.sub("<ip>", line))
         out.append(line)
     return "\n".join(out)
 
@@ -540,23 +562,34 @@ class Fleet:
         self.no_credit = False
 
     # -- reading
+    def fleet_image(self, inst):
+        """Whether an instance runs one of the fleet's images (by digest)."""
+        img = str(inst.get("image_uuid") or inst.get("image") or "")
+        digests = {c["image"].split("@", 1)[1] for c in self.fleet["networks"].values()}
+        return bool(img) and any(img.endswith("@" + d) or img == d for d in digests)
+
     def read(self):
+        """Our instances by slot, the count of the others, and self.strays: instances that are ours but
+        whose label no longer says so (a ycash-... label that does not parse, or a fleet image under any
+        other label). reconcile and down leave strays alone; expire destroys them."""
         rows = self.api.instances()
-        ours, foreign, odd = {}, 0, 0
+        ours, foreign = {}, 0
+        self.strays = []
         for r in rows:
             mask(r.get("id"))
             mask(r.get("public_ipaddr"))
             p = parse_label(r.get("label"))
             if p is None:
-                if str(r.get("label") or "").startswith("ycash-"):
-                    odd += 1
+                if str(r.get("label") or "").startswith("ycash-") or self.fleet_image(r):
+                    r["_health"] = health(r, self.now, self.fleet["max_start_minutes"])
+                    self.strays.append(r)
                 foreign += 1
                 continue
             net, idx, until = p
             r["_net"], r["_idx"], r["_until"] = net, idx, until
             r["_health"] = health(r, self.now, self.fleet["max_start_minutes"])
             ours.setdefault((net, idx), []).append(r)
-        return ours, foreign, odd
+        return ours, foreign, len(self.strays)
 
     # -- acting (each says what it does; nothing happens in a dry run)
     def destroy(self, inst, why):
@@ -658,7 +691,7 @@ class Fleet:
         ours, foreign, odd = self.read()
         nets = self.fleet["networks"]
         say(f"{len(ours)} slot(s) of ours, {foreign} other instance(s) on the account (never touched)"
-            + (f", {odd} with a ycash- label we do not recognise (never touched)" if odd else ""))
+            + (f", {odd} labelled ycash- or running a fleet image without a slot label (left to expire)" if odd else ""))
         for (net, idx), insts in sorted(ours.items()):
             if only and net != only:
                 continue
@@ -726,14 +759,26 @@ class Fleet:
                 self.destroy(i, "down")
 
     def expire(self):
+        """Destroy what must not run on; never start anything. burst_active = burst miners still in their
+        window (expire stays switched on while it is above 0)."""
         ours, _, _ = self.read()
+        nets = self.fleet["networks"]
         left = 0
-        for (_net, _idx), insts in sorted(ours.items()):
+        for i in self.strays:
+            self.destroy(i, "labelled ycash- or running a fleet image, but its label is not a slot of ours")
+        for (net, idx), insts in sorted(ours.items()):
+            count = nets[net]["count"] if net in nets else 0
             for i in insts:
                 if i["_until"] is None:
+                    if idx >= count:
+                        self.destroy(i, f"no end time, and slot {idx} is at or above {net}'s count {count}")
                     continue
+                started = i.get("start_date")
+                old = isinstance(started, (int, float)) and self.now.timestamp() - started > DEAD_BURST_MINUTES * 60
                 if i["_until"] <= self.now:
                     self.destroy(i, "burst over")
+                elif i["_health"].startswith("dead") and old:
+                    self.destroy(i, f"a burst miner {i['_health']}, started over {DEAD_BURST_MINUTES} min ago")
                 else:
                     left += 1
         output("burst_active", left)
@@ -763,7 +808,7 @@ class Fleet:
                          + (f"; cannot start: {note}" if note else ""))
         lines.append(f"\nours: about ${total:.3f}/h (≈ ${total * 730:.0f} a month); "
                      f"{foreign} other instance(s) on the account, never touched"
-                     + (f" ({odd} with an unrecognised ycash- label)" if odd else ""))
+                     + (f" ({odd} labelled ycash- or running a fleet image without a slot label: expire destroys them)" if odd else ""))
         for line in lines:
             say(line)
         summary(["## miners: status", ""] + lines)
@@ -786,7 +831,15 @@ class Fleet:
                 except ApiError as e:
                     self.errors.append(f"logs {i.get('label')}: {e}")
                     continue
-                say(scrub(text, self.api.key) or "(the log is empty)")
+                text = scrub(text, self.api.key) or "(the log is empty)"
+                if in_actions():
+                    # nothing the machine printed may act as a workflow command: switch them off around it
+                    token = secrets.token_hex(16)
+                    say(f"::stop-commands::{token}")
+                    say(text)
+                    say(f"::{token}::")
+                else:
+                    say(text)
         if not shown:
             say("no miner of ours" + (f" on {only}" if only else "") + ": no log to show")
 
