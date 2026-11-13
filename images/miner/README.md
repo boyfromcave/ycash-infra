@@ -105,14 +105,25 @@ dynamic linker was asked for and did not load (`LD_DEBUG=libs`). It also counts 
 `Drivers: Cuda, OpenCL` as usable for lolMiner. miniZ mines 192,7 with CUDA and does not need any of
 this, which is why the fast network uses it.
 
+**Settled by GPU bursts 5 and 6 (2026-11-13).** On two more RTX 3060 hosts (drivers 535.154.05 and
+580.126.20), `cl-probe` passed every step in this image: context, queue, `clBuildProgram`, kernel
+run, nothing missing. On the 580 host, lolMiner 1.98a still printed `Number of OpenCL supported
+GPUs: 0` with `Drivers: Cuda`. The container's OpenCL works; lolMiner's own OpenCL detection drops
+the Nvidia card (its filter is closed source). No image, environment or flag of ours changes that,
+and lolMiner 1.98a has no CUDA solver for 192,7: on Nvidia cards rented on Vast, use miniZ.
+
 ### Before mining: what it sees, and no GPU means exit 70
 
 Before it mines, the entrypoint prints: the NVIDIA variables, the `/dev/nvidia*` nodes, `nvidia-smi -L`
 (UUIDs left out), the OpenCL loader, driver library and `.icd` entries, `clinfo -l`, lolMiner's own
 `--list-devices` (miniZ: `--cuda-info`), the driver and OpenCL checks above, and where the pool's name resolves and whether its port accepts a TCP connection
 (an unreachable pool is only a warning: lolMiner keeps retrying). If lolMiner sees no OpenCL GPU
-(miniZ: `nvidia-smi` lists none, or miniZ cannot load `libcuda.so.1`), it **exits 70 without mining**, so Vast shows the rental exited
-and the fleet gives it back instead of paying for an idle machine. `MINER_DIAG=1` runs the same
+(miniZ: `nvidia-smi` lists none, or miniZ cannot load `libcuda.so.1`), it **does not mine**. Vast
+restarts a container that exits (GPU burst 6: the checks ran again and again on a running
+instance), so with Vast's per-instance key the container waits `NO_GPU_GRACE` seconds (default
+600, so `logs` can read it; `docker stop` ends the wait at once), checks the GPU again, and only if
+that fails too destroys its own instance (3 tries, then it stops it as a burst end does); without
+the key it exits 70. `MINER_DIAG=1` runs the same
 checks (after the download) and exits 0 or 70 without mining.
 
 ### The end of a burst (`MINER_UNTIL`)
@@ -150,7 +161,10 @@ add --par=192,7 and --pers=ZcashPoW ... However, this may depend on the pool" (y
 personalization, so both are given). `--help` of v2.5e3 lists the same options and spells the colour
 switch `--nocolour`. Its features page lists Ycash (YEC) under 192,7 and "Developer fee:
 Equihash: 2.0% ... % of mining time". `--cuda-info` lists its CUDA devices before mining. It has no
-watchdog exit code like lolMiner's 42, so any failed exit restarts it (at most 20 times).
+watchdog exit code like lolMiner's 42, so any failed exit restarts it (at most 20 times). miniZ opens NVML as `libnvidia-ml.so`, while the NVIDIA runtime mounts
+only `libnvidia-ml.so.1` (GPU burst 5: "Cannot read health status! (cannot find libnvidia-ml.so)",
+so no temperatures and no `--templimit`); the entrypoint links the one to the other in its cache
+directory and puts that directory on miniZ's `LD_LIBRARY_PATH` only.
 
 **What enabling it agrees to** (https://miniz.cc/terms-and-conditions/, read 2026-11-13): miniZ is
 licensed under **CC BY-ND 4.0**; whoever uses it agrees **not to decompile, disassemble or reverse
@@ -176,6 +190,7 @@ stop the network), and it mines 192,7 with CUDA where lolMiner needs OpenCL.
 | `MINER_UNTIL` | no | a burst's end, epoch seconds (the fleet sets it): stop and end the rental then |
 | `MINER_DRY_RUN` | no | `1`: print what would be downloaded and run, then exit (no download, no GPU) |
 | `MINER_DIAG` | no | `1`: download and check the miner, print the GPU and pool checks, exit 0 (a usable GPU) or 70 |
+| `NO_GPU_GRACE` | no (`600`) | seconds a container with no usable GPU waits before it destroys its own Vast instance (with Vast's per-instance key; never under `MINER_DIAG`) |
 
 Exit codes of the entrypoint itself: 64 a bad setting, 65 a SHA-256 mismatch (nothing run), 69 the
 download failed (no network or the release moved; nothing run), 70 no usable GPU (nothing mined),

@@ -35,6 +35,11 @@
 #   MINER_DIAG=1     download and check the miner, print the GPU and pool checks below, then exit:
 #                    0 with a usable GPU, 70 without (no mining).
 #   MINER_MANIFEST   the manifest (default /opt/ycash-miner/miners.conf).
+#   NO_GPU_GRACE     seconds a container with no usable GPU waits before it destroys its own Vast
+#                    instance (default 600, so `logs` can still read it); 0 = at once. Without
+#                    Vast's per-instance key it just exits 70. After the grace the GPU is checked
+#                    again; only a second failure ends the rental (destroy, tried 3 times with
+#                    VAST_RETRY_DELAY x 1, 2 s between, default 10; then stop).
 #   MINER_CACHE      where the verified download is kept across restarts (default ~/.cache/ycash-miner).
 #   RESTART_DELAY    seconds before a watchdog restart (default 10).
 # Before mining it prints what the container sees: nvidia-smi's GPUs, the driver version and which of
@@ -214,11 +219,25 @@ fetch() {
 }
 fetch
 
+# miniZ opens NVML as "libnvidia-ml.so" (GPU burst 5: "Cannot read health status! (cannot find
+# libnvidia-ml.so)", so no temperature or power readings and no --templimit), and the NVIDIA runtime
+# mounts only libnvidia-ml.so.1: a link in a directory of ours, on miniZ's LD_LIBRARY_PATH only
+runenv=()
+if [ "$miner" = miniz ]; then
+  nvml=$(ldconfig -p 2>/dev/null | awk '$1 == "libnvidia-ml.so.1" {print $NF; exit}')
+  if [ -n "$nvml" ] && mkdir -p "$CACHE/lib" && ln -sfn "$nvml" "$CACHE/lib/libnvidia-ml.so"; then
+    runenv=("LD_LIBRARY_PATH=$CACHE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}")
+  fi
+fi
+
 # ---- what the container sees: GPUs, OpenCL, the miner's devices, the pool --------------------------------
 say() { sed "s/^/ycash-miner: $1/"; }
 driver_check() { # the driver and what of it the container runtime mounted; prints only, never fatal
   local ver lib path out
-  ver=$(sed -n 's/.*Kernel Module[^0-9]*\([0-9][0-9.]*\).*/\1/p' /proc/driver/nvidia/version 2>/dev/null | head -1)
+  # "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  580.126.20  Release Build ...": the
+  # first dotted number after "Kernel Module" (x86_64 has no dot; GPU burst 6 read "86" before)
+  ver=$(sed -n '/Kernel Module/{s/.*Kernel Module//;p;}' /proc/driver/nvidia/version 2>/dev/null |
+        grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1) || true
   if [ -z "$ver" ] && command -v nvidia-smi >/dev/null 2>&1; then
     ver=$(timeout 30 nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1) || true
   fi
@@ -290,7 +309,7 @@ gpu_check() { # prints the listings; true when a GPU the miner can use is there
       echo "ycash-miner: lolMiner sees no OpenCL GPU (nvidia-smi: $smi GPU(s), lolMiner OpenCL: $ocl); miniZ (MINER=miniz) mines 192,7 with CUDA" >&2
       return 1 ;;
     miniz)
-      out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "$bin" --cuda-info --nocolour 2>&1) || true
+      out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "${runenv[@]}" "$bin" --cuda-info --nocolour 2>&1) || true
       printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^ *$' | say "miniZ --cuda-info: "
       if printf '%s\n' "$out" | grep -q 'dlopen "libcuda.so.1" failed'; then
         echo "ycash-miner: miniZ cannot load the CUDA driver (libcuda.so.1)" >&2
@@ -317,7 +336,40 @@ gpu_ok=0
 gpu_check || gpu_ok=$?
 pool_check
 if [ "$gpu_ok" != 0 ]; then
-  fail "no usable GPU in this container: not mining (exit 70, so the rental shows exited and is given back)" 70
+  # Vast restarts a container that exits (GPU burst 6: exit 70 ran again and again on a running
+  # instance), so an exit alone does not give the machine back. With the per-instance key the
+  # container ends its own rental, after a grace period in which `logs` can read why.
+  if [ "${MINER_DIAG:-}" != 1 ] && [[ ${CONTAINER_ID:-} =~ ^[0-9]{1,12}$ ]] && [ -n "${CONTAINER_API_KEY:-}" ]; then
+    grace=${NO_GPU_GRACE:-600}
+    [[ $grace =~ ^[0-9]{1,5}$ ]] || grace=600
+    echo "ycash-miner: no usable GPU in this container: not mining; this machine's rental ends in $grace s unless a second check finds one" >&2
+    # bash is PID 1: without a trap, `docker stop` would wait out the grace
+    trap 'echo "ycash-miner: stopped during the grace period" >&2; exit 70' TERM INT
+    sleep "$grace" &
+    wait "$!"
+    trap - TERM INT
+    # a transient failure (a driver blip at start) must not end a good rental: check again
+    echo "ycash-miner: checking the GPU again before ending the rental"
+    gpu_ok=0
+    gpu_check || gpu_ok=$?
+    if [ "$gpu_ok" != 0 ]; then
+      ended=no
+      delay=${VAST_RETRY_DELAY:-10}
+      [[ $delay =~ ^[0-9]{1,4}$ ]] || delay=10
+      for try in 1 2 3; do
+        if vast_self DELETE '{}'; then ended=destroyed; break; fi
+        echo "ycash-miner: Vast refused to destroy the instance (try $try/3)" >&2
+        [ "$try" = 3 ] || sleep $((delay * try))
+      done
+      if [ "$ended" = no ] && vast_self PUT '{"state": "stopped"}'; then ended=stopped; fi
+      case "$ended" in
+        destroyed) echo "ycash-miner: this machine's rental is ended (instance destroyed with its own key)" ;;
+        stopped) echo "ycash-miner: destroy refused; the instance is stopped (no GPU charge; the fleet's expire destroys it)" ;;
+        *) echo "ycash-miner: Vast refused both destroy and stop; the fleet's expire or down ends it" >&2 ;;
+      esac
+    fi
+  fi
+  [ "$gpu_ok" = 0 ] || fail "no usable GPU in this container: not mining (exit 70)" 70
 fi
 echo "ycash-miner: a usable GPU is there"
 if [ "${MINER_DIAG:-}" = 1 ]; then echo "ycash-miner: MINER_DIAG=1: checks only, not mining"; exit 0; fi
@@ -328,10 +380,10 @@ while :; do
   if [ -n "$until" ]; then
     left=$(( until - $(date +%s) ))
     [ "$left" -gt 0 ] || burst_over
-    timeout --signal=TERM --kill-after=30 "$left" env -u CONTAINER_API_KEY -u CONTAINER_ID "${cmd[@]}" || rc=$?
+    timeout --signal=TERM --kill-after=30 "$left" env -u CONTAINER_API_KEY -u CONTAINER_ID "${runenv[@]}" "${cmd[@]}" || rc=$?
     if past_until; then burst_over; fi
   else
-    env -u CONTAINER_API_KEY -u CONTAINER_ID "${cmd[@]}" || rc=$?
+    env -u CONTAINER_API_KEY -u CONTAINER_ID "${runenv[@]}" "${cmd[@]}" || rc=$?
   fi
   if { [ "$miner" = lolminer ] && [ "$rc" = 42 ]; } || { [ "$miner" = miniz ] && [ "$rc" != 0 ]; }; then
     [ "$restarts" -lt 20 ] || { echo "ycash-miner: $miner exited with $rc after 20 restarts" >&2; exit "$rc"; }

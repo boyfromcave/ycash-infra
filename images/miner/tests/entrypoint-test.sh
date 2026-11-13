@@ -24,6 +24,9 @@ mkdir -p "$T/bin" "$T/files" "$T/pkg/1.98a" "$T/pkgz"
 cat > "$T/pkg/1.98a/lolMiner" <<'EOF'
 #!/bin/bash
 if [ "$1" = --list-devices ]; then
+  if [ -n "${FAKE_OCL_ONCE:-}" ] && [ ! -e "$FAKE_LOG.listed" ]; then
+    touch "$FAKE_LOG.listed"; echo "OpenCL driver detected. Number of OpenCL supported GPUs: $FAKE_OCL_ONCE"; exit 0
+  fi
   if [ "${FAKE_OCL:-1}" = none ]; then echo "No OpenCL driver or GPUs detected."; else
     echo "OpenCL driver detected. Number of OpenCL supported GPUs: ${FAKE_OCL:-1}"; fi
   [ -z "${FAKE_DRIVERS:-}" ] || printf 'Device 0:\n    Drivers: %s\n' "$FAKE_DRIVERS"
@@ -104,9 +107,9 @@ export PATH="$T/bin:$PATH" FAKE_LOG="$T/calls" FAKE_DL="$T/downloads" FAKE_FILES
   FAKE_API="$T/api" MINER_MANIFEST="$T/manifest" RESTART_DELAY=0
 fail() { echo "FAIL: $*" >&2; cat "$T/out" >&2 || true; exit 1; }
 fresh() { rm -rf "$T/cache"; }
-run() { : > "$T/calls"; : > "$T/downloads"; : > "$T/api"; rc=0
+run() { : > "$T/calls"; : > "$T/downloads"; : > "$T/api"; rm -f "$T/calls.listed"; rc=0
   env -u POOL_URL -u WORKER -u PAYOUT -u MINER_ARGS -u MINER_DRY_RUN -u MINER -u MINIZ_URL -u MINIZ_SHA256 \
-    -u MINER_UNTIL -u MINER_DIAG -u CONTAINER_ID -u CONTAINER_API_KEY \
+    -u MINER_UNTIL -u MINER_DIAG -u CONTAINER_ID -u CONTAINER_API_KEY -u NO_GPU_GRACE -u VAST_RETRY_DELAY \
     MINER_CACHE="$T/cache" "$@" ./entrypoint.sh > "$T/out" 2>&1 || rc=$?; }
 
 # ---- configuration refusals (nothing downloaded) -------------------------------------------------
@@ -238,5 +241,15 @@ if [ -e "$T/calls.key" ]; then fail "lolMiner runs without Vast's per-instance k
 grep -q "per-instance key present: yes" "$T/out" || fail "whether the key is there is printed (yes/no only)"
 run POOL_URL=pool.example:3333 MINER_UNTIL=$((now - 5))
 if ! { [ "$rc" = 0 ] && grep -q 'no per-instance Vast key' "$T/out" && [ ! -s "$T/api" ]; }; then fail "no Vast key: just exits"; fi
-echo "ok - MINER_UNTIL: stops mining at the burst's end and destroys (else stops) its own instance; key never printed"
+run POOL_URL=pool.example:3333 FAKE_OCL=0 CONTAINER_ID=4242 CONTAINER_API_KEY="$IKEY" NO_GPU_GRACE=0
+if ! { [ "$rc" = 70 ] && [ ! -s "$T/calls" ] && grep -qx "DELETE https://console.vast.ai/api/v0/instances/4242/ key=$IKEY" "$T/api"; }; then fail "no usable GPU with Vast's key: destroys its own instance (Vast restarts an exited container), exit 70"; fi
+run POOL_URL=pool.example:3333 FAKE_OCL=0 CONTAINER_ID=4242 CONTAINER_API_KEY="$IKEY" NO_GPU_GRACE=0 VAST_RETRY_DELAY=0 FAKE_API_FAIL=DELETE
+if ! { [ "$rc" = 70 ] && [ "$(grep -c '^DELETE ' "$T/api")" = 3 ] && grep -q '^PUT ' "$T/api" && grep -q 'instance is stopped' "$T/out"; }; then fail "no GPU, destroy refused: 3 tries, then stopped"; fi
+run POOL_URL=pool.example:3333 FAKE_OCL=0 CONTAINER_ID=4242 CONTAINER_API_KEY="$IKEY" NO_GPU_GRACE=0 VAST_RETRY_DELAY=0 FAKE_API_FAIL="DELETE PUT"
+if ! { [ "$rc" = 70 ] && grep -q 'refused both destroy and stop' "$T/out"; }; then fail "no GPU, destroy and stop refused: says so, exit 70"; fi
+run POOL_URL=pool.example:3333 FAKE_OCL_ONCE=0 CONTAINER_ID=4242 CONTAINER_API_KEY="$IKEY" NO_GPU_GRACE=0
+if ! { [ "$rc" = 0 ] && [ ! -s "$T/api" ] && [ -s "$T/calls" ] && grep -q 'checking the GPU again' "$T/out"; }; then fail "a GPU found on the second check: mines, rental kept"; fi
+run POOL_URL=pool.example:3333 FAKE_OCL=0 CONTAINER_ID=4242 CONTAINER_API_KEY="$IKEY" NO_GPU_GRACE=0 MINER_DIAG=1
+if ! { [ "$rc" = 70 ] && [ ! -s "$T/api" ]; }; then fail "MINER_DIAG never destroys"; fi
+echo "ok - MINER_UNTIL: stops mining at the burst's end and destroys (else stops) its own instance; key never printed; no GPU: destroys itself after its grace"
 echo "entrypoint-test: all checks passed"
