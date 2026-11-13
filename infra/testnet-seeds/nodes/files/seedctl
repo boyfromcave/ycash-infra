@@ -182,12 +182,15 @@ render_pool() { # net file
 YAML
 }
 
-pool_status() { # net: yolo's /status, cut to what an operator reads ({} when it does not answer)
+pool_status() { # net: yolo's /status, cut to what an operator reads ({} when it does not answer).
+  # rejected = submits refused (mostly high-hash shares, never a valid block); stale = submits for a
+  # job the chain moved past (yolo >= a5e8acec4; null on an older image); shares = submits that met
+  # only the share target (--share-ratio)
   local sp
   sp=$(cfg "$D/$1/applied.json" '.pool.status_port // empty' 2>/dev/null || true)
   [ -n "$sp" ] || { echo null; return 0; }
   curl -fsS --max-time 3 "http://127.0.0.1:$sp/status" 2>/dev/null \
-    | jq -c '{nodeUp, height, templateAgeSeconds, miners, connections, accepted, rejected, lastSubmitVerdict, payout, equihash}' 2>/dev/null \
+    | jq -c '{nodeUp, height, templateAgeSeconds, miners, connections, accepted, rejected, stale, shares, shareRatio, lastSubmitVerdict, payout, equihash}' 2>/dev/null \
     || echo '{}'
 }
 

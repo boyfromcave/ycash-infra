@@ -232,7 +232,9 @@ What a `pool` adds, per host:
   "Exposure").
 - **seedctl** runs both containers together (`apply`, `reset`, `stop`, `sync`, `boot`); `apply`
   also waits for yolo's status page; `status` adds a `pool` field (container, image, node up,
-  height, miners, accepted, rejected, last verdict).
+  height, miners, accepted, rejected, stale, shares, share ratio, last verdict). `rejected` counts
+  refused submits, mostly `high-hash` shares from GPU miners (never a valid block); `stale` counts
+  submits for a job the chain has moved past, which are not refusals.
 
 The image is `ghcr.io/<owner>/yolo`, built from the yolo repository at one commit on its
 `upgrade/vault` by `yolo-image.yml` with [`images/yolo/Dockerfile`](../../images/yolo/Dockerfile).
