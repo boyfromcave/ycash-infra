@@ -55,6 +55,25 @@ if [ "${SWAP_MB:-0}" -gt 0 ] && [ ! -e /swapfile ]; then
   swapon /swapfile
 fi
 
+# 3b. yolo (a pool host's stratum pool, uid 2004) runs with host networking, so the metadata
+#     service's hop limit does not keep it from IMDS: an owner rule refuses it, from every boot on,
+#     before Docker restarts any container (seedctl installs the same rule before it starts yolo).
+#     Harmless on a host without a pool: no process runs as uid 2004 there.
+cat > /etc/systemd/system/ycash-imds-guard.service <<'UNIT'
+[Unit]
+Description=Ycash seed: refuse the pool's uid (2004) the instance metadata service
+Before=docker.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -C OUTPUT -d 169.254.169.254/32 -m owner --uid-owner 2004 -j REJECT 2>/dev/null || iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner 2004 -j REJECT'
+ExecStart=-/bin/sh -c 'ip6tables -C OUTPUT -d fd00:ec2::254/128 -m owner --uid-owner 2004 -j REJECT 2>/dev/null || ip6tables -I OUTPUT 1 -d fd00:ec2::254/128 -m owner --uid-owner 2004 -j REJECT'
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now ycash-imds-guard.service
+
 # 4. seedctl, and the two units that call it: at boot (restart what the disk carries) and every
 #    10 minutes (retire the prefix -loadblock flags once a network has imported it).
 install -m 0755 /opt/ycash-seed/seedctl /usr/local/sbin/seedctl

@@ -135,9 +135,23 @@ YAML
 
 # The pool beside NET's node: yolo, paying every block to pool.payout (--payout; the node's
 # -mineraddress is the same address, locals.tf), on the node's RPC at 127.0.0.1 with the node's own
-# credential (pool.conf: never on a command line, readable by yolo's uid only).
+# credential (pool.conf: never on a command line, readable by yolo's uid only). The stratum port is
+# open to the internet: at most 64 sockets, 4 per address; the status page explicitly on loopback.
+# yolo runs with host networking, so the instance metadata service's hop limit of 1 does not keep it
+# away from IMDS: an owner rule refuses every packet from yolo's uid to the metadata addresses
+# (IPv4 and the Nitro IPv6 one). Idempotent; applied before yolo starts, on every apply and boot.
+imds_guard() {
+  iptables -C OUTPUT -d 169.254.169.254/32 -m owner --uid-owner "$UID_POOL" -j REJECT 2>/dev/null \
+    || iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner "$UID_POOL" -j REJECT \
+    || die "could not install the metadata rule for uid $UID_POOL"
+  ip6tables -C OUTPUT -d fd00:ec2::254/128 -m owner --uid-owner "$UID_POOL" -j REJECT 2>/dev/null \
+    || ip6tables -I OUTPUT 1 -d fd00:ec2::254/128 -m owner --uid-owner "$UID_POOL" -j REJECT \
+    || log "warning: no IPv6 metadata rule for uid $UID_POOL (ip6tables unavailable)"
+}
+
 render_pool() { # net file
   local net=$1 f=$2 R="$O/net/$1" pc="$D/$1/pool.conf" text ratio
+  imds_guard
   ( umask 077
     # shellcheck source=/dev/null
     . "$D/$net/rpc.env"
@@ -162,7 +176,7 @@ render_pool() { # net file
     security_opt: ["no-new-privileges:true"]
     mem_limit: 256m
     volumes: ["$pc:/etc/yolo/pool.conf:ro"]
-    command: ["--conf", "/etc/yolo/pool.conf", "--payout", "$(cfg "$f" .pool.payout)", "--bind", "0.0.0.0", "--port", "$(cfg "$f" .pool.port)", "--status-port", "$(cfg "$f" .pool.status_port)", "--log", "info"$text]
+    command: ["--conf", "/etc/yolo/pool.conf", "--payout", "$(cfg "$f" .pool.payout)", "--bind", "0.0.0.0", "--port", "$(cfg "$f" .pool.port)", "--status-port", "$(cfg "$f" .pool.status_port)", "--status-bind", "127.0.0.1", "--max-connections", "64", "--max-per-ip", "4", "--log", "info"$text]
     stop_grace_period: 10s
     logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
 YAML

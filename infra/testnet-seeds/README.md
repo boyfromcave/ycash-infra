@@ -215,11 +215,15 @@ What a `pool` adds, per host:
   `submitblock`, `validateaddress` and `getblockchaininfo` need none).
 - **yolo** in the same compose project (`yolo-<key>`, host networking, uid 2004, read-only root,
   no capabilities, 256 MiB): `--payout <payout>` (every block pays that transparent address; a
-  miner's stratum username is only a worker name), stratum on `0.0.0.0:<port>`, its status page on
-  `127.0.0.1:<port + 1>`, `--share-ratio <share_ratio>` when above 1 (shares keep GPU miners
+  miner's stratum username is only a worker name), stratum on `0.0.0.0:<port>` with at most 64
+  sockets in all and 4 per address (`--max-connections 64 --max-per-ip 4`), its status page on
+  `127.0.0.1:<port + 1>` (`--status-bind 127.0.0.1`, explicit), `--share-ratio <share_ratio>` when above 1 (shares keep GPU miners
   connected between blocks and show the fleet's speed; yolo README, "Shares"), the node's RPC on `127.0.0.1` with the node's own credential from
   `/srv/ycash-data/<key>/pool.conf` (mode 0400, never on a command line). It reaches the node
-  only through the stock mining RPCs (workspace rule 2).
+  only through the stock mining RPCs (workspace rule 2). Host networking means the metadata
+  service's hop limit of 1 does not stop yolo, so an iptables owner rule refuses uid 2004 the
+  metadata addresses (169.254.169.254 and fd00:ec2::254): seedctl installs it before it starts yolo,
+  and `setup.sh`'s `ycash-imds-guard.service` from every boot on, before Docker starts.
 - **Inbound**: the stratum port, to `pool_ingress_cidrs` (default everyone: rented miners come
   from arbitrary addresses). Plain TCP stratum, no TLS, no password: nothing secret crosses it
   (the miners send a worker name and solutions; the payout address is the pool's), and yolo bounds

@@ -58,7 +58,13 @@ case "$*" in
   *) exit 7 ;;
 esac
 EOF
-chmod +x "$T/bin/docker" "$T/bin/curl"
+cat > "$T/bin/iptables" <<'EOF'
+#!/bin/bash
+echo "iptables $*" >> "$LOG"
+[ "$1" != -C ] || grep -qF -- "iptables -I OUTPUT 1 ${*:3}" "$LOG"
+EOF
+sed 's/iptables/ip6tables/g' "$T/bin/iptables" > "$T/bin/ip6tables"
+chmod +x "$T/bin/docker" "$T/bin/curl" "$T/bin/iptables" "$T/bin/ip6tables"
 export PATH="$T/bin:$PATH"
 
 # A config as the module's network_configs output carries it (locals.tf network_config).
@@ -152,12 +158,16 @@ POOLED=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c '.pool = {image: "ghcr.i
 "$SEEDCTL" apply yb-fast "$POOLED" 2>"$T/err" || { cat "$T/err"; fail "apply with a pool"; }
 c="$O/net/yb-fast/compose.yaml"
 grep -q 'container_name: yolo-yb-fast' "$c" && grep -q 'image: ghcr.io/example/yolo@sha256:2222' "$c" && grep -q 'depends_on: \[ycashd\]' "$c" || fail "the yolo service: $(cat "$c")"
-grep -qF 'command: ["--conf", "/etc/yolo/pool.conf", "--payout", "smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13", "--bind", "0.0.0.0", "--port", "3333", "--status-port", "3334", "--log", "info", "--share-ratio", "32", "--text", "testnet pool"]' "$c" || fail "yolo's command line: $(grep command "$c")"
+grep -qF 'command: ["--conf", "/etc/yolo/pool.conf", "--payout", "smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13", "--bind", "0.0.0.0", "--port", "3333", "--status-port", "3334", "--status-bind", "127.0.0.1", "--max-connections", "64", "--max-per-ip", "4", "--log", "info", "--share-ratio", "32", "--text", "testnet pool"]' "$c" || fail "yolo's command line: $(grep command "$c")"
 grep -q 'read_only: true' "$c" && grep -q 'cap_drop: \[ALL\]' "$c" && grep -qF "\"$D/yb-fast/pool.conf:/etc/yolo/pool.conf:ro\"" "$c" || fail "yolo is read-only, no capabilities, the conf mounted read-only"
 pw=$(sed -n 's/^YCASHD_RPC_PASSWORD=//p' "$D/yb-fast/rpc.env")
 grep -qx "rpcpassword=$pw" "$D/yb-fast/pool.conf" && grep -qx 'rpcport=18832' "$D/yb-fast/pool.conf" && grep -qx 'rpcconnect=127.0.0.1' "$D/yb-fast/pool.conf" && [ "$(stat -c %a "$D/yb-fast/pool.conf")" = 400 ] || fail "pool.conf: the node's credential, its RPC port on loopback, mode 0400"
 ! grep -q "$pw" "$c" || fail "the RPC password is on yolo's command line"
 grep -q '127.0.0.1:3334/status' "$LOG" || fail "apply waits for the pool's status page"
+grep -qx 'iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner 2004 -j REJECT' "$LOG" \
+  && grep -qx 'ip6tables -I OUTPUT 1 -d fd00:ec2::254/128 -m owner --uid-owner 2004 -j REJECT' "$LOG" || fail "yolo's uid is refused the metadata service"
+"$SEEDCTL" boot 2>/dev/null
+[ "$(grep -c '^iptables -I' "$LOG")" = 1 ] || fail "the metadata rule is installed once, not again at boot"
 s=$("$SEEDCTL" status yb-fast)
 [ "$(echo "$s" | jq -r '.pool.accepted')" = 1 ] && [ "$(echo "$s" | jq -r '.pool.container')" = running ] && [ "$(echo "$s" | jq -r '.pool.payout')" = smc9M6Kk4dt6ExX1dUKNYcwTxtPpyC4Jo13 ] || fail "status with a pool: $s"
 ok "a pool beside fast: compose service, private pool.conf, status page waited for and reported"
