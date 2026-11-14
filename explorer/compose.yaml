@@ -41,13 +41,14 @@ services:
       # Restore the network's pinned block prefix into an empty datadir before the first start
       # (blocks 0..510,247 for yb-fast, from the published bundle); empty = sync from peers only.
       YCASHD_BOOTSTRAP: ${YCASHD_BOOTSTRAP:-prefix}
-      # ZMQ for Inzyght's live updates (hashblock, hashtx) on the backend network; the seeds; the
-      # testnet tip age the seeds also run with.
+      # ZMQ for Inzyght's live updates (hashblock, hashtx) on the backend network; the seeds; no
+      # wallet (the explorer only reads); the testnet tip age the seeds also run with.
       YCASHD_CONF_EXTRA: |-
         zmqpubhashblock=tcp://0.0.0.0:${ZMQ_PORT:-28332}
         zmqpubhashtx=tcp://0.0.0.0:${ZMQ_PORT:-28332}
         addnode=${YCASHD_ADDNODE:-fastnet-seed.ycash.team:18833}
         dnsseed=0
+        disablewallet=1
         maxtipage=999999999
         dbcache=${YCASHD_DBCACHE:-1024}
     volumes:
