@@ -6,7 +6,8 @@
 # ports, prefix-check, status, reset of one network leaving the other alone, sync stopping a
 # network no longer configured, boot re-rendering from the applied configs, and the refusals; then a
 # pool beside a node, an explorer (insight, ZMQ, PostgreSQL, Inzyght built on the host, proxy; a
-# failed build; install-files refusals), a detached run, and a host without the prefix tools.
+# failed build; install-files refusals), a detached run (and one still holding the lock; status
+# before the first applied.json), and a host without the prefix tools.
 # Run: infra/testnet-seeds/nodes/tests/seedctl.sh   (make seeds-validate runs it)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -89,7 +90,12 @@ echo "systemd-run $*" >> "$LOG"
 while [ "${1#--}" != "$1" ]; do shift; done
 "$@" 2>>"$LOG.job" || true
 EOF
-printf '#!/bin/bash\nexit 3\n' > "$T/bin/systemctl"
+# systemctl: no unit is active, unless FAKE_ACTIVE names a file that exists (a detached run going)
+cat > "$T/bin/systemctl" <<'EOF'
+#!/bin/bash
+[ -n "${FAKE_ACTIVE:-}" ] && [ -e "$FAKE_ACTIVE" ] && exit 0
+exit 3
+EOF
 chmod +x "$T/bin/docker" "$T/bin/curl" "$T/bin/iptables" "$T/bin/ip6tables" "$T/bin/apt-get" "$T/bin/systemd-run" "$T/bin/systemctl"
 export PATH="$T/bin:$PATH"
 
@@ -304,6 +310,36 @@ s=$("$SEEDCTL" status yb-fast)
 echo "$s" | jq -e '.job.state == "failed" and (.job.message | test("not valid"))' >/dev/null || fail "a failed detached run: $s"
 if "$SEEDCTL" detach stop yb-fast 2>/dev/null; then fail "detach accepted stop"; fi
 ok "detach: apply in the background, its result and phase in status"
+# 12b. a detached run still going (it holds the host lock): status answers at once with its phase,
+#      install-files (a second deploy's first command) refuses at once naming the phase, detach too
+mkdir -p "$SEEDCTL_ROOT/run"
+jq -cn '{command: "apply yb-fast", state: "running", phase: "building the Inzyght image", phaseSince: "2026-11-14T10:00:00Z", started: "2026-11-14T09:58:00Z"}' > "$D/job.json"
+touch "$T/active"; export FAKE_ACTIVE="$T/active"
+flock "$SEEDCTL_ROOT/run/ycash-seedctl.lock" sleep 60 & holder=$!
+sleep 1
+t0=$(date +%s)
+s=$(timeout 20 "$SEEDCTL" status yb-fast) || fail "status during a held lock did not answer"
+echo "$s" | jq -e '.job.state == "running" and .job.phase == "building the Inzyght image"' >/dev/null || fail "status during a detached run: $s"
+if timeout 20 "$SEEDCTL" install-files "$T/hf.json" 2>"$T/err"; then fail "install-files ran during a detached run"; fi
+grep -qF 'a detached run is still going: phase building the Inzyght image (seedctl apply yb-fast, since 2026-11-14T10:00:00Z); run status' "$T/err" || fail "install-files during a detached run: $(cat "$T/err")"
+if timeout 20 "$SEEDCTL" detach apply yb-fast "$EXPL" 2>"$T/err"; then fail "a second detach started"; fi
+grep -qF 'a detached run is still going: phase building the Inzyght image' "$T/err" || fail "detach during a detached run: $(cat "$T/err")"
+[ $(($(date +%s) - t0)) -lt 10 ] || fail "status, install-files and detach waited on the lock"
+kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+ok "a detached run holding the lock: status answers at once with its phase; install-files and detach refuse at once, naming it"
+# 12c. before the first applied.json: status (all) prints the job; after a reboot it is interrupted
+mkdir -p "$T/kept"; for f in "$D"/*/applied.json; do mv "$(dirname "$f")" "$T/kept/"; done
+s=$("$SEEDCTL" status)
+echo "$s" | jq -e '.host == "seed-0" and .job.state == "running" and .job.phase == "building the Inzyght image" and (has("network") | not)' >/dev/null || fail "status all before the first applied.json: $s"
+s=$("$SEEDCTL" status yb-fast)
+echo "$s" | jq -e '.network == "yb-fast" and .container == "running" and .job.state == "running" and (has("explorer") | not)' >/dev/null || fail "status NET before the first applied.json: $s"
+rm -f "$T/active"
+s=$("$SEEDCTL" status)
+echo "$s" | jq -e '.job.state == "interrupted" and .job.phase == "building the Inzyght image"' >/dev/null || fail "status after a reboot: $s"
+"$SEEDCTL" install-files "$T/hf.json" 2>/dev/null || fail "install-files after an interrupted run"
+mv "$T/kept"/* "$D/"; rm -f "$D/job.json"; unset FAKE_ACTIVE
+[ -z "$(SEEDCTL_ROOT="$T/empty" bash -c 'mkdir -p "$SEEDCTL_ROOT/opt/ycash-seed"; cp "$1" "$SEEDCTL_ROOT/opt/ycash-seed/"; "$2" status' x "$O/seed.env" "$SEEDCTL")" ] || fail "a host with no network and no job prints nothing (as before)"
+ok "status before the first applied.json: the job's phase and state, interrupted after a reboot; nothing on a host without a job"
 # 13. a host without the prefix tools (an instance made by this module revision, its root without
 #     the host_files output): an empty datadir refuses at once, nothing is fetched
 rm -f "$O/prefix-restore.sh"; rm -rf "$D/yb-slow" "$D/prefix-cache"; : > "$LOG"

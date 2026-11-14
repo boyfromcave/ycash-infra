@@ -121,7 +121,8 @@ there through **SSM Run Command** (no SSH, no inbound port):
 
 `seedctl sync` applies every configured network and stops (never deletes) any network that is no
 longer configured. Each host serialises seedctl runs with a lock, so the prefix timer, a boot and
-a workflow run never interleave.
+a workflow run never interleave. `status` never takes the lock, so it answers at once even while a
+long run holds it; a workflow sends it no host files.
 
 `seedctl install-files <file>` writes only the module's own host files (`prefix-restore.sh`,
 `frame.py`, `seedctl-explorer`, `inzyght-build.json`, modes 0644 or 0755): any other name, a path
@@ -130,15 +131,24 @@ separator or `..` is refused before anything is written, so a payload can never 
 across commands. An instance made by this module revision has the prefix tools only from there
 (not in user_data): an apply or a reset that must bootstrap an empty datadir without them fails at
 once, naming the missing file, instead of retrying a script that is not there. A caller's root
-must therefore export `host_files` (below) and its workflow install it before every run.
+must therefore export `host_files` (below) and its workflow install it before every run that
+changes something (not before `status`). While a detached run (below) holds the host's lock,
+`install-files` waits for nothing: it fails at once with `a detached run is still going: phase
+<phase> (seedctl <command>, since <time>); run status`, so a second deploy ends in seconds instead
+of waiting out the workflow's command timeout. Held by anything else (the prefix timer, a boot),
+it waits up to 9 minutes.
 
 `seedctl detach apply|reset|sync …` starts the same command as the transient systemd unit
-`ycash-seedctl-job` and returns at once (it refuses while one is running); `status` then carries a
+`ycash-seedctl-job` and returns at once (it refuses while one is running, with the same message as
+`install-files`); `status` then carries a
 `job` field (`command`, `state` running / succeeded / failed / interrupted, `phase`, `started`,
 `finished`, and on a failure the error line), and the job's output is in
 `/srv/ycash-data/job.log` (0600) and the unit's journal. A workflow uses it where a run would
 otherwise keep a billed runner waiting for a long first start (the explorer host's build and
-import); without `detach` nothing changes.
+import); without `detach` nothing changes. Before the host's first `applied.json` (a first deploy
+still going, or `interrupted` by a reboot) `status` with no network prints one line,
+`{host, ip, job}`, and `status <net>` that network's line with its `job`; a host that never ran
+a detached job prints what it printed before.
 
 **Why this, and not per-network volumes or instance replacement.** The alternatives were a
 Terraform `-replace` of a data volume (the single-network design: it replaces the instance, so a
@@ -493,6 +503,17 @@ it they come only in `host_files`. A root that bumps must, in the same change, a
 breaks at once; without the output, the first replaced instance's reset or new network would fail
 (seedctl now says so at once).
 
+A bump that changes the instances' tags (a new `Name`, or any tag the module sets on
+`aws_instance`) fails `apply` on hosts that already run: the deploy roles' policy (ycash-ops
+`docs/aws-setup.md` §5c) has `DenyInstanceRetag`, which refuses `ec2:CreateTags` and
+`ec2:DeleteTags` on an existing instance, and the in-place tag update ends in
+`UnauthorizedOperation`. Read the plan before applying: if it updates an instance's tags in place,
+either replace that instance (`-replace='module.nodes.aws_instance.seed["<host>"]'`: a new
+instance, tagged at creation, which the Deny allows; the data volume and the address stay, and
+`seedctl boot` restarts its networks), or have the Yellowback lead architect lift that one Deny
+statement by hand for that apply and put it back right after (the backup and restore lines of
+§5c's steps 3 and 4).
+
 `ips/example.tfvars` and `nodes/example.tfvars` list every variable with fake values, and
 `variables.tf` documents each one. Neither directory has a provider block or a backend, so the
 caller chooses the account, the region and the state location. Each directory's `versions.tf`
@@ -532,4 +553,7 @@ credentials and no plan:
   lock wait, the reason in apply and status, recovery on the next apply), boot on a new instance
   (the node first, then the rebuild from the data volume), reset (index gone, certificate kept),
   its refusals, and its removal; `install-files`' allow-list; `detach` (the job, its phase and
-  result in status); and a host without the prefix tools (refused at once).
+  result in status); a detached run holding the lock (status at once with its phase,
+  `install-files` and a second `detach` refused at once, naming it); status before the first
+  `applied.json` (the job, `interrupted` after a reboot); and a host without the prefix tools
+  (refused at once).

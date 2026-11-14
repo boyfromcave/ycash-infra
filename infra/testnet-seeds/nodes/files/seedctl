@@ -15,14 +15,16 @@
 #                              host's verified cache, so a reset downloads nothing twice)
 #   seedctl stop NET           stop NET's container; its data stays
 #   seedctl sync ALL           apply every network in ALL, stop every applied network not in it
-#   seedctl status [NET]       one JSON line per network: container, image, chain, height, peers
+#   seedctl status [NET]       one JSON line per network: container, image, chain, height, peers;
+#                              before the first applied network, one line with the detached job only
 #   seedctl boot               start every applied network from its last applied config (a new
 #                              instance on an old data volume); systemd runs it at boot
 #   seedctl prefix-check       once a network holds the whole prefix, drop its -loadblock flags
 #                              and the framed copies (a systemd timer runs it every 10 minutes)
 #   seedctl install-files F    put the module's host_files (F: the decoded JSON) into /opt/ycash-seed:
 #                              the prefix tools, seedctl-explorer, the Inzyght build context; nothing
-#                              else (an allow-list); the workflow runs it before each run
+#                              else (an allow-list); the workflow runs it before each change (never
+#                              for status); refused at once while a detached run holds the lock
 #   seedctl detach CMD ARGS    run `seedctl CMD ARGS` (apply, reset or sync) in the background, as
 #                              the transient systemd unit ycash-seedctl-job, and return at once;
 #                              status then reports it (a `job` field: running, its phase, the result)
@@ -392,7 +394,14 @@ boot() {
 
 status() { # [net]
   local nets net st img info peers pool ex job
-  nets=${1:-$(applied_nets)}
+  nets=${1:-$(applied_nets || true)}   # (applied_nets fails when there is none)
+  # before a host's first applied.json (a detached first deploy still going, or interrupted by a
+  # reboot): one line with the job, so its phase and state show from the start
+  if [ -z "$nets" ]; then
+    job=$(job_json)
+    [ "$job" = null ] || jq -cn --arg host "$SEED_NAME" --arg ip "$EXTERNAL_IP" --argjson job "$job" '{host: $host, ip: $ip, job: $job}'
+    return 0
+  fi
   for net in $nets; do
     valid_name "$net"
     st=$(docker inspect -f '{{.State.Status}}' "ycashd-$net" 2>/dev/null || echo absent)
@@ -474,6 +483,11 @@ job_json() { # the last detached run, or null; "running" without its unit = inte
     jq -c . "$D/job.json" 2>/dev/null || echo null
   fi
 }
+job_busy() { [ "$(job_json | jq -r '.state // ""' 2>/dev/null)" = running ]; }   # a detached run is going
+job_busy_msg() {
+  job_json | jq -r '"a detached run is still going: phase " + (.phase // "?") + " (seedctl " + (.command // "?")
+    + ", since " + (.phaseSince // .started // "?") + "); run status"'
+}
 detach() { # cmd args...
   local c=${1:-} label
   case "$c" in
@@ -481,9 +495,7 @@ detach() { # cmd args...
     sync) [ $# -eq 2 ] || die "usage: seedctl detach sync ALL"; label=sync ;;
     *) die "detach: apply, reset or sync only" ;;
   esac
-  if systemctl is-active --quiet "$JOB_UNIT" 2>/dev/null; then
-    die "a detached run is still going ($(job_json | jq -r '.command + ", " + (.phase // "")')): seedctl status reports it"
-  fi
+  job_busy && die "$(job_busy_msg)"
   mkdir -p "$D"
   ( umask 077; printf '%s\n' "$@" > "$D/job.args" )
   job_write running "$label" "starting" ""
@@ -513,12 +525,21 @@ cmd=${1:-}
 [ -n "$cmd" ] || { sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d'; exit 2; }
 shift
 # One change at a time per host: the timer, a boot and a workflow run never interleave. (detach
-# and job only start the command, which then takes the lock as a child seedctl.)
+# and job only start the command, which then takes the lock as a child seedctl; status never takes
+# it.) install-files never waits out a detached run, which holds the lock for up to an hour: it
+# refuses at once, naming the run's phase; held by anything else (the timer, a boot, another
+# workflow run), it waits at most 9 minutes, inside the workflow's 10-minute command timeout.
 SELF=$(readlink -f "$0")
 if [ "$cmd" != status ] && [ "$cmd" != detach ] && [ "$cmd" != job ]; then
   mkdir -p "$R/run"
   exec 9>"$R/run/ycash-seedctl.lock"
-  if [ "$cmd" = prefix-check ]; then flock -n 9 || exit 0; else flock -w 3600 9; fi
+  if [ "$cmd" = prefix-check ]; then flock -n 9 || exit 0
+  elif [ "$cmd" = install-files ]; then
+    if ! flock -n 9; then
+      job_busy && die "$(job_busy_msg)"
+      flock -w 540 9 || die "another seedctl run has held this host's lock for 9 minutes; run status, then try again"
+    fi
+  else flock -w 3600 9; fi
 fi
 case "$cmd" in
   apply)        [ $# -eq 2 ] || die "usage: seedctl apply NET CONFIG"; apply "$1" "$2" ;;
