@@ -4,14 +4,15 @@
 # what it is asked, and stand-ins for the prefix tools. Checks the per-network lifecycle on one
 # host: apply (with the prefix bootstrap and the shared cache), the rendered node arguments and
 # ports, prefix-check, status, reset of one network leaving the other alone, sync stopping a
-# network no longer configured, boot re-rendering from the applied configs, and the refusals.
+# network no longer configured, boot re-rendering from the applied configs, and the refusals; then a
+# pool beside a node, and an explorer (insight, ZMQ, PostgreSQL, Inzyght built on the host, proxy).
 # Run: infra/testnet-seeds/nodes/tests/seedctl.sh   (make seeds-validate runs it)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 SEEDCTL="$here/../files/seedctl"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-export SEEDCTL_ROOT="$T/root" LOG="$T/log" FAKE_HEIGHT=600000
+export SEEDCTL_ROOT="$T/root" LOG="$T/log" FAKE_HEIGHT=600000 FAKE_IMAGES="$T/images"
 O="$SEEDCTL_ROOT/opt/ycash-seed"
 D="$SEEDCTL_ROOT/srv/ycash-data"
 mkdir -p "$O" "$D" "$T/bin"
@@ -40,13 +41,18 @@ case "$1" in
       up) echo "up $(sed -n 's/^name: //p' "$f")" >> "$LOG" ;;
       down) echo "down $(sed -n 's/^name: //p' "$f")" >> "$LOG" ;;
     esac ;;
+  image) [ "$2" = inspect ] && grep -qxF -- "$3" "$FAKE_IMAGES" 2>/dev/null; exit ;;
+  build) for a in "$@"; do last=$a; done; prev=""; for a in "$@"; do [ "$prev" = -t ] && echo "$a" >> "$FAKE_IMAGES"; prev=$a; done
+    [ -s "$last/Dockerfile" ] && [ -x "$last/entrypoint.sh" ] || exit 1 ;;
+  buildx) exit 0 ;;
   exec)
+    case "$2" in postgres-*) echo 510796; exit 0 ;; esac
     case "${!#}" in
       getblockcount) echo "$FAKE_HEIGHT" ;;
       getblockchaininfo) echo '{"chain":"test","blocks":1,"headers":1,"verificationprogress":1}' ;;
       getpeerinfo) echo '[{"inbound":true},{"inbound":false}]' ;;
     esac ;;
-  inspect) case "$3" in *Status*) echo running ;; *) echo img ;; esac ;;
+  inspect) case "$3" in *Health*) echo healthy ;; *Status*) echo running ;; *) echo img ;; esac ;;
 esac
 exit 0
 EOF
@@ -54,6 +60,7 @@ cat > "$T/bin/curl" <<'EOF'
 #!/bin/bash
 echo "curl $*" >> "$LOG"
 case "$*" in
+  *api/v1/version*) echo 200; exit 0 ;;
   *127.0.0.1:3334/status*) echo '{"nodeUp":true,"height":510432,"templateAgeSeconds":0,"miners":2,"connections":2,"accepted":1,"rejected":0,"lastSubmitVerdict":"accepted","payout":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","equihash":"192,7","shares":9,"stale":4,"highHash":3,"shareRatio":32,"uptimeSeconds":60}' ;;
   *) exit 7 ;;
 esac
@@ -61,7 +68,7 @@ EOF
 cat > "$T/bin/iptables" <<'EOF'
 #!/bin/bash
 echo "iptables $*" >> "$LOG"
-[ "$1" != -C ] || grep -qF -- "iptables -I OUTPUT 1 ${*:3}" "$LOG"
+[ "$1" != -C ] || grep -qF -- "iptables -I $2 1 ${*:3}" "$LOG"
 EOF
 sed 's/iptables/ip6tables/g' "$T/bin/iptables" > "$T/bin/ip6tables"
 chmod +x "$T/bin/docker" "$T/bin/curl" "$T/bin/iptables" "$T/bin/ip6tables"
@@ -180,4 +187,61 @@ if "$SEEDCTL" apply yb-fast "$BADPOOL" 2>/dev/null; then fail "accepted a shell 
 BADPOOL=$(echo "$POOLED" | base64 -d | jq -c '.pool.image = "ghcr.io/example/yolo:latest"' | b64)
 if "$SEEDCTL" apply yb-fast "$BADPOOL" 2>/dev/null; then fail "accepted a pool image by tag"; fi
 ok "refuses a pool image by tag and a bad payout"
+# 11. an explorer beside fast (the explorer host): the node on the explorer's networks with its
+#     indexes, PostgreSQL and the proxy at once, Inzyght (built on the host from the delivered,
+#     checked build context) and ZMQ only once the prefix is imported; secrets only in 0400 files
+: > "$LOG"; rm -rf "$D/yb-fast" "$O/net/yb-fast"
+CTX='{"Dockerfile":"FROM scratch\n","entrypoint.sh":"#!/bin/sh\n"}'
+printf '%s' "$CTX" > "$T/ctx.json"
+CTXSHA=$(sha256sum < "$T/ctx.json" | cut -d' ' -f1)
+HF=$(jq -cn --rawfile x "$T/ctx.json" --rawfile e "$here/../files/seedctl-explorer" '{"inzyght-build.json": {mode: "0644", content: $x}, "seedctl-explorer": {mode: "0644", content: $e}}')
+printf '%s' "$HF" > "$T/hf.json"
+"$SEEDCTL" install-files "$T/hf.json" 2>/dev/null
+cmp -s "$O/inzyght-build.json" "$T/ctx.json" && cmp -s "$O/seedctl-explorer" "$here/../files/seedctl-explorer" || fail "install-files writes the host files byte for byte"
+EXPL=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c --arg s "$CTXSHA" '.insight = true | .zmq_port = 28332 | .extra_args += " -disablewallet" | .explorer = {
+  hostname: "explorer.example.org", acme_email: "ops@example.org", tls: true, image: null,
+  build: {repo: "https://github.com/example/inzyght", commit: "17f505f273c053247b59d20270e4d6a7b74994fb", jobs: 2, context_sha256: $s},
+  postgres_image: "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  proxy_image: "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  threads: 4, mem_limit_mb: 2048, log_level: "INFO", pg_shared_buffers_mb: 256}' | b64)
+"$SEEDCTL" apply yb-fast "$EXPL" 2>"$T/err" || { cat "$T/err"; fail "apply with an explorer"; }
+c="$O/net/yb-fast/compose.yaml"; e="$O/net/yb-fast/node.env"; IMG=ycash-local/inzyght:17f505f273c0-${CTXSHA:0:12}
+grep -qx 'YCASHD_INSIGHT=1' "$e" && grep -qx 'YCASHD_RPC_BIND=0.0.0.0' "$e" && grep -qx 'YCASHD_RPC_ALLOWIP=172.31.250.12' "$e" && ! grep -q zmqpub "$e" && grep -q -- '-loadblock=' "$e" || fail "the node while importing: indexes, RPC for Inzyght only, no ZMQ yet: $(cat "$e")"
+! grep -q 'network_mode: host' "$c" && grep -q 'ipv4_address: "172.31.250.11"' "$c" && grep -q 'read_only: true' "$c" && grep -q 'container_name: postgres-yb-fast' "$c" && grep -q 'container_name: proxy-yb-fast' "$c" && ! grep -q 'container_name: inzyght-yb-fast' "$c" || fail "while importing: node, PostgreSQL and proxy, no Inzyght: $(cat "$c")"
+grep -q 'internal: true' "$c" && grep -qF 'ports: ["80:80", "443:443"]' "$c" && [ "$(grep -c 'ports:' "$c")" = 1 ] || fail "backend internal; the proxy publishes 80 and 443, nothing else publishes"
+grep -q "docker build --build-arg INZYGHT_REPO=https://github.com/example/inzyght --build-arg INZYGHT_COMMIT=17f505f273c053247b59d20270e4d6a7b74994fb --build-arg JOBS=2 --label org.ycash.infra.context=$CTXSHA -t $IMG " "$LOG" || fail "Inzyght built from the checked context: $(grep 'docker build' "$LOG")"
+grep -q 'docker compose .* pull -q ycashd postgres proxy' "$LOG" || fail "the built image is never pulled"
+cmp -s "$D/yb-fast/explorer/build-context.json" "$T/ctx.json" && cmp -s "$D/seedctl-explorer" "$here/../files/seedctl-explorer" || fail "the build context and seedctl-explorer are kept on the data volume"
+[ "$(stat -c %a "$D/yb-fast/explorer/pg.env")" = 400 ] && [ "$(stat -c %a "$D/yb-fast/explorer/inzyght.env")" = 400 ] && [ "$(stat -c %a "$D/yb-fast/explorer")" = 700 ] || fail "the explorer's secrets: 0400 in a 0700 directory"
+pgpw=$(sed -n 's/^INZYGHT_DB_PASSWORD=//p' "$D/yb-fast/explorer/pg.env"); pw=$(sed -n 's/^YCASHD_RPC_PASSWORD=//p' "$D/yb-fast/rpc.env")
+grep -qx "INZYGHT_PG_PASSWORD=$pgpw" "$D/yb-fast/explorer/inzyght.env" && grep -qx "INZYGHT_RPC_PASSWORD=$pw" "$D/yb-fast/explorer/inzyght.env" && ! grep -rqF -e "$pgpw" -e "$pw" "$O/net/yb-fast" || fail "Inzyght's credentials only in its env file, never in a rendered file"
+grep -qx 'explorer.example.org {' "$O/net/yb-fast/Caddyfile" && grep -qx '	email ops@example.org' "$O/net/yb-fast/Caddyfile" && grep -q 'reverse_proxy 172.31.250.12:8080' "$O/net/yb-fast/Caddyfile" || fail "the Caddyfile: the name, the contact, Inzyght"
+grep -qx 'iptables -I DOCKER-USER 1 -s 172.31.250.0/23 -d 169.254.169.254/32 -j REJECT' "$LOG" || fail "the explorer's networks are refused the metadata service"
+ok "an explorer while the prefix imports: node on its networks, PostgreSQL and proxy, Inzyght built, secrets private"
+"$SEEDCTL" prefix-check 2>/dev/null
+grep -q -- '-zmqpubhashblock=tcp://172.31.250.11:28332 -zmqpubhashtx=tcp://172.31.250.11:28332' "$e" && ! grep -q loadblock "$e" || fail "ZMQ on the node's backend address after the import: $(grep EXTRA "$e")"
+grep -q 'container_name: inzyght-yb-fast' "$c" && grep -q "image: $IMG" "$c" && grep -q 'pull_policy: never' "$c" && grep -q 'INZYGHT_ZMQ_ENDPOINT: "tcp://172.31.250.11:28332"' "$c" && grep -q 'INZYGHT_TRUSTED_PROXIES: "172.31.250.10"' "$c" && grep -q 'user: "2005:2005"' "$c" || fail "Inzyght after the import: $(cat "$c")"
+s=$("$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -c '[.explorer.indexedHeight, .explorer.httpOnHost, .explorer.httpPublic, .explorer.url, .explorer.inzyght]')" = '[510796,"200","200","https://explorer.example.org/","healthy"]' ] || fail "status with an explorer: $s"
+ok "after the import: ZMQ, Inzyght; status reports the index height and HTTPS"
+# a new instance on the old volume: no image, no seedctl-explorer on the root disk; boot rebuilds from the volume's copies
+rm -rf "$O/net" "$O/seedctl-explorer" "$O/inzyght-build.json"; : > "$FAKE_IMAGES"; : > "$LOG"
+"$SEEDCTL" boot 2>/dev/null
+grep -q "docker build .* -t $IMG " "$LOG" && grep -q 'container_name: inzyght-yb-fast' "$c" || fail "boot on a new instance rebuilds Inzyght and renders the explorer"
+ok "boot on a new instance: seedctl-explorer and the build context from the data volume"
+touch "$D/yb-fast/explorer/pg/PG_VERSION" "$D/yb-fast/explorer/caddy/data/cert"
+"$SEEDCTL" reset yb-fast "$EXPL" 2>/dev/null
+[ ! -e "$D/yb-fast/explorer/pg/PG_VERSION" ] && [ -e "$D/yb-fast/explorer/caddy/data/cert" ] && grep -qx "INZYGHT_DB_PASSWORD=$pgpw" "$D/yb-fast/explorer/pg.env" || fail "reset: the index goes with the chain; the certificate and the secrets stay"
+ok "reset: the index is wiped with the chain, the certificate kept"
+BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.log_level = "DEBUG"' | b64)
+if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "accepted DEBUG (it logs the database password)"; fi
+BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.hostname = "x\nemail evil"' | b64)
+if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "accepted a newline in the host name"; fi
+BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.build.context_sha256 = "abababababababababababababababababababababababababababababababab"' | b64)
+if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "built from a context that does not match its sha256"; fi
+ok "refuses DEBUG, an injected host name, a build context that does not match"
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null
+grep -q 'network_mode: host' "$c" && ! grep -q postgres "$c" && grep -q 'docker rm -f postgres-yb-fast inzyght-yb-fast proxy-yb-fast' "$LOG" && grep -qx 'YCASHD_INSIGHT=0' "$e" || fail "an explorer removed from the config"
+ok "an explorer removed from the config is removed from the host"
 echo "seedctl: all checks passed"

@@ -244,7 +244,7 @@ seeds-validate: ## offline: terraform fmt/validate for infra/testnet-seeds (ips,
 	terraform fmt -check -recursive infra/testnet-seeds
 	set -e; for d in $(SEEDS_DIRS); do terraform -chdir=$$d init -backend=false -input=false >/dev/null; terraform -chdir=$$d validate; done
 	terraform -chdir=infra/testnet-seeds/nodes test
-	shellcheck infra/testnet-seeds/nodes/files/*.sh infra/testnet-seeds/nodes/files/seedctl infra/testnet-seeds/nodes/tests/*.sh
+	shellcheck infra/testnet-seeds/nodes/files/*.sh infra/testnet-seeds/nodes/files/seedctl infra/testnet-seeds/nodes/files/seedctl-explorer infra/testnet-seeds/nodes/tests/*.sh
 	infra/testnet-seeds/nodes/tests/seedctl.sh
 
 harvest-validate: ## offline: terraform fmt/validate/test for infra/mainnet-harvest (mocked AWS), shellcheck and the boot script's offline test; no credentials, no plan

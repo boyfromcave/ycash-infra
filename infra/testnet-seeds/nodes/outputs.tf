@@ -35,3 +35,17 @@ output "seedctl" {
   description = "This module's files/seedctl, gzip + base64: the deploy workflow installs it on every host before it runs a command, so a module update needs no new instance."
   value       = base64gzip(local.seedctl)
 }
+
+output "explorers" {
+  description = "Per enabled network with an explorer: its public name and how its Inzyght image is made (no e-mail address, no secret)."
+  value = { for k, n in local.enabled : k => {
+    hostname = n.explorer.hostname
+    url      = "${n.explorer.tls ? "https" : "http"}://${n.explorer.hostname}/"
+    inzyght  = n.explorer.build == null ? n.explorer.image : "built on the host from ${n.explorer.build.repo} at ${n.explorer.build.commit}"
+  } if n.explorer != null }
+}
+
+output "host_files" {
+  description = "The files seedctl needs for an apply or a reset beyond itself (the prefix tools; for an explorer, seedctl-explorer and in build mode the Inzyght build context), as one JSON map of name to { mode, content }, gzip + base64: the deploy workflow hands it to `seedctl install-files` before every run, as it installs seedctl. Empty when there are none. No secret."
+  value       = length(local.host_files) == 0 ? "" : base64gzip(jsonencode(local.host_files))
+}

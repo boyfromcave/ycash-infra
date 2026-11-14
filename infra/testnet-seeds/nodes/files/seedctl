@@ -20,11 +20,16 @@
 #                              instance on an old data volume); systemd runs it at boot
 #   seedctl prefix-check       once a network holds the whole prefix, drop its -loadblock flags
 #                              and the framed copies (a systemd timer runs it every 10 minutes)
+#   seedctl install-files F    put the module's host_files (F: the decoded JSON) into /opt/ycash-seed:
+#                              the prefix tools, seedctl-explorer; the workflow runs it before each run
 #
 # A network whose config has a `pool` also runs yolo (the stratum pool) in the same compose project,
 # container yolo-NET, host networking: stratum on pool.port, its status page on 127.0.0.1:pool.status_port,
 # the node's RPC on 127.0.0.1 through NET/pool.conf (the node's credential, readable by yolo's uid
 # only). apply, reset, stop, sync and boot act on both containers together; status adds a `pool` field.
+#
+# A network whose config has an `explorer` also runs the explorer (PostgreSQL, Inzyght, a TLS proxy)
+# in the same project; that half is seedctl-explorer, beside this file (its header).
 #
 # Layout: /srv/ycash-data (the data volume) holds per network NET/node (the datadir, mounted at
 # /var/lib/ycash), NET/rpc.env (its RPC credential, made here, never leaves the host) and
@@ -69,7 +74,27 @@ check_config() { # file name
       and (.pool.port | type == "number") and (.pool.status_port | type == "number")
       and ((.pool.text // "") | test("^[A-Za-z0-9 ._:/-]{0,60}$"))
       and ((.pool.share_ratio // 1) | type == "number" and . >= 1 and . == floor)))
+    and ((.insight // false) | type == "boolean")
+    and (.zmq_port == null or (.zmq_port | type == "number" and . >= 1024 and . <= 65535 and . == floor))
   ' "$1" >/dev/null || die "config for $2 is not valid"
+  if ex_of "$1"; then need_explorer; explorer_check "$1" "$2"; fi
+}
+
+# seedctl-explorer: from the deploy workflow (install-files; user_data has no room), kept on the data
+# volume for boot.
+ex_of() { [ "$(cfg "$1" '.explorer != null' 2>/dev/null)" = true ]; }   # config file
+need_explorer() {
+  local p
+  [ -z "${EX_LOADED:-}" ] || return 0
+  for p in "$O/seedctl-explorer" "$D/seedctl-explorer"; do
+    [ -s "$p" ] || continue
+    if [ "$p" != "$D/seedctl-explorer" ] && ! cmp -s "$p" "$D/seedctl-explorer"; then
+      cp "$p" "$D/seedctl-explorer.new" && mv -f "$D/seedctl-explorer.new" "$D/seedctl-explorer"
+    fi
+    # shellcheck source=/dev/null
+    . "$p"; EX_LOADED=1; return 0
+  done
+  die "no seedctl-explorer on this host (the deploy workflow installs it)"
 }
 
 decode_to() { # base64 file
@@ -87,11 +112,15 @@ cli() { # net args...: ycash-cli in the network's container, against its own RPC
 }
 
 # Write /opt/ycash-seed/net/NET/{node.env,compose.yaml} from a config file. The -loadblock flags
-# are added while a framed prefix waits to be imported.
+# are added while a framed prefix waits to be imported; ZMQ (zmq_port) only after that. An
+# explorer's node: RPC for Inzyght's address, ZMQ on its own (seedctl-explorer).
 render() { # net file
   local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1"
-  local p2p rpc args p lb=""
+  local p2p rpc args p lb="" zmq="" zp ex insight=0 bind=127.0.0.1 allow=127.0.0.1 zb=127.0.0.1
   p2p=$(cfg "$f" .p2p_port); rpc=$(cfg "$f" .rpc_port)
+  ex=$(cfg "$f" '.explorer != null')
+  [ "$(cfg "$f" '.insight // false')" = true ] && insight=1
+  if [ "$ex" = true ]; then need_explorer; bind=0.0.0.0; allow=$EX_BACKEND.12; zb=$EX_BACKEND.11; fi
   args="-port=$p2p -externalip=$EXTERNAL_IP $(cfg "$f" .node_args)"
   [ "$(cfg "$f" .dnsseed)" = true ] || args="$args -dnsseed=0"
   for p in $(cfg "$f" '.peers[]'); do
@@ -103,20 +132,25 @@ render() { # net file
       [ -e "$p" ] && lb="$lb -loadblock=/var/lib/ycash/prefix/load/${p##*/}"
     done
   fi
+  zp=$(cfg "$f" '.zmq_port // empty')
+  if [ -n "$zp" ] && [ -z "$lb" ]; then zmq=" -zmqpubhashblock=tcp://$zb:$zp -zmqpubhashtx=tcp://$zb:$zp"; fi
   mkdir -p "$R"
   cat > "$R/node.env" <<ENV
 YCASHD_NETWORK=$(cfg "$f" .network)
 YCASHD_TESTNET_PROFILE=$(cfg "$f" .profile)
-YCASHD_INSIGHT=0
+YCASHD_INSIGHT=$insight
 YCASHD_LISTEN=1
-YCASHD_RPC_BIND=127.0.0.1
-YCASHD_RPC_ALLOWIP=127.0.0.1
+YCASHD_RPC_BIND=$bind
+YCASHD_RPC_ALLOWIP=$allow
 YCASHD_RPC_PORT=$rpc
 YCASHD_RPC_THREADS=4
 YCASHD_RPC_WORKQUEUE=16
-YCASHD_EXTRA_ARGS=$(echo "$args$lb" | tr -s ' ' | sed 's/^ //;s/ $//')
+YCASHD_EXTRA_ARGS=$(echo "$args$lb$zmq" | tr -s ' ' | sed 's/^ //;s/ $//')
 ENV
-  cat > "$R/compose.yaml" <<YAML
+  if [ "$ex" = true ]; then
+    render_explorer_node "$net" "$f" "$lb"
+  else
+    cat > "$R/compose.yaml" <<YAML
 name: ycash-$net
 services:
   ycashd:
@@ -129,6 +163,7 @@ services:
     stop_grace_period: 180s
     logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
 YAML
+  fi
   [ "$(cfg "$f" .pool)" != null ] && render_pool "$net" "$f"
   return 0
 }
@@ -259,9 +294,11 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
     (umask 077; printf 'YCASHD_RPC_USER=seed\nYCASHD_RPC_PASSWORD=%s\n' "$(openssl rand -hex 24)" > "$D/$net/rpc.env")
   fi
   bootstrap "$net" "$tmp"
+  if ex_of "$tmp"; then need_explorer; explorer_build "$net" "$tmp"; fi
   if [ "$(id -u)" = 0 ]; then chown -R "$UID_NODE:$UID_NODE" "$N"; fi
   render "$net" "$tmp"
-  retry compose "$net" pull -q
+  # shellcheck disable=SC2046  # one word per service, none for all of them
+  retry compose "$net" pull -q $(if ex_of "$tmp"; then pull_services "$tmp"; fi)
   compose "$net" up -d
   mv "$tmp" "$D/$net/applied.json"
   if wait_rpc "$net" 900; then
@@ -276,6 +313,9 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   else
     docker rm -f "yolo-$net" >/dev/null 2>&1 || true   # a pool removed from the config
   fi
+  if ex_of "$D/$net/applied.json"; then explorer_up "$net"; else
+    docker rm -f "postgres-$net" "inzyght-$net" "proxy-$net" >/dev/null 2>&1 || true   # an explorer removed from the config
+  fi
 }
 
 reset() { # net config-b64
@@ -283,8 +323,8 @@ reset() { # net config-b64
   valid_name "$net"
   log "$net: RESET: stopping and deleting its chain"
   if [ -e "$O/net/$net/compose.yaml" ]; then compose "$net" down --timeout 180 || true; fi
-  docker rm -f "ycashd-$net" "yolo-$net" >/dev/null 2>&1 || true
-  rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json"
+  docker rm -f "ycashd-$net" "yolo-$net" "postgres-$net" "inzyght-$net" "proxy-$net" >/dev/null 2>&1 || true
+  rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json" "$D/$net/explorer/pg"
   apply "$net" "$2"
 }
 
@@ -315,13 +355,17 @@ sync_all() { # all-b64
 boot() {
   local net
   for net in $(applied_nets); do
+    # a new instance has no locally built Inzyght image: build it again from the kept context
+    if ex_of "$D/$net/applied.json"; then
+      ( need_explorer; explorer_build "$net" "$D/$net/applied.json" ) || log "$net: the Inzyght image did not build"
+    fi
     render "$net" "$D/$net/applied.json"
     compose "$net" up -d || log "$net: did not start"
   done
 }
 
 status() { # [net]
-  local nets net st img info peers pool
+  local nets net st img info peers pool ex
   nets=${1:-$(applied_nets)}
   for net in $nets; do
     valid_name "$net"
@@ -335,10 +379,12 @@ status() { # [net]
         --arg img "$(docker inspect -f '{{.Config.Image}}' "yolo-$net" 2>/dev/null || echo -)" \
         '{container: $st, image: $img} + .' <<<"$pool")
     fi
+    ex=null
+    if ex_of "$D/$net/applied.json"; then ex=$( (need_explorer && explorer_status "$net") 2>/dev/null || echo '{"error": "seedctl-explorer is not on this host"}'); fi
     jq -cn --arg host "$SEED_NAME" --arg ip "$EXTERNAL_IP" --arg net "$net" --arg st "$st" --arg img "$img" \
-      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" \
+      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" --argjson ex "$ex" \
       '{host: $host, ip: $ip, network: $net, container: $st, image: $img} + $info + $peers
-       + (if $pool == null then {} else {pool: $pool} end)'
+       + (if $pool == null then {} else {pool: $pool} end) + (if $ex == null then {} else {explorer: $ex} end)'
   done
 }
 
@@ -355,6 +401,16 @@ prefix_check() {
     compose "$net" up -d
     rm -rf "$N/prefix/load"
     log "$net: prefix imported (height $h); -loadblock retired"
+  done
+}
+
+install_files() { # json: { name: { mode, content } }
+  local k m
+  for k in $(jq -r 'keys[]' "$1"); do
+    m=$(jq -r --arg k "$k" '.[$k].mode' "$1")
+    [[ "$k" =~ ^[a-z][a-z0-9.-]{0,40}$ && "$m" =~ ^0[0-7]{3}$ ]] || die "bad host file $k ($m)"
+    jq -j --arg k "$k" '.[$k].content' "$1" > "$O/$k.new"
+    chmod "$m" "$O/$k.new"; mv -f "$O/$k.new" "$O/$k"
   done
 }
 
@@ -375,5 +431,6 @@ case "$cmd" in
   status)       status "${1:-}" ;;
   boot)         boot ;;
   prefix-check) prefix_check ;;
+  install-files) [ $# -eq 1 ] || die "usage: seedctl install-files FILE"; install_files "$1" ;;
   *)            die "unknown command $cmd" ;;
 esac

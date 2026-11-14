@@ -50,10 +50,13 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Inbound: each enabled network's P2P port (to var.p2p_ingress_cidrs) and, for a network with a
-# pool, its stratum port (to var.pool_ingress_cidrs); nothing else. No SSH, no RPC: every node's RPC
-# binds to 127.0.0.1 on its own port, yolo's status page too, and an operator reaches a host through
-# SSM, which needs no inbound port. Disabling or removing a network (or its pool) closes its port.
+# Inbound: each enabled network's P2P port (to var.p2p_ingress_cidrs), for a network with a pool its
+# stratum port (to var.pool_ingress_cidrs) and, for a network with an explorer, 443 and 80 (to
+# var.explorer_ingress_cidrs; the explorer's proxy is the only listener there); nothing else. No
+# SSH, no RPC: every node's RPC binds to 127.0.0.1 on its own port (an explorer's node: inside its
+# container, reachable only from Inzyght's address), yolo's status page too, and an operator reaches
+# a host through SSM, which needs no inbound port. Disabling or removing a network (or its pool or
+# explorer) closes its ports.
 resource "aws_security_group" "seed" {
   name_prefix = "${var.name_prefix}-"
   description = "Seed hosts: inbound P2P of the enabled networks only, egress open"
@@ -85,6 +88,19 @@ resource "aws_vpc_security_group_ingress_rule" "stratum" {
   ip_protocol       = "tcp"
   from_port         = local.enabled[each.value.net].pool.port
   to_port           = local.enabled[each.value.net].pool.port
+  cidr_ipv4         = each.value.cidr
+  tags              = var.tags
+}
+
+resource "aws_vpc_security_group_ingress_rule" "explorer" {
+  #checkov:skip=CKV_AWS_260:a public explorer: port 80 for the Let's Encrypt HTTP-01 challenge and the redirect to HTTPS
+  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.explorer != null]), [443, 80], var.explorer_ingress_cidrs) : "${p[0]} ${p[1]} ${p[2]}" => { net = p[0], port = p[1], cidr = p[2] } }
+
+  security_group_id = aws_security_group.seed.id
+  description       = "explorer ${each.value.net} ${each.value.port == 443 ? "https" : "http (ACME, redirect)"}"
+  ip_protocol       = "tcp"
+  from_port         = each.value.port
+  to_port           = each.value.port
   cidr_ipv4         = each.value.cidr
   tags              = var.tags
 }

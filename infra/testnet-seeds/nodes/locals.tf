@@ -44,7 +44,26 @@ locals {
   # mines, and a node restarted after a day without blocks would think it is still syncing; it then
   # ignores peers' getheaders and refuses getblocktemplate, so no one can join and no miner can
   # restart the chain.
-  network_config = { for k, n in local.enabled : k => {
+  # The explorer's build context (images/inzyght, this module's revision): what a host with an
+  # explorer in build mode builds the Inzyght image from. It reaches the host beside seedctl (the
+  # explorer_build output); its sha256 is in the network's config, and seedctl refuses to build from
+  # a context that does not match it.
+  explorer_build_files = {
+    "Dockerfile"    = file("${path.module}/../../../images/inzyght/Dockerfile")
+    "entrypoint.sh" = file("${path.module}/../../../images/inzyght/entrypoint.sh")
+  }
+  explorer_build_json = jsonencode(local.explorer_build_files)
+
+  # What seedctl applies for each network (files/seedctl, check_config): the same document on every
+  # host; each host drops its own address from `peers`. It reaches the hosts through the deploy
+  # workflow (SSM Run Command), never through user_data, so a change here replaces no instance.
+  # Testnets get -maxtipage=999999999 first in extra_args: a testnet can stall for days when no one
+  # mines, and a node restarted after a day without blocks would think it is still syncing; it then
+  # ignores peers' getheaders and refuses getblocktemplate, so no one can join and no miner can
+  # restart the chain.
+  # insight, zmq_port and explorer appear only when set, so a network without them has exactly the
+  # config it had before these options existed (and seedctl renders it byte for byte the same).
+  network_config = { for k, n in local.enabled : k => merge({
     name      = k
     profile   = n.profile
     network   = n.testnet ? "testnet" : "mainnet"
@@ -54,9 +73,11 @@ locals {
     node_args = n.testnet ? "-testnet -testnetprofile=${n.profile}" : ""
     dnsseed   = !n.testnet
     # A pool's node builds the block template for the pool's payout address and holds no wallet:
-    # -mineraddress must then not be required to be a wallet address (-minetolocalwallet=0).
+    # -mineraddress must then not be required to be a wallet address (-minetolocalwallet=0). An
+    # explorer's node only answers reads: no wallet either.
     extra_args = trimspace(join(" ", compact([n.testnet ? "-maxtipage=999999999" : "", var.extra_args, n.extra_args,
-    n.pool == null ? "" : "-disablewallet -mineraddress=${n.pool.payout} -minetolocalwallet=0"])))
+      n.pool == null ? "" : "-disablewallet -mineraddress=${n.pool.payout} -minetolocalwallet=0",
+    n.explorer == null ? "" : "-disablewallet"])))
     peers = [for s in local.seed_keys : format("%s:%d", var.seeds[s].public_ip, n.p2p_port)]
     # The yolo pool beside this network's node (files/seedctl render), or null.
     pool = n.pool == null ? null : {
@@ -74,5 +95,22 @@ locals {
       network     = local.profile_prefix[n.profile].network
       magic       = lookup(var.prefix_magic_overrides, k, n.magic)
     } : null
-  } }
+    },
+    n.insight ? { insight = true } : {},
+    n.zmq != null || n.explorer != null ? { zmq_port = coalesce(n.zmq, 28332) } : {},
+    # The explorer beside this network's node (files/seedctl render_explorer).
+    n.explorer == null ? {} : { explorer = {
+      hostname             = n.explorer.hostname
+      acme_email           = n.explorer.acme_email
+      tls                  = n.explorer.tls
+      image                = n.explorer.image
+      build                = n.explorer.build == null ? null : merge(n.explorer.build, { context_sha256 = sha256(local.explorer_build_json) })
+      postgres_image       = n.explorer.postgres_image
+      proxy_image          = n.explorer.proxy_image
+      threads              = n.explorer.threads
+      mem_limit_mb         = n.explorer.mem_limit_mb
+      log_level            = n.explorer.log_level
+      pg_shared_buffers_mb = n.explorer.pg_shared_buffers_mb
+    } }
+  ) }
 }

@@ -3,7 +3,9 @@
 A Docker Compose stack that runs the [Inzyght](https://github.com/miodragpop/inzyght) block
 explorer, unmodified, against a ycashd 6.22.0-beta2 node. It is the local proof (phases E1 and E2)
 of the workspace's explorer plan (`docs/plans/explorer/explorer-plan.md`), and the same four
-containers are what the `fastnet-explorer.ycash.team` host will run (phase E3).
+containers are what the `fastnet-explorer.ycash.team` host runs (phase E3: the seeds module's
+`explorer` option, [`infra/testnet-seeds/README.md`](../infra/testnet-seeds/README.md), "The
+explorer", renders this file's design with seedctl).
 
 ```
 make explorer-up       # first run: writes explorer/.env with new passwords, builds the Inzyght image

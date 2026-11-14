@@ -7,13 +7,18 @@
 # Inzyght has no licence file yet: build and run this image locally only. Do not push it to a
 # registry until the author has answered (explorer plan §3.2, EX-2).
 #
-# INZYGHT_COMMIT is a full 40-hex SHA. The CMake build fetches its own dependencies at the tags its
-# CMakeLists.txt names (curl 8.18.0, libzmq 4.3.5, glaze 7.7.0, Drogon 1.9.13); those are tags, not
-# commits, so they are as reproducible as upstream's tags.
+# INZYGHT_REPO is the repository to clone (https://github.com/<owner>/<repo>; the author's by default,
+# a fork once there is one) and INZYGHT_COMMIT a full 40-hex SHA in it. The explorer host builds this
+# file itself with both set from its module config (infra/testnet-seeds/README.md, "The explorer").
+# The CMake build fetches its own dependencies at the tags its CMakeLists.txt names (curl 8.18.0,
+# libzmq 4.3.5, glaze 7.7.0, Drogon 1.9.13); those are tags, not commits, so they are as
+# reproducible as upstream's tags.
+ARG INZYGHT_REPO=https://github.com/miodragpop/inzyght
 ARG INZYGHT_COMMIT=17f505f273c053247b59d20270e4d6a7b74994fb
 
 # Debian 13: GCC 14 for C++23 (glaze 7 needs GCC 13 or later), CMake 3.31, libpq 17.
 FROM debian:trixie@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6 AS build
+ARG INZYGHT_REPO
 ARG INZYGHT_COMMIT
 ARG JOBS=
 RUN apt-get update \
@@ -23,8 +28,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN echo "$INZYGHT_COMMIT" | grep -qxE '[0-9a-f]{40}' || { echo "INZYGHT_COMMIT must be a full 40-hex SHA" >&2; exit 1; } \
+ && echo "$INZYGHT_REPO" | grep -qxE 'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "INZYGHT_REPO must be https://github.com/<owner>/<repo>" >&2; exit 1; } \
  && git init -q . \
- && git remote add origin https://github.com/miodragpop/inzyght \
+ && git remote add origin "$INZYGHT_REPO" \
  && git fetch -q --depth 1 origin "$INZYGHT_COMMIT" \
  && git checkout -q FETCH_HEAD \
  && test "$(git rev-parse HEAD)" = "$INZYGHT_COMMIT"
@@ -40,8 +46,9 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_QUIET=ON \
  && (ldd build/inzyght | sort > /out/opt/inzyght/templates/ldd.txt)
 
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+ARG INZYGHT_REPO
 ARG INZYGHT_COMMIT
-LABEL org.opencontainers.image.source="https://github.com/miodragpop/inzyght" \
+LABEL org.opencontainers.image.source="${INZYGHT_REPO}" \
       org.opencontainers.image.revision="${INZYGHT_COMMIT}" \
       org.opencontainers.image.description="Inzyght block explorer, unmodified, local build (no licence yet: do not publish)"
 # libpq5 (the index), libssl3 (Drogon, curl), libjsoncpp, libuuid, zlib, c-ares (Drogon's resolver);
