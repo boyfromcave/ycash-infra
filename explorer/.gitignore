@@ -1,0 +1,4 @@
+# settings files with passwords: .env (make explorer-up) and any second stack's (.env.main, ...)
+.env
+.env.*
+!.env.example

@@ -29,6 +29,9 @@ jobs:
       - run: make lint-kogany
       # the testnet chart's scripts (run.sh, ready.sh, live.sh, prefix-restore.sh, zcash-params.sh, snapshot.sh) are POSIX sh
       - run: shellcheck -s sh charts/ycash-testnet/files/*.sh
+      # the explorer stack (explorer/, images/inzyght/): shellcheck of its three scripts and
+      # docker compose config -q over its Compose files with placeholder secrets; nothing is built
+      - run: make explorer-lint
       # the Zcash parameter mirror: SHA256SUMS = the chart's copy, the chart's init script (zcash-params.sh)
       - run: make zcash-params-test
       # the testnet services, offline: the faucet (both modes), the probe and status page, the state

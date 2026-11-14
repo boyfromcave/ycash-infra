@@ -1,0 +1,214 @@
+# The explorer stack: ycashd with the explorer indexes and ZMQ, PostgreSQL, Inzyght (unmodified) and a
+# reverse proxy that can terminate TLS. README.md beside this file; `make explorer-up` from the repo root.
+#
+# Networks: `backend` is internal (no route out), so Inzyght and PostgreSQL have no egress at all;
+# that is what keeps Inzyght's peer-location lookup (http://ip-api.com/batch, hard-coded) from
+# leaving the host. The node and the proxy also sit on `edge`, the node for its outbound P2P
+# connections and the proxy for the published port (and, with a domain, for Let's Encrypt).
+# Only the proxy publishes ports. The node's RPC and ZMQ answer on the backend network only (RPC
+# from 127.0.0.1 and the backend subnet, ZMQ bound to the node's backend address); inspect it with
+# `docker compose exec node ycash-cli ...` (make explorer-status). PostgreSQL: `make explorer-psql`.
+#
+# Addresses on `backend`: the proxy (.10) and the node (.11) are fixed; every other container gets
+# one from the upper half (.128/25, ip_range), so a recreated container can never take a fixed one.
+#
+# Memory: every service has a mem_limit (*_MEM_LIMIT); the defaults fit a 4 GiB host (README.md).
+name: ${EXPLORER_PROJECT:-ycash-explorer}
+
+x-hardening: &hardening
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "20m", max-file: "3" }
+
+services:
+  node:
+    <<: *hardening
+    # ycashd 6.22.0-beta2 (ycash6 c8f25b0ba), the digest the yb-fast seeds pin (ycash-ops
+    # testnet-seeds/nodes/main.tf). linux/amd64 only: runs under emulation on an arm64 Mac.
+    image: ${YCASHD_IMAGE:-ghcr.io/boyfromcave/ycashd@sha256:70c0a29f83b6d8024c89de1f85f84a3cf5220e8a2915f38ea6f56fc045cad340}
+    platform: linux/amd64
+    user: "2001:2001"
+    read_only: true
+    tmpfs: ["/tmp", "/srv/ycash"]
+    cap_drop: [ALL]
+    environment:
+      YCASHD_NETWORK: ${YCASHD_NETWORK:-testnet}
+      YCASHD_TESTNET_PROFILE: ${YCASHD_TESTNET_PROFILE:-fast}
+      YCASHD_RPC_USER: ${RPC_USER:?run make explorer-up (it writes .env)}
+      YCASHD_RPC_PASSWORD: ${RPC_PASSWORD:?run make explorer-up (it writes .env)}
+      YCASHD_RPC_PORT: "${YCASHD_RPC_PORT:-18832}"
+      # RPC from the container itself (the healthcheck, make explorer-status) and the backend network
+      # (Inzyght); nothing else reaches it (the image's default also admits every private range)
+      YCASHD_RPC_ALLOWIP: 127.0.0.1 ${BACKEND_PREFIX:-172.31.250}.0/24
+      # -txindex -insightexplorer -experimentalfeatures, before the first import (adding them later
+      # costs a reindex)
+      YCASHD_INSIGHT: "1"
+      # outbound only, like the pool host's node
+      YCASHD_LISTEN: "0"
+      # Restore the network's pinned block prefix into an empty datadir before the first start
+      # (blocks 0..510,247 for yb-fast, from the published bundle); empty = sync from peers only.
+      YCASHD_BOOTSTRAP: ${YCASHD_BOOTSTRAP:-prefix}
+      # No wallet (the explorer only reads); the testnet tip age the seeds also run with.
+      YCASHD_CONF_EXTRA: |-
+        dnsseed=0
+        disablewallet=1
+        maxtipage=999999999
+        dbcache=${YCASHD_DBCACHE:-512}
+      # The seeds, and ZMQ for Inzyght's live updates (hashblock, hashtx), bound to the node's
+      # backend address only. These go on the command line, NOT in ycash.conf: ycash-bootstrap's
+      # offline import node reads ycash.conf too, and an addnode there lets it fetch blocks past the
+      # prefix while it imports, which fails the restore ("the node is at N, above the bundle's 510247").
+      YCASHD_EXTRA_ARGS: >-
+        -addnode=${YCASHD_ADDNODE:-fastnet-seed.ycash.team:18833}
+        -zmqpubhashblock=tcp://${BACKEND_PREFIX:-172.31.250}.11:${ZMQ_PORT:-28332}
+        -zmqpubhashtx=tcp://${BACKEND_PREFIX:-172.31.250}.11:${ZMQ_PORT:-28332}
+    volumes:
+      - ${NODE_DATA:-node-data}:/var/lib/ycash
+    networks:
+      backend: { ipv4_address: "${BACKEND_PREFIX:-172.31.250}.11" }
+      edge: {}
+    mem_limit: ${NODE_MEM_LIMIT:-1536m}
+    stop_grace_period: 120s
+    healthcheck:
+      test: ["CMD-SHELL", "ycash-cli -datadir=/var/lib/ycash -conf=/var/lib/ycash/ycash.conf getblockcount >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 6h
+
+  postgres:
+    <<: *hardening
+    image: postgres:17-alpine@sha256:d3244e8ce3f165ee3c93d9c4a4b1d0fe48b3a89e2287b717fdcbbde92d405065
+    # The image's entrypoint starts as root, fixes the data directory's owner and drops to the
+    # postgres user: that needs these five capabilities and no others.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    environment:
+      # the superuser only creates the database and the non-superuser role Inzyght connects as
+      # (postgres-init/10-inzyght.sh); Inzyght itself applies its schema as that role
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${PG_SUPERUSER_PASSWORD:?run make explorer-up (it writes .env)}
+      INZYGHT_DB: ${PG_DATABASE:-inzyght}
+      INZYGHT_DB_USER: ${PG_USER:-inzyght}
+      INZYGHT_DB_PASSWORD: ${PG_PASSWORD:?run make explorer-up (it writes .env)}
+    # Inzyght's pg_tune.sh values for a small host (shared_buffers 256MB etc.)
+    command: >-
+      postgres -c shared_buffers=${PG_SHARED_BUFFERS:-256MB} -c effective_cache_size=1GB
+      -c maintenance_work_mem=128MB -c work_mem=16MB -c max_wal_size=2GB -c checkpoint_timeout=15min
+      -c wal_compression=on -c synchronous_commit=off
+    volumes:
+      - ${PG_DATA:-pg-data}:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    networks: [backend]
+    shm_size: 256m
+    mem_limit: ${PG_MEM_LIMIT:-768m}
+    # a clean shutdown (a checkpoint) instead of crash recovery on the next start
+    stop_grace_period: 60s
+    healthcheck:
+      # over TCP: the image's first-run initialisation server listens on the Unix socket only, so
+      # this stays unhealthy until the real server is up
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  inzyght:
+    <<: *hardening
+    image: ${INZYGHT_IMAGE:-ycash/inzyght:local}
+    user: "2005:2005"
+    read_only: true
+    tmpfs: ["/run/inzyght:uid=2005,gid=2005,mode=0700,size=256m", "/tmp:size=64m"]
+    cap_drop: [ALL]
+    environment:
+      INZYGHT_RPC_HOST: ${INZYGHT_RPC_HOST:-node}
+      INZYGHT_RPC_PORT: "${INZYGHT_RPC_PORT:-18832}"
+      INZYGHT_RPC_USER: ${RPC_USER}
+      INZYGHT_RPC_PASSWORD: ${RPC_PASSWORD}
+      INZYGHT_ZMQ_ENDPOINT: ${INZYGHT_ZMQ_ENDPOINT:-tcp://node:${ZMQ_PORT:-28332}}
+      INZYGHT_PG_HOST: postgres
+      INZYGHT_PG_DATABASE: ${PG_DATABASE:-inzyght}
+      INZYGHT_PG_USER: ${PG_USER:-inzyght}
+      INZYGHT_PG_PASSWORD: ${PG_PASSWORD}
+      INZYGHT_THREADS: "${INZYGHT_THREADS:-4}"
+      INZYGHT_LOG_LEVEL: ${INZYGHT_LOG_LEVEL:-INFO}
+      # the proxy has a fixed address on the backend network; only it may set X-Forwarded-For
+      INZYGHT_TRUST_PROXY: "true"
+      INZYGHT_TRUSTED_PROXIES: ${BACKEND_PREFIX:-172.31.250}.10
+    networks: [backend]
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: ${INZYGHT_MEM_LIMIT:-768m}
+    healthcheck:
+      # "the process serves HTTP", not "the index is caught up" (that is /api/v1/sync/progress). The
+      # entrypoint waits for the node's RPC before it starts Inzyght, which on a first start is the
+      # length of the prefix import: the long start_period keeps that "starting", not "unhealthy".
+      test: ["CMD", "perl", "-MIO::Socket::INET", "-e", "exit !IO::Socket::INET->new(q(127.0.0.1:8080))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 6h
+
+  # One shot before the proxy: the proxy runs as uid 2006, and Docker creates its volumes owned by
+  # root (from the image's /data and /config), so this hands them over and exits.
+  proxy-volumes:
+    <<: *hardening
+    image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_READ_SEARCH]
+    entrypoint: ["chown", "-R", "2006:2006", "/data", "/config"]
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    mem_limit: 64m
+
+  proxy:
+    <<: *hardening
+    # Caddy: plain HTTP when EXPLORER_SITE is ":80" (local); a domain name instead turns on automatic
+    # HTTPS (Let's Encrypt, HTTP->HTTPS redirect, renewal). See README.md "TLS".
+    image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    # Not root. The image's /usr/bin/caddy carries the file capability cap_net_bind_service, so the
+    # kernel refuses to exec it unless NET_BIND_SERVICE stays in the bounding set: that is the one
+    # capability kept (and it lets Caddy bind 80 and 443).
+    user: "2006:2006"
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    environment:
+      EXPLORER_SITE: ${EXPLORER_SITE:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    # TCP only: the Caddyfile turns HTTP/3 off, so there is no UDP 443 to publish
+    ports:
+      - "${PROXY_BIND:-127.0.0.1}:${PROXY_HTTP_PORT:-8090}:80"
+      - "${PROXY_BIND:-127.0.0.1}:${PROXY_HTTPS_PORT:-8453}:443"
+    networks:
+      backend: { ipv4_address: "${BACKEND_PREFIX:-172.31.250}.10" }
+      edge: {}
+    mem_limit: ${PROXY_MEM_LIMIT:-128m}
+    depends_on:
+      proxy-volumes: { condition: service_completed_successfully }
+      inzyght: { condition: service_started }
+
+networks:
+  backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: "${BACKEND_PREFIX:-172.31.250}.0/24"
+          # dynamic addresses only from the upper half; the fixed ones (.10, .11) are below it
+          ip_range: "${BACKEND_PREFIX:-172.31.250}.128/25"
+  edge: {}
+
+volumes:
+  node-data:
+  pg-data:
+  caddy-data:
+  caddy-config:
