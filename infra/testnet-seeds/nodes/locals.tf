@@ -48,11 +48,12 @@ locals {
   # explorer in build mode builds the Inzyght image from. It reaches the host beside seedctl (the
   # explorer_build output); its sha256 is in the network's config, and seedctl refuses to build from
   # a context that does not match it.
-  explorer_build_files = {
+  # Read only when an explorer builds (as main.tf reads the prefix tools only with a prefix), so a
+  # caller that validates against a copy of this directory alone never needs images/.
+  explorer_build_json = anytrue([for k, n in var.networks : n.enabled && try(n.explorer.build, null) != null]) ? jsonencode({
     "Dockerfile"    = file("${path.module}/../../../images/inzyght/Dockerfile")
     "entrypoint.sh" = file("${path.module}/../../../images/inzyght/entrypoint.sh")
-  }
-  explorer_build_json = jsonencode(local.explorer_build_files)
+  }) : ""
 
   # What seedctl applies for each network (files/seedctl, check_config): the same document on every
   # host; each host drops its own address from `peers`. It reaches the hosts through the deploy
