@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -90,6 +91,59 @@ class Mainnet(unittest.TestCase):
         self.assertEqual(m["tarball"], "ycash6-main-570000-full.tar.gz")
         self.assertEqual(m["created"], "2019-09-09T03:33:20Z")
         self.assertEqual(m["purpose"], "the Ycash fork block")
+
+    def add_insight(self):
+        idx = os.path.join(self.cap, "datadir", "main", "blocks", "insight-index")
+        write(os.path.join(idx, "000007.ldb"), b"address index")
+        write(os.path.join(idx, "LOCK"), b"")
+
+    def test_full_insight_bundle(self):
+        self.add_insight()
+        self.build()
+        m = self.manifest()
+        self.assertEqual((m["flavour"], m["tarball"]), ("full-insight", "ycash6-main-570000-full-insight.tar.gz"))
+        with tarfile.open(os.path.join(self.out, m["tarball"])) as t:
+            names = t.getnames()
+        self.assertIn("main/blocks/insight-index/000007.ldb", names)
+        self.assertNotIn("main/blocks/insight-index/LOCK", names)
+        self.assertEqual(verify.verify(self.out, tree=True), [])
+
+    def test_flavour_must_match_the_capture(self):
+        self.add_insight()
+        a = argparse.Namespace(capture=self.cap, version=None, purpose=None, flavour="full")
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            quiet(snapshot.pack, a)
+        shutil.rmtree(os.path.join(self.cap, "datadir", "main", "blocks", "insight-index"))
+        a.flavour = "full-insight"
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            quiet(snapshot.pack, a)
+        a.flavour = "full"
+        quiet(snapshot.pack, a)
+        self.assertEqual(self.manifest_flavour_after(a), "full")
+
+    def manifest_flavour_after(self, a):
+        quiet(snapshot.finalize, a)
+        return self.manifest()["flavour"]
+
+    def test_statement_and_tarball_flavours_agree(self):
+        self.add_insight()
+        meta = os.path.join(self.cap, "meta.json")
+        with open(meta) as f:
+            m = json.load(f)
+        m["flavour"] = "full"                   # a statement taken without the insight flags
+        snapshot.dump(meta, m)
+        a = argparse.Namespace(capture=self.cap, version=None, purpose=None)
+        quiet(snapshot.pack, a)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            quiet(snapshot.finalize, a)
+
+    def test_full_insight_needs_the_index(self):
+        self.build()                            # a full tarball, relabelled
+        old = self.manifest()["tarball"]
+        new = old.replace("-full.", "-full-insight.")
+        os.rename(os.path.join(self.out, old), os.path.join(self.out, new))
+        self.rewrite_manifest(flavour="full-insight", tarball=new)
+        self.assertTrue(any("full-insight without a file" in e for e in verify.verify(self.out)))
 
     def test_tar_entries_and_headers(self):
         self.build()

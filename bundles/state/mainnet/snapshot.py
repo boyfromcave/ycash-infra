@@ -15,6 +15,14 @@ state cache into a `kogany-state/2` bundle, archive or pruned (bundles/state/FOR
 S/H is a capture directory: `datadir/main/{blocks,chainstate,vaults,...}` (the clone taken at the
 stop, never modified), `capture.json`; the bundle is written to `S/H/bundle/`.
 
+The flavour (FORMAT.md) is the capture's: `full-insight` when it holds `blocks/insight-index/` (the
+node ran `-experimentalfeatures -insightexplorer -txindex`), `full` otherwise. `--flavour` states it
+and is refused when the capture says otherwise: a `full` bundle cut from an insight node would still
+carry the `txindex` flag in `blocks/index/`, and a node restored from it without `-txindex` refuses
+to start. For `full-insight` the offline node runs with the same three flags and `statement` also
+checks the indexes answer at H (a coinbase found through `getrawtransaction`, `getaddressdeltas` and
+`getaddressfirstlastheight`), recorded in `meta.json`, not in the statement.
+
 `statement` clones the capture once more (APFS copy-on-write) into a scratch datadir, starts ycashd
 on it offline (no peers, no listening, its own RPC port), rolls back any block above H with
 `invalidateblock` (the scratch copy is thrown away afterwards; the capture and the live node are
@@ -39,6 +47,10 @@ import time
 FORMAT = "ycash-state/2"
 KOGANY_FORMAT = "kogany-state/2"
 TOP_DIRS = ("blocks", "chainstate", "vaults", "yellowback")
+FLAVOURS = ("full", "full-insight")
+# the node flags a full-insight producer ran with, and so the offline node and a restored node
+# (ycash6 src/init.cpp: -insightexplorer requires -txindex; both are checked against the database)
+INSIGHT_CONF = "experimentalfeatures=1\ninsightexplorer=1\ntxindex=1\n"
 LEFT_OUT = re.compile(r"(^|/)(LOCK|LOG|LOG\.old.*)$")
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.path.dirname(HERE)
@@ -90,13 +102,13 @@ def sha256_file(path):
 class Node:
     """ycashd started offline on a scratch datadir."""
 
-    def __init__(self, bindir, datadir, rpcport):
+    def __init__(self, bindir, datadir, rpcport, insight=False):
         self.bindir, self.datadir, self.rpcport = bindir, datadir, rpcport
         # No rpcuser/rpcpassword: ycashd writes a .cookie that ycash-cli reads from -datadir.
         with open(os.path.join(datadir, "ycash.conf"), "w") as f:
             f.write("server=1\nrpcbind=127.0.0.1\nrpcallowip=127.0.0.1\nrpcport=%d\n"
                     "listen=0\nconnect=127.0.0.1:9\ndnsseed=0\ndisablewallet=1\nshowmetrics=0\n"
-                    % rpcport)
+                    % rpcport + (INSIGHT_CONF if insight else ""))
         self.proc = None
 
     def cli(self, *args, check=True):
@@ -149,6 +161,48 @@ def ycashd_version(bindir):
     return (mm.group(1), mm.group(2)) if mm else (full, "")
 
 
+def capture_flavour(cap, wanted=None):
+    """The capture's flavour: full-insight when it holds blocks/insight-index/ with a file in it."""
+    idx = os.path.join(cap, "datadir", "main", "blocks", "insight-index")
+    found = "full-insight" if os.path.isdir(idx) and os.listdir(idx) else "full"
+    if wanted and wanted != found:
+        die("--flavour %s, but the capture is %s (%s): %s" % (
+            wanted, found, idx,
+            "its blocks/index/ carries the txindex and insightexplorer flags, so a full bundle would not "
+            "start without -txindex" if found == "full-insight" else
+            "the producer did not run -insightexplorer; there is no insight index to pack"))
+    return found
+
+
+def insight_check(node, h, bh, blk):
+    """The address, spent and transaction indexes answer at H: the newest coinbase at or below H that pays
+    a transparent address, found through getrawtransaction (txindex), getaddressdeltas over its height
+    (address index) and getaddressfirstlastheight. Returns what was checked, for meta.json."""
+    feats = node.json("getexperimentalfeatures")
+    if "insightexplorer" not in feats:
+        die("the offline node runs without insightexplorer: %s" % feats)
+    hb, bhb, b = h, bh, blk
+    for _ in range(200):
+        cb = b["tx"][0]
+        tx = node.json("getrawtransaction", cb, 1)
+        addrs = [x for o in tx["vout"] for x in o.get("scriptPubKey", {}).get("addresses", [])]
+        if addrs:
+            addr = addrs[0]
+            q = json.dumps({"addresses": [addr], "start": hb, "end": hb})
+            deltas = node.json("getaddressdeltas", q)
+            if not any(d.get("txid") == cb and d.get("height") == hb for d in deltas):
+                die("getaddressdeltas %s at %d does not list coinbase %s" % (addr, hb, cb))
+            fl = node.json("getaddressfirstlastheight", addr)
+            if not (0 < fl["firstHeight"] <= hb <= fl["lastHeight"] <= h):
+                die("getaddressfirstlastheight %s: %s, coinbase at %d, H %d" % (addr, fl, hb, h))
+            return {"height": hb, "coinbase": cb, "address": addr, "deltas": len(deltas),
+                    "firstHeight": fl["firstHeight"], "lastHeight": fl["lastHeight"]}
+        hb -= 1
+        bhb = node.cli("getblockhash", hb).stdout.strip()
+        b = node.json("getblock", bhb, 1)
+    die("no coinbase paying a transparent address in the 200 blocks up to %d" % h)
+
+
 def statement(a):
     cap = os.path.abspath(a.capture)
     capture = load(os.path.join(cap, "capture.json"))
@@ -156,13 +210,15 @@ def statement(a):
     src = os.path.join(cap, "datadir", "main")
     if not os.path.isdir(os.path.join(src, "chainstate")):
         die("%s holds no chainstate" % src)
+    flavour = capture_flavour(cap, a.flavour)
     out = os.path.join(cap, "bundle")
     os.makedirs(out, exist_ok=True)
     scratch = os.path.join(cap, "scratch")
     if os.path.exists(scratch):
         shutil.rmtree(scratch)
     clone_tree(src, scratch)
-    node = Node(a.bin, scratch, a.rpcport)
+    node = Node(a.bin, scratch, a.rpcport, insight=flavour == "full-insight")
+    insight = None
     t0 = time.time()
     try:
         tip = node.start(os.path.join(cap, "statement-node.log"))
@@ -207,6 +263,9 @@ def statement(a):
             pins[str(ph)] = got
         tree = node.json("z_gettreestate", str(h))
         info = node.json("getnetworkinfo")
+        if flavour == "full-insight":
+            insight = insight_check(node, h, bh, blk)
+            log("insight indexes answer at %d: %s" % (h, json.dumps(insight, sort_keys=True)))
     finally:
         node.stop()
         shutil.rmtree(scratch, ignore_errors=True)
@@ -220,7 +279,9 @@ def statement(a):
     meta = {"time": hdr["time"], "subversion": info["subversion"], "version": version, "commit": commit,
             "pins": pins, "utxo": {k: utxo.get(k) for k in ("transactions", "txouts", "total_amount",
                                                           "disk_size", "bytes_serialized")},
-            "statement_seconds": round(time.time() - t0)}
+            "statement_seconds": round(time.time() - t0), "flavour": flavour}
+    if insight:
+        meta["insight_check"] = insight
     dump(os.path.join(cap, "meta.json"), meta)
     log("statement at %d: %s" % (h, json.dumps(st, sort_keys=True)))
 
@@ -301,14 +362,15 @@ def pack(a):
     root = os.path.join(cap, "datadir")
     out = os.path.join(cap, "bundle")
     os.makedirs(out, exist_ok=True)
-    entries = bundle_entries(root, "main")
+    flavour = capture_flavour(cap, getattr(a, "flavour", None))
+    entries = bundle_entries(root, "main", flavour)
     if not any(p == "main/chainstate" for p, _ in entries):
         die("no main/chainstate in %s" % root)
-    t = os.path.join(out, tarball_name("main", h))
+    t = os.path.join(out, tarball_name("main", h, flavour))
     t0 = time.time()
-    log("packing %d entries into %s" % (len(entries), t))
+    log("packing %d entries (%s) into %s" % (len(entries), flavour, t))
     tree = pack_tree(root, "main", entries, t)
-    dump(os.path.join(cap, "pack.json"), {"tree_sha256": tree, "entries": len(entries),
+    dump(os.path.join(cap, "pack.json"), {"tree_sha256": tree, "entries": len(entries), "flavour": flavour,
                                            "pack_seconds": round(time.time() - t0)})
     log("packed %d bytes in %.0f s, tree %s" % (os.path.getsize(t), time.time() - t0, tree))
 
@@ -327,13 +389,18 @@ def finalize(a):
     st = load(os.path.join(out, "statement-ycash6.json"))
     meta = load(os.path.join(cap, "meta.json"))
     pk = load(os.path.join(cap, "pack.json"))
-    t = tarball_name("main", st["height"])
+    flavour = pk.get("flavour", "full")       # pack.json written before the flavour was recorded: full
+    if meta.get("flavour", flavour) != flavour:
+        die("the statement was taken as %s, the tarball packed as %s" % (meta["flavour"], flavour))
+    if getattr(a, "flavour", None) and a.flavour != flavour:
+        die("--flavour %s, but the tarball was packed as %s" % (a.flavour, flavour))
+    t = tarball_name("main", st["height"], flavour)
     tp = os.path.join(out, t)
     verifiers = sorted(n[len("statement-"):-len(".json")] for n in os.listdir(out)
                        if n.startswith("statement-") and n.endswith(".json"))
     m = dict(st)
     m.update({
-        "format": FORMAT, "line": "ycash6", "profile": "", "flavour": "full",
+        "format": FORMAT, "line": "ycash6", "profile": "", "flavour": flavour,
         "version": a.version or meta["version"], "commit": meta["commit"],
         "tarball": t, "sha256": sha256_file(tp), "bytes": os.path.getsize(tp),
         "tree_sha256": pk["tree_sha256"],
@@ -445,6 +512,8 @@ def main(argv=None):
         sp.add_argument("--rpcport", type=int, default=18252)
         sp.add_argument("--version", help="the release name (default: from ycashd --version)")
         sp.add_argument("--purpose", help="why this height (manifest `purpose`)")
+        sp.add_argument("--flavour", choices=FLAVOURS,
+                        help="full | full-insight (default: the capture's; refused when the capture differs)")
     sp = sub.add_parser("kogany")
     sp.add_argument("--cache", required=True, help="kogany's cache dir (holds state/v<major>/mainnet)")
     sp.add_argument("--height", type=int, required=True)
