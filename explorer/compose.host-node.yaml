@@ -1,0 +1,25 @@
+# Override: Inzyght reads a ycashd that runs on the host instead of the `node` service.
+#   make explorer-up EXPLORER_HOST_NODE=1        (README.md "A node on the host")
+# For a laptop where the linux/amd64 node image is too slow under emulation, or to point a second
+# explorer at an existing node. The host node must run with -experimentalfeatures -insightexplorer
+# -txindex and -zmqpubhashblock/-zmqpubhashtx, with RPC and ZMQ on 127.0.0.1 (Docker Desktop
+# forwards host.docker.internal to the host's loopback). Set in .env: HOST_RPC_PORT, HOST_ZMQ_PORT
+# and RPC_USER / RPC_PASSWORD to the host node's.
+#
+# Inzyght then needs a route to the host, so it joins `edge` and loses the no-egress guarantee. Its
+# outbound HTTP (only the peer-location lookup to http://ip-api.com uses it) goes to a proxy
+# address that refuses connections, and the RPC host is exempt (libcurl's http_proxy / no_proxy).
+services:
+  node:
+    profiles: [bundled-node]
+  inzyght:
+    environment:
+      INZYGHT_RPC_HOST: host.docker.internal
+      INZYGHT_RPC_PORT: "${HOST_RPC_PORT:?set HOST_RPC_PORT in .env (the host node's RPC port)}"
+      INZYGHT_ZMQ_ENDPOINT: tcp://host.docker.internal:${HOST_ZMQ_PORT:?set HOST_ZMQ_PORT in .env}
+      http_proxy: http://127.0.0.1:9
+      HTTP_PROXY: http://127.0.0.1:9
+      no_proxy: host.docker.internal
+      NO_PROXY: host.docker.internal
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [backend, edge]

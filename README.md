@@ -62,6 +62,11 @@ where Ycash itself forked:
   through yolo pools; the image is `images/miner` (no miner binary: it downloads lolMiner at start and checks its pinned SHA-256) and
   `scripts/vast-fleet.py` keeps the fleet at the size a private fleet file asks for:
   [infra/vast-miners/README.md](infra/vast-miners/README.md). No node mines with `-gen` on AWS.
+- **Block explorer** (local stack first, then the `fastnet-explorer.ycash.team` host): `explorer/`,
+  a Compose stack of ycashd with the explorer indexes and ZMQ, PostgreSQL, the Inzyght explorer
+  (unmodified, built locally: it has no licence file yet) and a proxy that switches to automatic
+  HTTPS with one variable. `make explorer-up`: [explorer/README.md](explorer/README.md); plan:
+  workspace `docs/plans/explorer/explorer-plan.md`.
 - **The plan:** workspace `docs/plans/yellowback-testnet-plan.md`.
 
 ## Node line: `upgrade/vault`, post-quantum
@@ -284,7 +289,9 @@ images/yindex/        Dockerfile for yindex
 images/web/           Dockerfile + nginx.conf for the yew/web bundle (K4)
 images/faucet/        the faucet: regtest (kind demo) and testnet modes, faucet.py (JSON-RPC, the pages, /params/), fetch-params.py (the init container), its README
 images/testnet-status/ a testnet's probe (nodes, seeds, state hashes -> /metrics) and public status page, its README
+images/inzyght/       the Inzyght block explorer, cloned and built at one commit (local builds only: no licence yet), its entrypoint (config from the environment, schema on first start), its README
 images/miner/         the testnet GPU miner launcher: downloads lolMiner (or, once pinned, miniZ) at start, SHA-256 checked, Equihash 192,7 / ZcashPoW; no miner binary in the image
+explorer/             the block explorer stack: compose.yaml (node, PostgreSQL, Inzyght, Caddy), the host-node override, .env.example, its README
 yindex/               Go: the address index (ingester, Postgres store, gRPC server for the three address methods)
 charts/ycash-lightwallet/   the chart; values.yaml (defaults), values-kind.yaml, values-eks.yaml, values-testnet.yaml (over values-eks.yaml), values-{yb-fast,yb-slow,legacy}.yaml (one release per testnet); gateway.extraListeners puts the testnet faucet and status hosts on its gateway
 charts/ycash-testnet/       the testnets' network roles: ycash6 seeds, the ycash-dd verifier, the prefix restore, and per network the faucet, probe, status page, snapshotter and alerts (flags); values-{yb-fast,yb-slow,legacy}.yaml; not yet run on a cluster (its README)

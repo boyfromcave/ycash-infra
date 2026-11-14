@@ -1,0 +1,22 @@
+# The explorer's reverse proxy (explorer/compose.yaml). EXPLORER_SITE picks the mode:
+#   :80                          plain HTTP (local runs; the default)
+#   fastnet-explorer.ycash.team  automatic HTTPS: Caddy obtains and renews a Let's Encrypt
+#                                certificate itself and redirects HTTP to HTTPS (ports 80 and 443
+#                                must reach it from the internet; PROXY_BIND=0.0.0.0)
+{
+	admin off
+}
+
+{$EXPLORER_SITE::80} {
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+	# Caddy replaces any X-Forwarded-For the client sent (no trusted_proxies here), so Inzyght, which
+	# trusts only this proxy's address, rate-limits on the real client address. WebSocket (/ws)
+	# upgrades pass through.
+	reverse_proxy inzyght:8080
+}
