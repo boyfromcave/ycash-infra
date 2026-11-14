@@ -59,7 +59,16 @@ Bindings: the proxy publishes on `PROXY_BIND` (127.0.0.1 by default); the node's
 3. Inzyght applies its schema and indexes every block into PostgreSQL from genesis, then follows the
    tip through ZMQ (polling if ZMQ is silent for 5 minutes).
 
-The workspace's `docs/plans/explorer/` report (E1) has the measured times and sizes.
+Measured on an arm64 Mac (the node image under emulation): the prefix download about 2 minutes, the
+import about 18 minutes, Inzyght's full index about 4 minutes. The node's volume holds about 2.5 GB
+of chain and indexes, plus the 2 GB download kept in `bootstrap-work/` if the restore fails.
+
+**If the restore fails** (`make explorer-logs S=node` shows `ycash-bootstrap: refused` or `the restore
+failed`), wipe and start again: `make explorer-wipe && make explorer-up`. Docker restarts the node
+container, and on that second start the entrypoint finds blocks in the datadir and starts the node
+without a restore, so a failed restore does not stay visible. Keep `addnode` and other peer
+settings out of `YCASHD_CONF_EXTRA`: the restore's offline import node reads `ycash.conf`, and a peer
+there lets it sync past the prefix during the import, which fails the restore.
 
 ## TLS: one variable
 
