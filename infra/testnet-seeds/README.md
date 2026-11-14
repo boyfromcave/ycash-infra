@@ -123,6 +123,23 @@ there through **SSM Run Command** (no SSH, no inbound port):
 longer configured. Each host serialises seedctl runs with a lock, so the prefix timer, a boot and
 a workflow run never interleave.
 
+`seedctl install-files <file>` writes only the module's own host files (`prefix-restore.sh`,
+`frame.py`, `seedctl-explorer`, `inzyght-build.json`, modes 0644 or 0755): any other name, a path
+separator or `..` is refused before anything is written, so a payload can never replace
+`seed.env`, `setup.sh` or `seedctl`. One file or several per call, so a workflow may split them
+across commands. An instance made by this module revision has the prefix tools only from there
+(not in user_data): an apply or a reset that must bootstrap an empty datadir without them fails at
+once, naming the missing file, instead of retrying a script that is not there. A caller's root
+must therefore export `host_files` (below) and its workflow install it before every run.
+
+`seedctl detach apply|reset|sync …` starts the same command as the transient systemd unit
+`ycash-seedctl-job` and returns at once (it refuses while one is running); `status` then carries a
+`job` field (`command`, `state` running / succeeded / failed / interrupted, `phase`, `started`,
+`finished`, and on a failure the error line), and the job's output is in
+`/srv/ycash-data/job.log` (0600) and the unit's journal. A workflow uses it where a run would
+otherwise keep a billed runner waiting for a long first start (the explorer host's build and
+import); without `detach` nothing changes.
+
 **Why this, and not per-network volumes or instance replacement.** The alternatives were a
 Terraform `-replace` of a data volume (the single-network design: it replaces the instance, so a
 reset of one network would restart every network on the host) or one EBS volume per network
@@ -284,18 +301,32 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
 
 | Container | Image | Runs as | Networks | Notes |
 |---|---|---|---|---|
-| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend`, `edge` | `YCASHD_INSIGHT=1`; RPC bound inside the container, allowed for the `backend` subnet only (and loopback, for `seedctl`'s `docker exec`); no published port; ZMQ `hashblock`/`hashtx` on its fixed `backend` address (.11) once the prefix is imported; `-listen=0 -disablewallet`, P2P out through `edge`; 1536 MiB (with `-dbcache=512`) |
+| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend`, `edge` | `YCASHD_INSIGHT=1`; RPC bound inside the container, allowed for Inzyght's fixed address only (`172.31.250.12`; and loopback, for `seedctl`'s `docker exec`); no published port; ZMQ `hashblock`/`hashtx` on its fixed `backend` address (.11) once the prefix is imported; `-listen=0 -disablewallet`, P2P out through `edge`; 1536 MiB (with `-dbcache=512`) |
 | `postgres-<key>` | `explorer.postgres_image` (by digest) | the image drops to `postgres`; every capability dropped but the five its entrypoint needs; 768 MiB | `backend` | data in `/srv/ycash-data/<key>/explorer/pg` on the data volume; the database and a non-superuser owner role made at its first start (explorer's `postgres-init/10-inzyght.sh`); Inzyght's tuning values; healthcheck over TCP |
-| `inzyght-<key>` | built on the host, or `explorer.image` by digest | uid 2005, read-only root, no capabilities, `mem_limit_mb` (768) | `backend` only | applies and checks its schema on every start; trusts `X-Forwarded-For` from the proxy's fixed address only; started once the prefix is imported |
+| `inzyght-<key>` | built on the host, or `explorer.image` by digest | uid 2005, read-only root, no capabilities, `mem_limit_mb` (768) | `backend` only (fixed .12) | applies and checks its schema on every start; trusts `X-Forwarded-For` from the proxy's fixed address only; started once the prefix is imported and only when its image is on the host |
 | `proxy-<key>` | `explorer.proxy_image` (Caddy, by digest) | uid 2006 (its data directories handed to it by seedctl), every capability dropped but binding low ports, read-only root, 128 MiB | `backend` (fixed .10), `edge` | the only published ports, TCP 80 and 443 (HTTP/3 off); Let's Encrypt certificate for `hostname` (HTTP-01), renewal, redirect to HTTPS, HSTS on HTTPS, JSON access log, header and idle timeouts, a 1 MB body limit (explorer/Caddyfile); certificate in `/srv/ycash-data/<key>/explorer/caddy` (kept across resets and new instances, so the certificate authority's rate limits are never met); a plain 503 page while Inzyght is not up |
 
-- **Networks.** `backend` (`172.31.250.0/24`; the proxy at .10 and the node at .11 fixed, every other container from `.128/25`) is internal: no route out, so Inzyght's hard-coded
+- **Networks.** `backend` (`172.31.250.0/24`; the proxy at .10, the node at .11 and Inzyght at .12 fixed, every other container from `.128/25`) is internal: no route out, so Inzyght's hard-coded
   peer-location call (`http://ip-api.com/batch`) cannot leave the host and PostgreSQL has no
   egress. `edge` (`172.31.251.0/24`) carries the node's outbound P2P and the proxy's ports. Nothing
   listens on the host's own interfaces but the proxy. The containers are not in host networking,
   so the metadata service's hop limit of 1 already denies them an IMDSv2 token; seedctl also
   inserts a `DOCKER-USER` rule refusing both subnets the metadata address (on every apply, boot
   and prefix check that renders the explorer). Every container's Docker log is capped (20 MB x 3).
+- **Where the metadata rule does not reach, and why that is safe.** The rule covers the two
+  explorer subnets only, and only once seedctl has rendered them: not the Inzyght build (BuildKit's
+  containers run on Docker's default bridge, and its clone steps need the network), and not the
+  boot window, in which Docker restarts the containers (`restart: unless-stopped`) before
+  `seedctl boot` re-inserts the rule (iptables rules do not survive a reboot). Both stay out of the
+  instance's credentials anyway: the instance allows IMDSv2 only (`http_tokens = "required"`) with
+  a PUT response hop limit of 1, and every one of those containers sits behind Docker's NAT, one
+  hop further, so the token response never reaches it, and without a token IMDS answers nothing.
+  The rule is the second layer for the long-running containers.
+- **Inzyght holds the node's full RPC credential** (its `inzyght.env`): the node has no wallet
+  (`-disablewallet`), so there are no keys or funds behind it, but the credential admits every
+  other RPC, including `stop`, `setban` and `addnode`. A compromised Inzyght could stop or
+  disconnect the explorer's own node; it cannot reach another host's node (each has its own
+  credential) or anything beyond the internal network.
 - **Secrets** are made on the host at the first render and never leave it: the node's RPC
   credential (`rpc.env`, as for every network), and in `/srv/ycash-data/<key>/explorer/` (mode
   0700) `pg.env` (the PostgreSQL superuser's and Inzyght's database passwords) and `inzyght.env`
@@ -316,7 +347,15 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
   height Inzyght has indexed (from its database), `httpOnHost` (the HTTP status of
   `/api/v1/version` through the proxy on the host, for `hostname`, which checks the certificate)
   and `httpPublic` (the same through the public name: DNS, the address, the security group). A
-  config without `explorer` renders exactly as before.
+  config without `explorer` renders exactly as before. The explorer field's `phase` is one line
+  for a first start: a detached run's current step, `prefix import: H of L (N %)`, `explorer
+  image missing: <why>`, `indexing: H of B`, or `serving`.
+- **The certificate contact** (`explorer_acme_email`, optional) is not a secret but is kept out of
+  sight: a sensitive variable, so no plan line and no output prints it; it is in the Terraform state
+  (`network_configs`, as every output value is), in the SSM Run Command parameters of each
+  `seedctl apply` (readable by whoever may read the account's Run Command history), on the host in
+  the network's `desired.json` / `applied.json` (0600) and its Caddyfile (0640, root and Caddy's
+  group), and with Let's Encrypt.
 
 **The Inzyght image.** Inzyght has no licence file, so its image is not published to any
 registry. Two modes, exactly one per explorer:
@@ -329,7 +368,13 @@ registry. Two modes, exactly one per explorer:
   `host_files` output with seedctl, and the network's config carries their sha256, which seedctl
   checks before it builds. The image is tagged `ycash-local/inzyght:<commit12>-<context12>`, never
   pulled (`pull_policy: never`), and built again only when the commit or the build files change.
-  The checked context is kept on the data volume, so a new instance rebuilds the image at boot.
+  The checked context is kept on the data volume, so a new instance rebuilds the image at boot
+  (after starting the node, PostgreSQL and the proxy). After each build BuildKit's cache is pruned
+  and every other `ycash-local/inzyght` tag removed. `docker-buildx` is installed on the first
+  build, waiting up to ten minutes for the dpkg lock (apt-daily on a new instance) and retried.
+  **A build that fails never keeps the node down:** the node, PostgreSQL and the proxy start
+  without the Inzyght service (the proxy answers its 503 page), `apply` then fails naming the
+  reason, `status` shows `imageMissing` with it, and the next `apply` (a deploy) builds again.
 - `image = "<repository>@sha256:<digest>"` (later, once a licence allows a published image):
   pulled like every other image.
 
@@ -343,7 +388,9 @@ Keep the module's 4 GiB swap for a rebuild while the node runs, and `cpu_credits
 the first deploy (build, prefix import, first index). A `t3a.small` (2 GiB) would need `jobs = 1`
 and the swap for the build and leaves the node and PostgreSQL little page cache; it is not
 recommended. Disk for yb-fast: about 2.5 GB of node data, 1 GB of PostgreSQL, 1.1 GB of framed
-prefix while it imports and 1.1 GB of prefix cache: 40 GiB is ample.
+prefix while it imports and 1.1 GB of prefix cache: 40 GiB is ample. The root volume holds the OS,
+the swap file, the images and the build: give an explorer host `root_volume_size = 30` (the
+default 20 GiB is tight with a 4 GiB swap file and a rebuild beside the running image).
 
 ## Cost estimate
 
@@ -364,8 +411,8 @@ On-demand prices in us-east-1, as of 2026-10. Other regions are within about 20 
 - A pool host (`t3a.small`, 30 GiB data + 20 GiB root, one public IPv4, one network): ≈ $13.70
   instance + $4.00 storage + $3.65 address ≈ **$21/month**, plus data transfer (stratum traffic is
   small: a job per block and a share every few seconds per miner).
-- An explorer host (`t3a.medium`, 40 GiB data + 20 GiB root, one public IPv4, one network):
-  ≈ $27.45 + $4.80 + $3.65 ≈ **$36/month**, plus data transfer out (pages and API answers; small
+- An explorer host (`t3a.medium`, 40 GiB data + 30 GiB root, one public IPv4, one network):
+  ≈ $27.45 + $5.60 + $3.65 ≈ **$37/month**, plus data transfer out (pages and API answers; small
   at testnet traffic).
 - A third host adds ≈ $39. An arm64 `t4g.medium` is ≈ $3/month cheaper per host; it needs an
   arm64 image, which the `node-image` workflow does not build today.
@@ -418,7 +465,7 @@ output "all_networks_config" {
   sensitive = true
 }
 output "seedctl" { value = module.nodes.seedctl }
-output "host_files" { value = module.nodes.host_files }
+output "host_files" { value = module.nodes.host_files } # required from this module revision on: the prefix tools travel in it
 output "instance_ids" {
   value     = module.nodes.instance_ids
   sensitive = true
@@ -432,7 +479,19 @@ aws ssm send-command --document-name AWS-RunShellScript --instance-ids <id> \
   --parameters commands='["echo <seedctl output> | base64 -d | gunzip > /usr/local/sbin/seedctl", "chmod 755 /usr/local/sbin/seedctl", "echo <host_files output> | base64 -d | gunzip > /opt/ycash-seed/host-files.json", "seedctl install-files /opt/ycash-seed/host-files.json", "seedctl apply yb-fast <network_configs.yb-fast>"]'
 ```
 
-(`host_files` is empty when there is nothing to install: no prefix and no explorer.)
+(`host_files` is empty when there is nothing to install: no prefix and no explorer. SSM Run
+Command caps a command document at 64 KB: with an explorer, seedctl alone is about 10 KB and
+`host_files` about 29 KB, so a workflow is best off sending `install-files` as a command of its
+own before the run, and splitting `host_files` per file if one command would come near the
+limit.)
+
+**Bumping a root to this module revision.** Before it, the prefix tools were in user_data; from
+it they come only in `host_files`. A root that bumps must, in the same change, add
+`output "host_files" { value = module.nodes.host_files }` and mark `network_configs` and
+`all_networks_config` sensitive (the module now does), and its workflow must install
+`host_files` before every run. Running hosts keep the tools their user_data wrote, so nothing
+breaks at once; without the output, the first replaced instance's reset or new network would fail
+(seedctl now says so at once).
 
 `ips/example.tfvars` and `nodes/example.tfvars` list every variable with fake values, and
 `variables.tf` documents each one. Neither directory has a provider block or a backend, so the
@@ -467,6 +526,10 @@ credentials and no plan:
   one network leaving the other untouched, sync, boot, and its refusals (an image by tag, another
   network's config, a bad name, an injected line); a pool; an explorer: install-files, the node on
   the explorer's networks with its indexes, PostgreSQL and the proxy during the import, Inzyght
-  built from the checked context and started with ZMQ after it, private secrets, the Caddyfile,
-  the metadata rule, status, boot on a new instance (rebuild from the data volume), reset (index
-  gone, certificate kept), its refusals, and its removal.
+  built from the checked context and started with ZMQ after it, private secrets, the Caddyfile
+  and config modes, the metadata rule, the build cache and stale tags cleaned, status and its
+  phase, a failed build (node and proxy up without Inzyght, `docker-buildx` installed with the
+  lock wait, the reason in apply and status, recovery on the next apply), boot on a new instance
+  (the node first, then the rebuild from the data volume), reset (index gone, certificate kept),
+  its refusals, and its removal; `install-files`' allow-list; `detach` (the job, its phase and
+  result in status); and a host without the prefix tools (refused at once).
