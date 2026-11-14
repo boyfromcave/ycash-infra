@@ -4,7 +4,7 @@
 # file COPYING or https://www.opensource.org/licenses/mit-license.php .
 #
 # Inzyght's entrypoint (images/inzyght/Dockerfile): renders inzyght.conf and config/drogon_config.json
-# from the environment into INZYGHT_RUNDIR, applies Inzyght's PostgreSQL schema to an empty database
+# from the environment into INZYGHT_RUNDIR, applies and checks Inzyght's PostgreSQL schema
 # (the binary does not), then execs inzyght there. Every variable is listed in images/inzyght/README.md.
 # Secrets come from the environment only and are written to the run directory with mode 0600.
 set -eu
@@ -109,7 +109,11 @@ api_window_seconds = 60
 EOF
 
 # Drogon's own settings (config/drogon_config.json.example), with the listener on INZYGHT_PORT and
-# TLS off: TLS is the reverse proxy's job in the explorer stack.
+# TLS off: TLS is the reverse proxy's job in the explorer stack. Drogon's own log goes to stdout (an
+# empty log_path: no files, so no rotated files pile up in the tmpfs) at WARN. The example's
+# log_level_index / max_log_file_size / enable_auto_rotating are not keys Drogon 1.9 reads
+# (lib/src/ConfigLoader.cc reads log_path, log_size_limit, max_files, log_level), so its file log
+# ran at Drogon's default level, DEBUG, without a file count limit.
 cat > config/drogon_config.json <<EOF
 {
   "app": {
@@ -124,11 +128,8 @@ cat > config/drogon_config.json <<EOF
     "enable_session": false,
     "session_timeout": 0,
     "log": {
-      "log_path": "./logs/",
-      "logfile_base_name": "inzyght_drogon",
-      "log_level_index": 3,
-      "max_log_file_size": 104857600,
-      "enable_auto_rotating": true
+      "log_path": "",
+      "log_level": "WARN"
     },
     "run_as_daemon": false,
     "relaunch_on_error": false,
@@ -143,10 +144,16 @@ cat > config/drogon_config.json <<EOF
 EOF
 umask 022
 
-# The schema (Inzyght's schema.sql, then schema_reorg_support.sql, in the order of its
-# setup_postgresql.sh) on an empty database only. schema.sql runs in one transaction and must succeed;
-# schema_reorg_support.sql repeats three indexes schema.sql already made, and upstream applies it
-# without stopping on errors, so it runs the same way here and the result is checked afterwards.
+# The schema: Inzyght's schema.sql, then schema_reorg_support.sql, in the order of its
+# setup_postgresql.sh.
+# - schema.sql only on a database without public.blocks, in one transaction (all or nothing).
+# - schema_reorg_support.sql on EVERY start, so a start killed between the two files (or an object
+#   dropped since) is repaired. It is idempotent (IF NOT EXISTS, CREATE OR REPLACE, re-runnable
+#   GRANTs) except four CREATE INDEX statements without IF NOT EXISTS, three of which schema.sql
+#   already made; upstream runs the file without stopping on errors, and so does this, statement by
+#   statement (autocommit). Those four "already exists" errors are the only ones accepted; any other
+#   error stops the container.
+# - Then every table, view, function, column and index of both files is checked, on every start.
 export PGHOST="$INZYGHT_PG_HOST" PGPORT="$PG_PORT" PGDATABASE="$PG_DB" PGUSER="$INZYGHT_PG_USER" PGPASSWORD="$INZYGHT_PG_PASSWORD" PGCONNECT_TIMEOUT=5
 i=0
 until psql -qtAc 'select 1' >/dev/null 2>&1; do
@@ -154,13 +161,40 @@ until psql -qtAc 'select 1' >/dev/null 2>&1; do
   sleep 2
 done
 if [ "$(psql -qtAc "select to_regclass('public.blocks') is null")" = t ]; then
-  echo "inzyght-entrypoint: empty database: applying schema.sql and schema_reorg_support.sql"
+  echo "inzyght-entrypoint: empty database: applying schema.sql"
   psql -q -1 -v ON_ERROR_STOP=1 -f "$APP/sql/schema.sql"
-  psql -q -f "$APP/sql/schema_reorg_support.sql" 2>&1 | grep -v 'already exists' || true
-  ok=$(psql -qtAc "select (to_regprocedure('public.finalize_blocks(integer,integer)') is not null or exists (select 1 from pg_proc where proname = 'finalize_blocks')) and exists (select 1 from information_schema.columns where table_name = 'blocks' and column_name = 'is_finalized')")
-  [ "$ok" = t ] || { echo "inzyght-entrypoint: the schema did not apply completely" >&2; exit 1; }
-  echo "inzyght-entrypoint: schema applied"
 fi
+out=$(psql -q -c 'set client_min_messages = warning' -f "$APP/sql/schema_reorg_support.sql" 2>&1) || true
+bad=$(printf '%s\n' "$out" | grep 'ERROR:' \
+  | grep -vE 'ERROR: +relation "idx_(reorg_detected_at|reorg_status|reorg_height|blocks_finalized)" already exists' || true)
+[ -z "$bad" ] || { printf 'inzyght-entrypoint: schema_reorg_support.sql failed:\n%s\n' "$bad" >&2; exit 1; }
+missing=$(psql -qtA -v ON_ERROR_STOP=1 <<'SQL'
+select coalesce(string_agg(kind || ' ' || name, ', ' order by kind, name), '') from (
+  select 'relation' as kind, n as name from unnest(array[
+      'blocks', 'transactions', 'sync_progress', 'reorg_events', 'reorg_status', 'finalization_progress',
+      'idx_blocks_hash', 'idx_blocks_finalized', 'idx_reorg_detected_at', 'idx_reorg_height',
+      'idx_reorg_status', 'idx_sync_progress_name', 'idx_sync_progress_status',
+      'idx_tx_block_height', 'idx_tx_is_coinbase']) n
+    where to_regclass('public.' || n) is null
+  union all
+  select 'function', n from unnest(array[
+      'check_reorg_occurred', 'complete_sync', 'finalize_blocks', 'get_recent_reorg_events',
+      'get_sync_progress', 'record_reorg_event', 'rollback_reorg', 'update_sync_progress']) n
+    where not exists (select 1 from pg_proc p join pg_namespace s on s.oid = p.pronamespace
+                      where s.nspname = 'public' and p.proname = n)
+  union all
+  select 'column', t || '.' || c from (values
+      ('blocks', 'finality_depth'), ('blocks', 'is_finalized'), ('blocks', 'finalized_at'),
+      ('transactions', 'affected_by_reorg_count'), ('transactions', 'last_reorg_at'),
+      ('sync_progress', 'last_reorg_height'), ('sync_progress', 'last_reorg_time'),
+      ('sync_progress', 'last_reorg_depth'), ('sync_progress', 'consecutive_reorg_count')) v(t, c)
+    where not exists (select 1 from information_schema.columns
+                      where table_schema = 'public' and table_name = t and column_name = c)
+) m
+SQL
+)
+[ -z "$missing" ] || { echo "inzyght-entrypoint: the schema is incomplete, missing: $missing" >&2; exit 1; }
+echo "inzyght-entrypoint: schema complete"
 unset PGPASSWORD
 
 # Wait until the node answers getblockcount (not during a prefix import or its warm-up): Inzyght
