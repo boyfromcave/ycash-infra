@@ -1,0 +1,78 @@
+{
+ "bucket": "medium",
+ "sla_days": 90,
+ "findings": [
+  {
+   "fingerprint": "9e09d66b824fa7ce",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "bundles/state/mainnet/snapshot.py",
+   "line": 68,
+   "first_seen": "2026-11-04",
+   "due": "2027-02-02"
+  },
+  {
+   "fingerprint": "ca10d0156d6b22d8",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "bundles/state/mainnet/snapshot.py",
+   "line": 115,
+   "first_seen": "2026-11-04",
+   "due": "2027-02-02"
+  },
+  {
+   "fingerprint": "26fd356631ae97e9",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "bundles/state/mainnet/snapshot.py",
+   "line": 126,
+   "first_seen": "2026-11-04",
+   "due": "2027-02-02"
+  },
+  {
+   "fingerprint": "caad34c62bf9eb8c",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "bundles/state/mainnet/snapshot.py",
+   "line": 155,
+   "first_seen": "2026-11-04",
+   "due": "2027-02-02"
+  },
+  {
+   "fingerprint": "4f3d316098b7d59d",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "bundles/state/mainnet/snapshot.py",
+   "line": 420,
+   "first_seen": "2026-11-04",
+   "due": "2027-02-02"
+  },
+  {
+   "fingerprint": "03af02e1cbba6a27",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "bundles/state/mainnet/supervise.py",
+   "line": 43,
+   "first_seen": "2026-11-04",
+   "due": "2027-02-02"
+  },
+  {
+   "fingerprint": "431e58a3d0e39ce7",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "bundles/state/mainnet/supervise.py",
+   "line": 78,
+   "first_seen": "2026-11-04",
+   "due": "2027-02-02"
+  },
+  {
+   "fingerprint": "3586ffc82c595b2e",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+   "path": "bundles/state/mainnet/supervise.py",
+   "line": 120,
+   "first_seen": "2026-11-04",
+   "due": "2027-02-02"
+  },
+  {
+   "fingerprint": "13a5dc4850892d9c",
+   "rule": "python.lang.security.audit.insecure-file-permissions",
+   "path": "bundles/state/tests/test_mainnet.py",
+   "line": 194,
+   "first_seen": "2026-11-04",
+   "due": "2027-02-02"
+  }
+ ]
+}
