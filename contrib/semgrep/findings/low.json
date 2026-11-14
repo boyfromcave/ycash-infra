@@ -1,0 +1,398 @@
+{
+ "bucket": "low",
+ "sla_days": 180,
+ "findings": [
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 33,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 42,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 51,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 60,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-1",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 87,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-1",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 96,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-1",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 105,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-1",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 114,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-2",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 141,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-2",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 150,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-2",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 159,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-2",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 168,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-3",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 195,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-3",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 204,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-3",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 213,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-3",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 222,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-4",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 249,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-4",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 258,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-4",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 267,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-4",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 276,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-5",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 303,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-5",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 312,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-5",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 321,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-5",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 330,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-6",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 357,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-6",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 366,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-6",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 375,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-6",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 384,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-7",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 411,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-7",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 420,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-7",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 429,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-7",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 438,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-8",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 465,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-8",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 474,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-8",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 483,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-8",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 492,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-9",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 519,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-9",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 528,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-9",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 537,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-9",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 546,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-10",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 573,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-10",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 582,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-10",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 591,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-10",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 600,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "ea7ebbb9ce6bc21c-11",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 627,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "7e25e02371b3ced5-11",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 636,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "49bf4bd535003e99-11",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 645,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "14cac01995595e6e-11",
+   "rule": "generic.secrets.gitleaks.generic-api-key",
+   "path": "yindex/internal/addr/testdata/pq_address_vectors.json",
+   "line": 654,
+   "first_seen": "2026-11-12",
+   "due": "2027-05-11"
+  },
+  {
+   "fingerprint": "1b43ac8f9f47aeb3",
+   "rule": "python.lang.security.audit.regex_dos",
+   "path": "scripts/vast-fleet.py",
+   "line": 511,
+   "first_seen": "2026-11-13",
+   "due": "2027-05-12"
+  }
+ ]
+}
