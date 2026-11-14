@@ -32,6 +32,21 @@ locals {
   restore_sh = var.prefix == null ? "" : file("${local.repo_root}/charts/ycash-testnet/files/prefix-restore.sh")
   frame_py   = var.prefix == null ? "" : file("${local.repo_root}/bundles/prefix/import/frame.py")
 
+  # The host files (the host_files output): what seedctl needs only for an apply or a reset, which
+  # always come through the deploy workflow, so they travel with it (`seedctl install-files`) rather
+  # than in user_data, which EC2 caps at 16 KB and which setup.sh and seedctl fill: the prefix tools,
+  # and for an explorer seedctl's explorer half and, in build mode, the Inzyght build context.
+  any_explorer = anytrue([for k, n in local.enabled : n.explorer != null])
+  any_build    = anytrue([for k, n in local.enabled : try(n.explorer.build, null) != null])
+  host_files = merge(
+    var.prefix == null ? {} : {
+      "prefix-restore.sh" = { mode = "0755", content = local.restore_sh }
+      "frame.py"          = { mode = "0644", content = local.frame_py }
+    },
+    local.any_explorer ? { "seedctl-explorer" = { mode = "0644", content = file("${path.module}/files/seedctl-explorer") } } : {},
+    local.any_build ? { "inzyght-build.json" = { mode = "0644", content = local.explorer_build_json } } : {},
+  )
+
   # /opt/ycash-seed/seed.env: the host's own settings only (no network, no image). Every value is
   # validated in variables.tf to a character set that needs no quoting.
   seed_env = { for k in local.seed_keys : k => join("\n", [
@@ -43,14 +58,11 @@ locals {
   ]) }
 
   cloud_init = { for k in local.seed_keys : k => {
-    write_files = concat([
+    write_files = [
       { path = "/opt/ycash-seed/seed.env", permissions = "0644", content = local.seed_env[k] },
       { path = "/opt/ycash-seed/setup.sh", permissions = "0755", content = local.setup_sh },
       { path = "/opt/ycash-seed/seedctl", permissions = "0755", content = local.seedctl },
-      ], var.prefix == null ? [] : [
-      { path = "/opt/ycash-seed/prefix-restore.sh", permissions = "0755", content = local.restore_sh },
-      { path = "/opt/ycash-seed/frame.py", permissions = "0644", content = local.frame_py },
-    ])
+    ]
     runcmd = [["/opt/ycash-seed/setup.sh"]]
   } }
   cloud_config = { for k in local.seed_keys : k => join("\n", ["#cloud-config", yamlencode(local.cloud_init[k])]) }

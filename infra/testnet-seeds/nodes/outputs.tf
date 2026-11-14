@@ -22,16 +22,33 @@ output "networks" {
 }
 
 output "network_configs" {
-  description = "Per enabled network: the config seedctl applies (`seedctl apply <key> <value>`), base64 of canonical JSON. Holds addresses, ports and image references only, no secret."
+  description = "Per enabled network: the config seedctl applies (`seedctl apply <key> <value>`), base64 of canonical JSON. Holds addresses, ports, image references and an explorer's certificate contact, no secret; sensitive (the caller's root marks it sensitive too)."
   value       = { for k, c in local.network_config : k => base64encode(jsonencode(c)) }
+  # an explorer's certificate contact (var.explorer_acme_email, sensitive) is in it
+  sensitive = true
 }
 
 output "all_networks_config" {
   description = "Every enabled network's config in one value, for `seedctl sync <value>` (it also stops networks no longer listed)."
   value       = base64encode(jsonencode(local.network_config))
+  sensitive   = true
 }
 
 output "seedctl" {
   description = "This module's files/seedctl, gzip + base64: the deploy workflow installs it on every host before it runs a command, so a module update needs no new instance."
   value       = base64gzip(local.seedctl)
+}
+
+output "explorers" {
+  description = "Per enabled network with an explorer: its public name and how its Inzyght image is made (no e-mail address, no secret)."
+  value = { for k, n in local.enabled : k => {
+    hostname = n.explorer.hostname
+    url      = "${n.explorer.tls ? "https" : "http"}://${n.explorer.hostname}/"
+    inzyght  = n.explorer.build == null ? n.explorer.image : "built on the host from ${n.explorer.build.repo} at ${n.explorer.build.commit}"
+  } if n.explorer != null }
+}
+
+output "host_files" {
+  description = "The files seedctl needs for an apply or a reset beyond itself (the prefix tools; for an explorer, seedctl-explorer and in build mode the Inzyght build context), as one JSON map of name to { mode, content }, gzip + base64: the deploy workflow hands it to `seedctl install-files` before every run, as it installs seedctl. Empty when there are none. No secret."
+  value       = length(local.host_files) == 0 ? "" : base64gzip(jsonencode(local.host_files))
 }

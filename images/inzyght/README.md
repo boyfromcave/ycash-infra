@@ -12,9 +12,14 @@ make image-inzyght                       # ycash/inzyght:local and ycash/inzyght
 make image-inzyght INZYGHT_COMMIT=<sha>  # another commit (full 40-hex SHA)
 ```
 
+The build argument `INZYGHT_REPO` (default `https://github.com/miodragpop/inzyght`) names another
+GitHub repository to clone, for a fork. The explorer host builds this directory itself, from the
+seeds module's own revision, with both arguments from its config
+([`infra/testnet-seeds/README.md`](../../infra/testnet-seeds/README.md), "The explorer").
+
 ## How it is built
 
-- The build stage clones `https://github.com/miodragpop/inzyght` at `INZYGHT_COMMIT` (a full SHA,
+- The build stage clones `INZYGHT_REPO` (`https://github.com/miodragpop/inzyght`) at `INZYGHT_COMMIT` (a full SHA,
   default `17f505f273c053247b59d20270e4d6a7b74994fb` = version 1.0.9, the workspace's
   `ref/inzyght` pin) and checks the checked-out commit. Nothing from Inzyght is copied into this
   repository and nothing is patched.

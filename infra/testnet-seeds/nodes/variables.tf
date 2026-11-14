@@ -76,6 +76,25 @@ variable "networks" {
     on port + 1, loopback only), `text` an optional coinbase text (yolo --text), `share_ratio` yolo's
     --share-ratio (default 1, the block target; above 1 needs a yolo with the flag). The pool reaches the
     node only through its stock mining RPCs on 127.0.0.1.
+
+    `insight` (default false) builds the node's transaction and address indexes (-txindex
+    -insightexplorer -experimentalfeatures, the image's YCASHD_INSIGHT=1). Set it before the network's
+    first import: turning it on later costs a reindex. `zmq` (default null = off) is a port: the node
+    publishes hashblock and hashtx there (on 127.0.0.1, or on the explorer's internal network when the
+    network has an explorer), from the end of the prefix import on.
+
+    `explorer` (default none) runs a public block explorer beside that network's node (README.md,
+    "The explorer"): Inzyght, PostgreSQL and a TLS proxy (Caddy), the same four-service shape as
+    explorer/compose.yaml. It needs `insight = true`; `zmq` defaults to 28332 for it. `hostname` is the
+    public name the proxy obtains a Let's Encrypt certificate for (its A record must point at the
+    host's address; the optional certificate contact is var.explorer_acme_email); `tls` (default
+    true; false = plain HTTP on port 80, for a test without a name). The Inzyght image is either `image` (a published image by digest) or `build` = { repo,
+    commit, jobs }: the host builds images/inzyght/Dockerfile itself (from this module's revision,
+    delivered by the deploy workflow) against that repository at that full commit, and runs the
+    locally built tag; this is the mode while Inzyght has no licence (no published image).
+    `postgres_image` and `proxy_image` by digest. `threads`, `mem_limit_mb` and `log_level` (INFO, WARN
+    or ERROR; DEBUG would log the database password) tune Inzyght; `pg_shared_buffers_mb` PostgreSQL.
+    One explorer per host (it owns ports 80 and 443), never beside a pool.
   EOT
   type = map(object({
     profile    = string
@@ -89,6 +108,21 @@ variable "networks" {
       port        = optional(number, 3333)
       text        = optional(string, "")
       share_ratio = optional(number, 1)
+    }))
+    insight = optional(bool, false)
+    zmq     = optional(number)
+    explorer = optional(object({
+      hostname       = string
+      tls            = optional(bool, true)
+      image          = optional(string)
+      build          = optional(object({ repo = string, commit = string, jobs = optional(number, 2) }))
+      postgres_image = string
+      proxy_image    = string
+      threads        = optional(number, 4)
+      mem_limit_mb   = optional(number, 768)
+      log_level      = optional(string, "INFO")
+      # PostgreSQL's shared_buffers, MiB (Inzyght's pg_tune.sh value for a small host)
+      pg_shared_buffers_mb = optional(number, 256)
     }))
   }))
   default = {
@@ -125,6 +159,40 @@ variable "networks" {
   validation {
     condition     = length(distinct([for k, n in var.networks : n.pool.port if n.enabled && n.pool != null])) == length([for k, n in var.networks : k if n.enabled && n.pool != null])
     error_message = "networks: two pools share a stratum port."
+  }
+  validation {
+    condition = alltrue([for k, n in var.networks : n.zmq == null ? true : (
+      n.zmq >= 1024 && n.zmq <= 65535 && floor(n.zmq) == n.zmq &&
+      !contains([18832, 18833, 18932, 18933, 19032, 19033, 8832, 8833], n.zmq)
+    )])
+    error_message = "networks: zmq is a port from 1024 to 65535 clear of every node port (null = off)."
+  }
+  validation {
+    condition = alltrue([for k, n in var.networks : n.explorer == null ? true : (
+      n.insight && n.pool == null &&
+      can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", n.explorer.hostname)) &&
+      (n.explorer.image == null) != (n.explorer.build == null) &&
+      (n.explorer.image == null || can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", coalesce(n.explorer.image, "-")))) &&
+      can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", n.explorer.postgres_image)) &&
+      can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", n.explorer.proxy_image)) &&
+      contains(["INFO", "WARN", "ERROR"], n.explorer.log_level) &&
+      n.explorer.threads >= 1 && n.explorer.threads <= 64 && floor(n.explorer.threads) == n.explorer.threads &&
+      n.explorer.mem_limit_mb >= 256 && n.explorer.mem_limit_mb <= 65536 && floor(n.explorer.mem_limit_mb) == n.explorer.mem_limit_mb &&
+      n.explorer.pg_shared_buffers_mb >= 32 && n.explorer.pg_shared_buffers_mb <= 16384 && floor(n.explorer.pg_shared_buffers_mb) == n.explorer.pg_shared_buffers_mb
+    )])
+    error_message = "networks: an explorer needs insight = true and no pool; hostname a lowercase DNS name; exactly one of image (by digest) and build; postgres_image and proxy_image by digest; log_level INFO, WARN or ERROR; threads 1-64, mem_limit_mb 256-65536, pg_shared_buffers_mb 32-16384, whole numbers."
+  }
+  validation {
+    condition = alltrue([for k, n in var.networks : try(n.explorer.build, null) == null ? true : (
+      can(regex("^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", n.explorer.build.repo)) &&
+      can(regex("^[0-9a-f]{40}$", n.explorer.build.commit)) &&
+      n.explorer.build.jobs >= 1 && n.explorer.build.jobs <= 16 && floor(n.explorer.build.jobs) == n.explorer.build.jobs
+    )])
+    error_message = "networks: explorer.build: repo https://github.com/<owner>/<repo>, commit a full 40-hex SHA, jobs a whole number from 1 to 16."
+  }
+  validation {
+    condition     = length([for k, n in var.networks : k if n.enabled && n.explorer != null]) <= 1
+    error_message = "networks: one explorer per host (it owns ports 80 and 443)."
   }
   validation {
     condition     = length([for k, n in var.networks : k if n.enabled]) >= 1
@@ -209,6 +277,27 @@ variable "pool_ingress_cidrs" {
   validation {
     condition     = alltrue([for c in var.pool_ingress_cidrs : can(cidrhost(c, 0))])
     error_message = "pool_ingress_cidrs: IPv4 CIDRs."
+  }
+}
+
+variable "explorer_ingress_cidrs" {
+  description = "Who may reach a network's explorer (networks.<key>.explorer) on ports 443 and 80 (80 for the Let's Encrypt HTTP-01 challenge and the redirect to HTTPS). A public explorer: everyone. Only used where a network has an explorer; nothing is opened without one."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+  validation {
+    condition     = alltrue([for c in var.explorer_ingress_cidrs : can(cidrhost(c, 0))])
+    error_message = "explorer_ingress_cidrs: IPv4 CIDRs."
+  }
+}
+
+variable "explorer_acme_email" {
+  description = "The contact an explorer's proxy gives Let's Encrypt for its certificate (optional; empty = none). Pass it from a secret, never commit it. Sensitive: it reaches only the network configs (seedctl renders it into the host's Caddyfile), never a plan line or another output."
+  type        = string
+  default     = ""
+  sensitive   = true
+  validation {
+    condition     = can(regex("^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+)?$", var.explorer_acme_email))
+    error_message = "explorer_acme_email: empty or an e-mail address."
   }
 }
 

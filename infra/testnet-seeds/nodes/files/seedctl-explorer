@@ -1,0 +1,452 @@
+#!/bin/bash
+# seedctl-explorer: the explorer half of seedctl (sourced by seedctl, never run by itself). A network
+# whose config has an `explorer` runs a public block explorer beside its node (README.md, "The
+# explorer"); seedctl's header lists what it renders. Installed beside seedctl by the deploy
+# workflow (the module's host_files, `seedctl install-files`), kept on the data volume for `boot`.
+# shellcheck disable=SC2034  # variables used by seedctl, which sources this file
+# shellcheck disable=SC2154  # D, O, UID_NODE, cfg, die, log: seedctl's
+
+DIGEST_RE='^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$'
+UID_INZYGHT=2005             # the Inzyght image's user (images/inzyght/Dockerfile: useradd --uid 2005)
+UID_PROXY=2006               # Caddy runs as this uid, not root (explorer/compose.yaml)
+# The explorer's compose networks, fixed so the metadata rule, the node's RPC allow list and Inzyght's
+# trusted proxy can name them. One explorer per host (the module refuses two).
+EX_BACKEND=172.31.250        # internal: .10 proxy, .11 node, .12 Inzyght fixed; the others from .128/25
+EX_EDGE=172.31.251           # the node's P2P out and the proxy's published ports
+EX_INZYGHT=$EX_BACKEND.12    # the only address the node's RPC admits (besides its own loopback)
+
+# check_config's explorer half: every value lands in a compose file, an env file or a Caddyfile.
+explorer_check() { # file name
+  jq -e --arg digest "$DIGEST_RE" '
+    (.insight == true) and (.zmq_port != null) and (.pool == null)
+    and (.explorer.hostname | test("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$"))
+    and ((.explorer.acme_email // "") | test("^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+)?$"))
+    and (.explorer.tls | type == "boolean")
+    and ((.explorer.image == null) != (.explorer.build == null))
+    and (.explorer.image == null or (.explorer.image | test($digest)))
+    and (.explorer.build == null or (
+      (.explorer.build.repo | test("^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+      and (.explorer.build.commit | test("^[0-9a-f]{40}$"))
+      and (.explorer.build.context_sha256 | test("^[0-9a-f]{64}$"))
+      and (.explorer.build.jobs | type == "number" and . >= 1 and . <= 16 and . == floor)))
+    and (.explorer.postgres_image | test($digest)) and (.explorer.proxy_image | test($digest))
+    and (.explorer.log_level | test("^(INFO|WARN|ERROR)$"))
+    and ([.explorer.threads, .explorer.mem_limit_mb, .explorer.pg_shared_buffers_mb] | all(type == "number" and . >= 1 and . == floor))
+  ' "$1" >/dev/null || die "the explorer in the config for $2 is not valid"
+}
+
+# apply, after the containers are up: Inzyght applies its schema and waits for the node's RPC; while
+# the prefix is imported only PostgreSQL and the proxy run (prefix-check starts Inzyght).
+explorer_up() { # net
+  local net=$1 f="$D/$1/applied.json"
+  wait_explorer "$net" 600 || die "$net: the explorer did not come up within 10 minutes (docker logs inzyght-$net / postgres-$net / proxy-$net)"
+  if grep -q '^  inzyght:' "$O/net/$net/compose.yaml"; then
+    log "$net explorer up: $(explorer_image "$f"), $(cfg "$f" '.explorer.hostname')"
+    if [ "$(cfg "$f" '.explorer.build != null')" = true ]; then explorer_gc "$(explorer_image "$f")"; fi
+  elif ! explorer_image_ready "$f"; then
+    log "$net explorer: PostgreSQL and the proxy up; Inzyght NOT started, its image is missing: $(explorer_build_reason "$net")"
+  else
+    log "$net explorer: PostgreSQL and the proxy up; Inzyght starts once the prefix is imported (prefix-check, every 10 minutes)"
+  fi
+}
+
+# The node on the explorer's networks instead of host networking, hardened as in
+# explorer/compose.yaml; then the explorer's own services (render_explorer).
+render_explorer_node() { # net file loadblock-flags
+  local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1"
+  cat > "$R/compose.yaml" <<YAML
+name: ycash-$net
+services:
+  ycashd:
+    image: $(cfg "$f" .image)
+    container_name: ycashd-$net
+    restart: unless-stopped
+    user: "$UID_NODE:$UID_NODE"
+    read_only: true
+    tmpfs: ["/tmp", "/srv/ycash"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks:
+      backend: { ipv4_address: "$EX_BACKEND.11" }
+      edge: {}
+    env_file: [$D/$net/rpc.env, $R/node.env]
+    volumes: ["$N:/var/lib/ycash"]
+    mem_limit: 1536m
+    stop_grace_period: 180s
+    logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
+YAML
+  render_explorer "$net" "$f" "$3"
+}
+
+# ---- the explorer (a network's `explorer`) --------------------------------------------------------
+# The containers of an explorer sit on its two compose networks (EX_BACKEND, EX_EDGE), not in host
+# networking, so the instance metadata service's hop limit of 1 already keeps them from an IMDSv2
+# token. A forward rule refuses them the metadata address as well (DOCKER-USER, the chain Docker
+# leaves to the operator; FORWARD where Docker has none). Idempotent; installed before the explorer
+# starts, on every apply, boot and prefix check that renders it.
+explorer_imds_guard() {
+  local c=DOCKER-USER
+  iptables -n -L DOCKER-USER >/dev/null 2>&1 || c=FORWARD
+  iptables -C "$c" -s "$EX_BACKEND.0/23" -d 169.254.169.254/32 -j REJECT 2>/dev/null \
+    || iptables -I "$c" 1 -s "$EX_BACKEND.0/23" -d 169.254.169.254/32 -j REJECT \
+    || die "could not install the metadata rule for the explorer's networks"
+}
+
+# The explorer's secrets, on the data volume, readable by root only (compose reads them; they reach
+# the containers as environment): pg.env (PostgreSQL's superuser and Inzyght's database role, made
+# once: they are baked into the database at its first start) and inzyght.env (Inzyght's copy of the
+# node's RPC credential, and its database password). Never in Terraform, never on a command line.
+explorer_secrets() { # net
+  local E="$D/$1/explorer"
+  mkdir -p "$E"; chmod 0700 "$E"
+  ( umask 077
+    if [ ! -s "$E/pg.env" ]; then
+      printf 'POSTGRES_PASSWORD=%s\nINZYGHT_DB_PASSWORD=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > "$E/pg.env.new"
+      chmod 0400 "$E/pg.env.new"; mv -f "$E/pg.env.new" "$E/pg.env"
+    fi
+    # shellcheck source=/dev/null
+    . "$D/$1/rpc.env"
+    # shellcheck source=/dev/null
+    . "$E/pg.env"
+    printf 'INZYGHT_RPC_USER=%s\nINZYGHT_RPC_PASSWORD=%s\nINZYGHT_PG_PASSWORD=%s\n' \
+      "$YCASHD_RPC_USER" "$YCASHD_RPC_PASSWORD" "$INZYGHT_DB_PASSWORD" > "$E/inzyght.env.new"
+    chmod 0400 "$E/inzyght.env.new"; mv -f "$E/inzyght.env.new" "$E/inzyght.env" )
+}
+
+# The Inzyght image: the published one (explorer.image, by digest), or in build mode the tag this
+# host builds (explorer_build): the commit and the build context's sha256 in the name, so a new
+# commit or a new images/inzyght is a new tag and never reuses an old build.
+explorer_image() { # file
+  local c x
+  if [ "$(cfg "$1" '.explorer.build != null')" = true ]; then
+    c=$(cfg "$1" .explorer.build.commit); x=$(cfg "$1" .explorer.build.context_sha256)
+    echo "ycash-local/inzyght:${c:0:12}-${x:0:12}"
+  else
+    cfg "$1" .explorer.image
+  fi
+}
+
+# compose pull's service list: empty (every service) unless Inzyght's image is built here, which is
+# never pulled.
+pull_services() { # file
+  if [ "$(cfg "$1" '.explorer.build != null')" = true ]; then echo "ycashd postgres proxy"; fi
+  return 0
+}
+
+# Can Inzyght be started? A published image is pulled by compose; a built one must be on the host.
+# render_explorer leaves the service out otherwise, so a missing image never keeps the node down.
+explorer_image_ready() { # file
+  [ "$(cfg "$1" '.explorer.build != null')" = true ] || return 0
+  docker image inspect "$(explorer_image "$1")" >/dev/null 2>&1
+}
+
+# Why the built image is missing (NET/explorer/build-failed, written by explorer_build).
+explorer_build_reason() { # net
+  local r
+  r=$(cat "$D/$1/explorer/build-failed" 2>/dev/null || true)
+  echo "${r:-the image has not been built on this host yet}"
+}
+
+explorer_build_failed() { # net reason: kept for status and apply, logged
+  mkdir -p "$D/$1/explorer"
+  printf '%s at %s\n' "$2" "$(date -u +%FT%TZ)" > "$D/$1/explorer/build-failed"
+  log "$1: the Inzyght image was not built: $2"
+}
+
+# After a build: BuildKit's cache and every other ycash-local/inzyght tag go (the root disk holds the
+# OS, the swap file and the images). An image a container still runs stays until the next pass
+# (explorer_up runs this again once the containers use the new one).
+explorer_gc() { # the image to keep
+  local t
+  docker builder prune -f >/dev/null 2>&1 || true
+  for t in $(docker image ls --format '{{.Repository}}:{{.Tag}}' ycash-local/inzyght 2>/dev/null || true); do
+    [ "$t" = "$1" ] || docker image rm "$t" >/dev/null 2>&1 || true
+  done
+}
+
+# Build mode only, and only when the tag is not on the host yet: build Inzyght from images/inzyght
+# of the module's revision (the context the deploy workflow installs beside seedctl as
+# inzyght-build.json, kept on the data volume so a new instance can build it again at boot), checked
+# against the sha256 in the config, at explorer.build.repo/commit. Inzyght has no licence, so its
+# image is built where it runs and never pushed anywhere. Its dependencies are cloned at pinned
+# commits and the compile runs with no network (the Dockerfile). About 2 GB of memory with 2 jobs.
+# Returns 1 on any failure, with the reason in NET/explorer/build-failed (callers start the rest
+# without Inzyght); every step is checked explicitly, since callers run it in a condition.
+explorer_build() { # net file
+  local net=$1 f=$2 E="$D/$1/explorer" img sha c ok="" dir
+  [ "$(cfg "$f" '.explorer.build != null')" = true ] || return 0
+  img=$(explorer_image "$f") && sha=$(cfg "$f" .explorer.build.context_sha256) || return 1
+  mkdir -p "$E" || return 1
+  if docker image inspect "$img" >/dev/null 2>&1; then rm -f "$E/build-failed"; return 0; fi
+  for c in "$O/inzyght-build.json" "$E/build-context.json"; do
+    [ -s "$c" ] || continue
+    [ "$(sha256sum < "$c" | cut -d' ' -f1)" = "$sha" ] || continue
+    if [ "$c" != "$E/build-context.json" ]; then
+      cp "$c" "$E/build-context.json.new" && mv -f "$E/build-context.json.new" "$E/build-context.json" || return 1
+    fi
+    ok=1; break
+  done
+  if [ -z "$ok" ]; then
+    explorer_build_failed "$net" "no Inzyght build context with sha256 ${sha:0:12} on this host (the deploy workflow installs it with the module's host_files)"
+    return 1
+  fi
+  # BuildKit (buildx) is required: the Dockerfile compiles with RUN --network=none. On a new
+  # instance apt-daily may hold the dpkg lock: wait for it (DPkg::Lock::Timeout) and retry.
+  if ! docker buildx version >/dev/null 2>&1; then
+    log "$net: installing docker-buildx (BuildKit, for the Inzyght build)"
+    export DEBIAN_FRONTEND=noninteractive
+    retry apt-get -o DPkg::Lock::Timeout=600 update -q >/dev/null 2>&1 || true
+    if ! retry apt-get -o DPkg::Lock::Timeout=600 install -y -q --no-install-recommends docker-buildx >/dev/null 2>&1 \
+        || ! docker buildx version >/dev/null 2>&1; then
+      explorer_build_failed "$net" "docker-buildx could not be installed (apt-get install docker-buildx)"
+      return 1
+    fi
+  fi
+  dir=$(mktemp -d) || return 1
+  if ! { jq -j '.Dockerfile' "$E/build-context.json" > "$dir/Dockerfile" \
+      && jq -j '."entrypoint.sh"' "$E/build-context.json" > "$dir/entrypoint.sh" && chmod 0755 "$dir/entrypoint.sh"; }; then
+    rm -rf "$dir"; explorer_build_failed "$net" "the build context could not be unpacked"; return 1
+  fi
+  log "$net: building $img from $(cfg "$f" .explorer.build.repo) at $(cfg "$f" .explorer.build.commit) (log: $E/build.log)"
+  if ! docker build --build-arg INZYGHT_REPO="$(cfg "$f" .explorer.build.repo)" \
+      --build-arg INZYGHT_COMMIT="$(cfg "$f" .explorer.build.commit)" --build-arg JOBS="$(cfg "$f" .explorer.build.jobs)" \
+      --label org.ycash.infra.context="$sha" -t "$img" "$dir" > "$E/build.log" 2>&1; then
+    tail -n 40 "$E/build.log" >&2; rm -rf "$dir"
+    explorer_build_failed "$net" "docker build failed (log: $E/build.log)"
+    return 1
+  fi
+  rm -rf "$dir" "$E/build-failed"
+  log "$net: built $img"
+  explorer_gc "$img"
+}
+
+# The explorer's services after the node's (render): PostgreSQL (its data in NET/explorer/pg on the
+# data volume), Inzyght (not while the prefix waits to be imported: it would index a chain that is
+# still being loaded; prefix-check renders it once the import is done) and the proxy, plus the
+# Caddyfile and PostgreSQL's init script beside the compose file. The same shape as
+# explorer/compose.yaml: backend internal, only the proxy publishes ports.
+render_explorer() { # net file loadblock-flags
+  local net=$1 f=$2 importing=$3 R="$O/net/$1" E="$D/$1/explorer"
+  local host tls email site img pull="" ports dep=""
+  explorer_imds_guard
+  explorer_secrets "$net"
+  host=$(cfg "$f" .explorer.hostname); tls=$(cfg "$f" .explorer.tls); email=$(cfg "$f" '.explorer.acme_email // ""')
+  img=$(explorer_image "$f")
+  [ "$(cfg "$f" '.explorer.build != null')" = true ] && pull=$'\n    pull_policy: never'
+  if [ "$tls" = true ]; then site=$host; ports='["80:80", "443:443"]'; else site=:80; ports='["80:80"]'; fi
+  mkdir -p "$R/postgres-init" "$E/pg" "$E/caddy/data" "$E/caddy/config"
+  # Caddy runs as uid 2006: its data (the certificate) and config directories are handed to it here,
+  # on the host (the stack's one-shot proxy-volumes service does the same for its named volumes)
+  if [ "$(id -u)" = 0 ]; then chown -R "$UID_PROXY:$UID_PROXY" "$E/caddy"; fi
+  { printf '# rendered by seedctl for %s: ycash-infra explorer/Caddyfile, with the site and contact filled in\n{\n\tadmin off\n' "$net"
+    [ -z "$email" ] || printf '\temail %s\n' "$email"
+    cat <<CADDY
+	servers {
+		# HTTP/1.1 and HTTP/2 only: HTTP/3 would need UDP 443, which the security group does not open
+		protocols h1 h2
+		timeouts {
+			# 10 s for the request headers, idle keep-alive closed after 2 minutes; no read/write
+			# timeout, which would cut Inzyght's WebSocket
+			read_header 10s
+			idle 2m
+		}
+	}
+}
+
+$site {
+	# one JSON line per request on stdout (the container log, bounded by its Docker log options)
+	log {
+		output stdout
+		format json
+	}
+	# Inzyght's API is read-only (GET) and its own limit is 1 MB (max_body_size)
+	request_body {
+		max_size 1MB
+	}
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+	# HSTS on HTTPS responses only; one year, this name only
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000"
+	# Caddy replaces any X-Forwarded-For the client sent, so Inzyght, which trusts only this proxy's
+	# address, rate-limits on the real client address. WebSocket (/ws) upgrades pass through.
+	reverse_proxy inzyght:8080
+	# while Inzyght is not up (the prefix import, its first start): a plain page, not a bare 502
+	handle_errors 502 503 504 {
+		respond "This explorer is starting: the node is importing the chain or Inzyght is indexing it. Try again in a few minutes." 503
+	}
+}
+CADDY
+  } > "$R/Caddyfile.new"
+  # it carries the certificate contact: root and Caddy's group only
+  chmod 0640 "$R/Caddyfile.new"
+  if [ "$(id -u)" = 0 ]; then chown "0:$UID_PROXY" "$R/Caddyfile.new"; fi
+  mv -f "$R/Caddyfile.new" "$R/Caddyfile"
+  cat > "$R/postgres-init/10-inzyght.sh" <<'INIT'
+#!/bin/sh
+# Runs once, when the database directory is first initialised (docker-entrypoint-initdb.d): the
+# database Inzyght indexes into, owned by a role without superuser rights (ycash-infra
+# explorer/postgres-init/10-inzyght.sh). Inzyght's entrypoint applies its schema as that role.
+set -eu
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres \
+  -v db="$INZYGHT_DB" -v role="$INZYGHT_DB_USER" -v pass="$INZYGHT_DB_PASSWORD" <<'SQL'
+CREATE ROLE :"role" LOGIN PASSWORD :'pass' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+CREATE DATABASE :"db" OWNER :"role" ENCODING 'UTF8';
+SQL
+INIT
+  chmod 0755 "$R/postgres-init" "$R/postgres-init/10-inzyght.sh"
+  cat >> "$R/compose.yaml" <<YAML
+  postgres:
+    image: $(cfg "$f" .explorer.postgres_image)
+    container_name: postgres-$net
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    # the image's entrypoint fixes the data directory's owner and drops to postgres: these five only
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    env_file: [$E/pg.env]
+    environment: { POSTGRES_USER: postgres, INZYGHT_DB: inzyght, INZYGHT_DB_USER: inzyght }
+    command: ["postgres", "-c", "shared_buffers=$(cfg "$f" .explorer.pg_shared_buffers_mb)MB", "-c", "effective_cache_size=1GB", "-c", "maintenance_work_mem=128MB", "-c", "work_mem=16MB", "-c", "max_wal_size=2GB", "-c", "checkpoint_timeout=15min", "-c", "wal_compression=on", "-c", "synchronous_commit=off"]
+    volumes: ["$E/pg:/var/lib/postgresql/data", "$R/postgres-init:/docker-entrypoint-initdb.d:ro"]
+    networks: [backend]
+    shm_size: 256m
+    mem_limit: 768m
+    stop_grace_period: 60s
+    # over TCP: the first-run initialisation server listens on the Unix socket only
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"], interval: 10s, timeout: 5s, retries: 10 }
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+YAML
+  # Inzyght: not while the prefix is imported, and not without its image (a build that failed)
+  if [ -z "$importing" ] && explorer_image_ready "$f"; then
+    dep=$'\n    depends_on: { inzyght: { condition: service_started } }'
+    cat >> "$R/compose.yaml" <<YAML
+  inzyght:
+    image: $img$pull
+    container_name: inzyght-$net
+    restart: unless-stopped
+    user: "$UID_INZYGHT:$UID_INZYGHT"
+    read_only: true
+    tmpfs: ["/run/inzyght:uid=$UID_INZYGHT,gid=$UID_INZYGHT,mode=0700,size=256m", "/tmp:size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file: [$E/inzyght.env]
+    environment:
+      INZYGHT_RPC_HOST: "$EX_BACKEND.11"
+      INZYGHT_RPC_PORT: "$(cfg "$f" .rpc_port)"
+      INZYGHT_ZMQ_ENDPOINT: "tcp://$EX_BACKEND.11:$(cfg "$f" .zmq_port)"
+      INZYGHT_PG_HOST: postgres
+      INZYGHT_PG_DATABASE: inzyght
+      INZYGHT_PG_USER: inzyght
+      INZYGHT_THREADS: "$(cfg "$f" .explorer.threads)"
+      INZYGHT_LOG_LEVEL: $(cfg "$f" .explorer.log_level)
+      INZYGHT_TRUST_PROXY: "true"
+      INZYGHT_TRUSTED_PROXIES: "$EX_BACKEND.10"
+    networks:
+      backend: { ipv4_address: "$EX_INZYGHT" }
+    depends_on:
+      postgres: { condition: service_healthy }
+      ycashd: { condition: service_started }
+    mem_limit: $(cfg "$f" .explorer.mem_limit_mb)m
+    healthcheck: { test: ["CMD", "perl", "-MIO::Socket::INET", "-e", "exit !IO::Socket::INET->new(q(127.0.0.1:8080))"], interval: 15s, timeout: 5s, retries: 5, start_period: 6h }
+    stop_grace_period: 30s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+YAML
+  fi
+  cat >> "$R/compose.yaml" <<YAML
+  proxy:
+    image: $(cfg "$f" .explorer.proxy_image)
+    container_name: proxy-$net
+    restart: unless-stopped
+    # not root: the binary's file capability needs NET_BIND_SERVICE in the bounding set, the one kept
+    user: "$UID_PROXY:$UID_PROXY"
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    volumes: ["$R/Caddyfile:/etc/caddy/Caddyfile:ro", "$E/caddy/data:/data", "$E/caddy/config:/config"]
+    # TCP only (HTTP/3 is off)
+    ports: $ports
+    networks:
+      backend: { ipv4_address: "$EX_BACKEND.10" }
+      edge: {}$dep
+    mem_limit: 128m
+    stop_grace_period: 10s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+networks:
+  backend:
+    internal: true
+    # the fixed addresses (.10 proxy, .11 node, .12 Inzyght) below the dynamic range, so a recreated container
+    # can never take one
+    ipam: { config: [{ subnet: "$EX_BACKEND.0/24", ip_range: "$EX_BACKEND.128/25" }] }
+  edge:
+    ipam: { config: [{ subnet: "$EX_EDGE.0/24" }] }
+YAML
+}
+
+wait_explorer() { # net seconds: Inzyght healthy (or, while the prefix is imported, PostgreSQL and the proxy up)
+  local i=0 want=inzyght st
+  grep -q '^  inzyght:' "$O/net/$1/compose.yaml" || want=postgres
+  while [ "$i" -lt "$2" ]; do
+    st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$want-$1" 2>/dev/null || true)
+    if [ "$st" = healthy ] && [ "$(docker inspect -f '{{.State.Status}}' "proxy-$1" 2>/dev/null || true)" = running ]; then return 0; fi
+    sleep 5; i=$((i + 5))
+  done
+  return 1
+}
+
+# status's `explorer` field: the three containers, Inzyght's image (and, when a built one is
+# missing, why), the height Inzyght has indexed (from its database), whether the explorer answers
+# HTTPS on this host (through the proxy, for its name) and through its public name (DNS, the Elastic
+# IP, the security group), and `phase`: one line saying where a first start is (a detached deploy's
+# step, the prefix import in percent, the image missing, indexing to a height, serving).
+explorer_status() { # net
+  local f="$D/$1/applied.json" N="$D/$1/node" host tls c st ih here pub img ready=true reason="" blocks last phase job
+  [ "$(cfg "$f" '.explorer != null' 2>/dev/null)" = true ] || { echo null; return 0; }
+  host=$(cfg "$f" .explorer.hostname); tls=$(cfg "$f" .explorer.tls)
+  st='{}'
+  for c in postgres inzyght proxy; do
+    st=$(jq -c --arg k "$c" --arg v "$(docker inspect -f '{{.State.Status}}{{if .State.Health}} {{.State.Health.Status}}{{end}}' "$c-$1" 2>/dev/null || echo absent)" '. + {($k): $v}' <<<"$st")
+  done
+  img=$(docker inspect -f '{{.Config.Image}}' "inzyght-$1" 2>/dev/null || echo -)
+  explorer_image_ready "$f" || { ready=false; reason=$(explorer_build_reason "$1"); }
+  ih=$(docker exec "postgres-$1" psql -U postgres -d inzyght -tAc 'select coalesce(max(height), -1) from blocks' 2>/dev/null | tr -d '[:space:]' || true)
+  [[ "$ih" =~ ^-?[0-9]+$ ]] || ih=null
+  if [ "$tls" = true ]; then
+    here=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$host:443:127.0.0.1" "https://$host/api/v1/version" 2>/dev/null || true)
+    pub=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "https://$host/api/v1/version" 2>/dev/null || true)
+  else
+    here=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1/api/v1/version" 2>/dev/null || true)
+    pub=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://$host/api/v1/version" 2>/dev/null || true)
+  fi
+  blocks=$(cli "$1" getblockcount 2>/dev/null || true); [[ "$blocks" =~ ^[0-9]+$ ]] || blocks=""
+  job=$(job_json)
+  if [ "$(jq -r '.state // ""' <<<"$job")" = running ]; then
+    phase="deploying: $(jq -r '.phase // "starting"' <<<"$job") (since $(jq -r '.phaseSince // .started' <<<"$job"))"
+  elif [ -e "$N/prefix/FRAMED" ] && [ ! -e "$N/prefix/IMPORTED" ]; then
+    last=$(cat "$N/prefix/LAST_HEIGHT" 2>/dev/null || echo 0)
+    if [ -z "$blocks" ] || [ "$last" -le 0 ]; then phase="prefix import: the node is starting"
+    elif [ "$blocks" -ge "$last" ]; then phase="prefix imported (height $blocks): Inzyght starts at the next prefix check (every 10 minutes)"
+    else phase="prefix import: $blocks of $last ($((blocks * 100 / last)) %)"; fi
+  elif [ "$ready" = false ]; then
+    phase="explorer image missing: $reason"
+  elif [ "$(docker inspect -f '{{.State.Status}}' "inzyght-$1" 2>/dev/null || true)" != running ]; then
+    phase="Inzyght is not running (docker logs inzyght-$1)"
+  elif [ "$ih" = null ] || { [ -n "$blocks" ] && [ "$ih" -lt $((blocks - 1)) ]; }; then
+    phase="indexing: $([ "$ih" = null ] && echo 0 || echo "$ih") of ${blocks:-?}"
+  elif [ "$here" = 200 ]; then
+    phase=serving
+  else
+    phase="starting (the proxy answers $here on this host)"
+  fi
+  jq -cn --argjson c "$st" --arg url "$([ "$tls" = true ] && echo https || echo http)://$host/" --arg img "$img" \
+    --argjson ih "$ih" --arg here "${here:-000}" --arg pub "${pub:-000}" --arg phase "$phase" \
+    --argjson ready "$ready" --arg reason "$reason" \
+    '{phase: $phase, url: $url, image: $img} + $c + {indexedHeight: $ih, httpOnHost: $here, httpPublic: $pub}
+     + (if $ready then {} else {imageMissing: $reason} end)'
+}

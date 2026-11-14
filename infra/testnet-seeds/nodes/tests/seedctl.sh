@@ -4,14 +4,17 @@
 # what it is asked, and stand-ins for the prefix tools. Checks the per-network lifecycle on one
 # host: apply (with the prefix bootstrap and the shared cache), the rendered node arguments and
 # ports, prefix-check, status, reset of one network leaving the other alone, sync stopping a
-# network no longer configured, boot re-rendering from the applied configs, and the refusals.
+# network no longer configured, boot re-rendering from the applied configs, and the refusals; then a
+# pool beside a node, an explorer (insight, ZMQ, PostgreSQL, Inzyght built on the host, proxy; a
+# failed build; install-files refusals), a detached run (and one still holding the lock; status
+# before the first applied.json), and a host without the prefix tools.
 # Run: infra/testnet-seeds/nodes/tests/seedctl.sh   (make seeds-validate runs it)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 SEEDCTL="$here/../files/seedctl"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-export SEEDCTL_ROOT="$T/root" LOG="$T/log" FAKE_HEIGHT=600000
+export SEEDCTL_ROOT="$T/root" LOG="$T/log" FAKE_HEIGHT=600000 FAKE_IMAGES="$T/images"
 O="$SEEDCTL_ROOT/opt/ycash-seed"
 D="$SEEDCTL_ROOT/srv/ycash-data"
 mkdir -p "$O" "$D" "$T/bin"
@@ -40,13 +43,23 @@ case "$1" in
       up) echo "up $(sed -n 's/^name: //p' "$f")" >> "$LOG" ;;
       down) echo "down $(sed -n 's/^name: //p' "$f")" >> "$LOG" ;;
     esac ;;
+  image) case "$2" in
+      inspect) grep -qxF -- "$3" "$FAKE_IMAGES" 2>/dev/null ;;
+      ls) grep -F "${!#}:" "$FAKE_IMAGES" 2>/dev/null || true ;;
+      rm) grep -vxF -- "$3" "$FAKE_IMAGES" > "$FAKE_IMAGES.new"; mv "$FAKE_IMAGES.new" "$FAKE_IMAGES" ;;
+    esac; exit ;;
+  build) [ -z "${FAKE_BUILD_FAIL:-}" ] || { echo "fake build failure"; exit 1; }
+    for a in "$@"; do last=$a; done; prev=""; for a in "$@"; do [ "$prev" = -t ] && echo "$a" >> "$FAKE_IMAGES"; prev=$a; done
+    [ -s "$last/Dockerfile" ] && [ -x "$last/entrypoint.sh" ] || exit 1 ;;
+  buildx) [ -z "${FAKE_NO_BUILDX:-}" ] || [ -e "$FAKE_IMAGES.buildx" ]; exit ;;
   exec)
+    case "$2" in postgres-*) echo 510796; exit 0 ;; esac
     case "${!#}" in
       getblockcount) echo "$FAKE_HEIGHT" ;;
       getblockchaininfo) echo '{"chain":"test","blocks":1,"headers":1,"verificationprogress":1}' ;;
       getpeerinfo) echo '[{"inbound":true},{"inbound":false}]' ;;
     esac ;;
-  inspect) case "$3" in *Status*) echo running ;; *) echo img ;; esac ;;
+  inspect) case "$3" in *Health*) echo healthy ;; *Status*) echo running ;; *) echo img ;; esac ;;
 esac
 exit 0
 EOF
@@ -54,6 +67,7 @@ cat > "$T/bin/curl" <<'EOF'
 #!/bin/bash
 echo "curl $*" >> "$LOG"
 case "$*" in
+  *api/v1/version*) echo 200; exit 0 ;;
   *127.0.0.1:3334/status*) echo '{"nodeUp":true,"height":510432,"templateAgeSeconds":0,"miners":2,"connections":2,"accepted":1,"rejected":0,"lastSubmitVerdict":"accepted","payout":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","equihash":"192,7","shares":9,"stale":4,"highHash":3,"shareRatio":32,"uptimeSeconds":60}' ;;
   *) exit 7 ;;
 esac
@@ -61,10 +75,28 @@ EOF
 cat > "$T/bin/iptables" <<'EOF'
 #!/bin/bash
 echo "iptables $*" >> "$LOG"
-[ "$1" != -C ] || grep -qF -- "iptables -I OUTPUT 1 ${*:3}" "$LOG"
+[ "$1" != -C ] || grep -qF -- "iptables -I $2 1 ${*:3}" "$LOG"
 EOF
 sed 's/iptables/ip6tables/g' "$T/bin/iptables" > "$T/bin/ip6tables"
-chmod +x "$T/bin/docker" "$T/bin/curl" "$T/bin/iptables" "$T/bin/ip6tables"
+cat > "$T/bin/apt-get" <<'EOF'
+#!/bin/bash
+echo "apt-get $*" >> "$LOG"
+case "$*" in *" install "*docker-buildx*) touch "$FAKE_IMAGES.buildx" ;; esac
+EOF
+# systemd-run: runs the unit's command at once, in the foreground; systemctl: no unit is active
+cat > "$T/bin/systemd-run" <<'EOF'
+#!/bin/bash
+echo "systemd-run $*" >> "$LOG"
+while [ "${1#--}" != "$1" ]; do shift; done
+"$@" 2>>"$LOG.job" || true
+EOF
+# systemctl: no unit is active, unless FAKE_ACTIVE names a file that exists (a detached run going)
+cat > "$T/bin/systemctl" <<'EOF'
+#!/bin/bash
+[ -n "${FAKE_ACTIVE:-}" ] && [ -e "$FAKE_ACTIVE" ] && exit 0
+exit 3
+EOF
+chmod +x "$T/bin/docker" "$T/bin/curl" "$T/bin/iptables" "$T/bin/ip6tables" "$T/bin/apt-get" "$T/bin/systemd-run" "$T/bin/systemctl"
 export PATH="$T/bin:$PATH"
 
 # A config as the module's network_configs output carries it (locals.tf network_config).
@@ -180,4 +212,138 @@ if "$SEEDCTL" apply yb-fast "$BADPOOL" 2>/dev/null; then fail "accepted a shell 
 BADPOOL=$(echo "$POOLED" | base64 -d | jq -c '.pool.image = "ghcr.io/example/yolo:latest"' | b64)
 if "$SEEDCTL" apply yb-fast "$BADPOOL" 2>/dev/null; then fail "accepted a pool image by tag"; fi
 ok "refuses a pool image by tag and a bad payout"
+# 11. an explorer beside fast (the explorer host): the node on the explorer's networks with its
+#     indexes, PostgreSQL and the proxy at once, Inzyght (built on the host from the delivered,
+#     checked build context) and ZMQ only once the prefix is imported; secrets only in 0400 files
+: > "$LOG"; rm -rf "$D/yb-fast" "$O/net/yb-fast"
+CTX='{"Dockerfile":"FROM scratch\n","entrypoint.sh":"#!/bin/sh\n"}'
+printf '%s' "$CTX" > "$T/ctx.json"
+CTXSHA=$(sha256sum < "$T/ctx.json" | cut -d' ' -f1)
+HF=$(jq -cn --rawfile x "$T/ctx.json" --rawfile e "$here/../files/seedctl-explorer" '{"inzyght-build.json": {mode: "0644", content: $x}, "seedctl-explorer": {mode: "0644", content: $e}}')
+printf '%s' "$HF" > "$T/hf.json"
+"$SEEDCTL" install-files "$T/hf.json" 2>/dev/null
+cmp -s "$O/inzyght-build.json" "$T/ctx.json" && cmp -s "$O/seedctl-explorer" "$here/../files/seedctl-explorer" || fail "install-files writes the host files byte for byte"
+cp "$O/seed.env" "$T/seed.env.before"
+for bad in '{"seed.env": {"mode": "0644", "content": "SEED_NAME=evil\n"}}' '{"../x": {"mode": "0644", "content": "x"}}' \
+           '{"frame.py": {"mode": "0644", "content": "x"}, "setup.sh": {"mode": "0755", "content": "x"}}' \
+           '{"frame.py": {"mode": "0777", "content": "x"}}' '{"frame.py\nseed.env": {"mode": "0644", "content": "x"}}'; do
+  printf '%s' "$bad" > "$T/bad.json"
+  if "$SEEDCTL" install-files "$T/bad.json" 2>/dev/null; then fail "install-files accepted $bad"; fi
+done
+cmp -s "$O/seed.env" "$T/seed.env.before" && [ ! -e "$SEEDCTL_ROOT/opt/x" ] && [ ! -e "$O/setup.sh" ] && ! grep -qx x "$O/frame.py" || fail "a refused host file was written"
+ok "install-files: the module's four names only, modes 0644 or 0755, nothing written on a refusal"
+printf 'ycash-local/inzyght:000000000000-000000000000\n' > "$FAKE_IMAGES"   # a stale build
+EXPL=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c --arg s "$CTXSHA" '.insight = true | .zmq_port = 28332 | .extra_args += " -disablewallet" | .explorer = {
+  hostname: "explorer.example.org", acme_email: "ops@example.org", tls: true, image: null,
+  build: {repo: "https://github.com/example/inzyght", commit: "17f505f273c053247b59d20270e4d6a7b74994fb", jobs: 2, context_sha256: $s},
+  postgres_image: "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  proxy_image: "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  threads: 4, mem_limit_mb: 2048, log_level: "INFO", pg_shared_buffers_mb: 256}' | b64)
+"$SEEDCTL" apply yb-fast "$EXPL" 2>"$T/err" || { cat "$T/err"; fail "apply with an explorer"; }
+c="$O/net/yb-fast/compose.yaml"; e="$O/net/yb-fast/node.env"; IMG=ycash-local/inzyght:17f505f273c0-${CTXSHA:0:12}
+grep -qx 'YCASHD_INSIGHT=1' "$e" && grep -qx 'YCASHD_RPC_BIND=0.0.0.0' "$e" && grep -qx 'YCASHD_RPC_ALLOWIP=172.31.250.12' "$e" && ! grep -q zmqpub "$e" && grep -q -- '-loadblock=' "$e" || fail "the node while importing: indexes, RPC for the backend network only, no ZMQ yet: $(cat "$e")"
+! grep -q 'network_mode: host' "$c" && grep -q 'ipv4_address: "172.31.250.11"' "$c" && grep -q 'read_only: true' "$c" && grep -q 'container_name: postgres-yb-fast' "$c" && grep -q 'container_name: proxy-yb-fast' "$c" && ! grep -q 'container_name: inzyght-yb-fast' "$c" || fail "while importing: node, PostgreSQL and proxy, no Inzyght: $(cat "$c")"
+grep -q 'internal: true' "$c" && grep -qF 'ports: ["80:80", "443:443"]' "$c" && [ "$(grep -c 'ports:' "$c")" = 1 ] || fail "backend internal; the proxy publishes 80 and 443, nothing else publishes"
+grep -q "docker build --build-arg INZYGHT_REPO=https://github.com/example/inzyght --build-arg INZYGHT_COMMIT=17f505f273c053247b59d20270e4d6a7b74994fb --build-arg JOBS=2 --label org.ycash.infra.context=$CTXSHA -t $IMG " "$LOG" || fail "Inzyght built from the checked context: $(grep 'docker build' "$LOG")"
+grep -q 'docker compose .* pull -q ycashd postgres proxy' "$LOG" || fail "the built image is never pulled"
+grep -qx 'docker builder prune -f' "$LOG" && grep -qx 'docker image rm ycash-local/inzyght:000000000000-000000000000' "$LOG" && grep -qxF "$IMG" "$FAKE_IMAGES" || fail "after the build: BuildKit's cache pruned, the stale tag removed, the new one kept"
+[ "$(stat -c %a "$O/net/yb-fast/Caddyfile")" = 640 ] && [ "$(stat -c %a "$D/yb-fast/applied.json")" = 600 ] || fail "the Caddyfile (0640) and the config (0600) carry the certificate contact"
+cmp -s "$D/yb-fast/explorer/build-context.json" "$T/ctx.json" && cmp -s "$D/seedctl-explorer" "$here/../files/seedctl-explorer" || fail "the build context and seedctl-explorer are kept on the data volume"
+[ "$(stat -c %a "$D/yb-fast/explorer/pg.env")" = 400 ] && [ "$(stat -c %a "$D/yb-fast/explorer/inzyght.env")" = 400 ] && [ "$(stat -c %a "$D/yb-fast/explorer")" = 700 ] || fail "the explorer's secrets: 0400 in a 0700 directory"
+pgpw=$(sed -n 's/^INZYGHT_DB_PASSWORD=//p' "$D/yb-fast/explorer/pg.env"); pw=$(sed -n 's/^YCASHD_RPC_PASSWORD=//p' "$D/yb-fast/rpc.env")
+grep -qx "INZYGHT_PG_PASSWORD=$pgpw" "$D/yb-fast/explorer/inzyght.env" && grep -qx "INZYGHT_RPC_PASSWORD=$pw" "$D/yb-fast/explorer/inzyght.env" && ! grep -rqF -e "$pgpw" -e "$pw" "$O/net/yb-fast" || fail "Inzyght's credentials only in its env file, never in a rendered file"
+grep -qx 'explorer.example.org {' "$O/net/yb-fast/Caddyfile" && grep -qx '	email ops@example.org' "$O/net/yb-fast/Caddyfile" && grep -q 'reverse_proxy inzyght:8080' "$O/net/yb-fast/Caddyfile" && grep -q 'user: "2006:2006"' "$c" && [ "$(grep -c 'mem_limit:' "$c")" = 3 ] || fail "the Caddyfile: the name, the contact, Inzyght"
+grep -qx 'iptables -I DOCKER-USER 1 -s 172.31.250.0/23 -d 169.254.169.254/32 -j REJECT' "$LOG" || fail "the explorer's networks are refused the metadata service"
+s=$(FAKE_HEIGHT=255123 "$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -r .explorer.phase)" = "prefix import: 255123 of 510247 (49 %)" ] || fail "status during the import: $s"
+ok "an explorer while the prefix imports: node on its networks, PostgreSQL and proxy, Inzyght built, secrets private; status in percent"
+"$SEEDCTL" prefix-check 2>/dev/null
+grep -q -- '-zmqpubhashblock=tcp://172.31.250.11:28332 -zmqpubhashtx=tcp://172.31.250.11:28332' "$e" && ! grep -q loadblock "$e" || fail "ZMQ on the node's backend address after the import: $(grep EXTRA "$e")"
+grep -q 'container_name: inzyght-yb-fast' "$c" && grep -q "image: $IMG" "$c" && grep -q 'pull_policy: never' "$c" && grep -q 'INZYGHT_ZMQ_ENDPOINT: "tcp://172.31.250.11:28332"' "$c" && grep -q 'INZYGHT_TRUSTED_PROXIES: "172.31.250.10"' "$c" && grep -q 'user: "2005:2005"' "$c" && grep -q 'ipv4_address: "172.31.250.12"' "$c" || fail "Inzyght after the import: $(cat "$c")"
+s=$(FAKE_HEIGHT=510796 "$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -c '[.explorer.indexedHeight, .explorer.httpOnHost, .explorer.httpPublic, .explorer.url, .explorer.inzyght, .explorer.phase]')" = '[510796,"200","200","https://explorer.example.org/","healthy","serving"]' ] && [ "$(echo "$s" | jq 'has("job")')" = false ] || fail "status with an explorer: $s"
+[ "$("$SEEDCTL" status yb-fast | jq -r .explorer.phase)" = "indexing: 510796 of 600000" ] || fail "status while Inzyght indexes"
+ok "after the import: ZMQ, Inzyght at its fixed address; status reports the phase, the index height and HTTPS"
+# a build that fails keeps Inzyght down, never the node: the rest starts, apply fails naming it,
+# status says why; the next apply builds and starts it
+: > "$FAKE_IMAGES"; : > "$LOG"
+if FAKE_BUILD_FAIL=1 FAKE_NO_BUILDX=1 "$SEEDCTL" apply yb-fast "$EXPL" 2>"$T/err"; then fail "apply succeeded without the Inzyght image"; fi
+grep -q 'Inzyght is not: docker build failed' "$T/err" && grep -q '^up ycash-yb-fast$' "$LOG" && grep -q 'container_name: ycashd-yb-fast' "$c" && grep -q 'container_name: proxy-yb-fast' "$c" && ! grep -q 'inzyght:' "$c" && ! grep -q 'depends_on: { inzyght' "$c" || fail "a failed build: node, PostgreSQL and proxy up without Inzyght: $(cat "$T/err")"
+grep -qx 'apt-get -o DPkg::Lock::Timeout=600 install -y -q --no-install-recommends docker-buildx' "$LOG" || fail "docker-buildx installed with the dpkg lock wait: $(grep apt-get "$LOG")"
+s=$("$SEEDCTL" status yb-fast)
+echo "$s" | jq -e '(.explorer.phase | startswith("explorer image missing: docker build failed")) and (.explorer.imageMissing | startswith("docker build failed")) and .container == "running"' >/dev/null || fail "status names the missing image: $s"
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$EXPL" 2>"$T/err" || { cat "$T/err"; fail "the next apply builds Inzyght"; }
+grep -q 'container_name: inzyght-yb-fast' "$c" && [ ! -e "$D/yb-fast/explorer/build-failed" ] && [ "$("$SEEDCTL" status yb-fast | jq '.explorer | has("imageMissing")')" = false ] || fail "the image built on the next apply"
+ok "a failed Inzyght build: the node, PostgreSQL and the proxy run, apply and status name it; the next apply recovers"
+# a new instance on the old volume: no image, no seedctl-explorer on the root disk; boot rebuilds from the volume's copies
+rm -rf "$O/net" "$O/seedctl-explorer" "$O/inzyght-build.json"; : > "$FAKE_IMAGES"; : > "$LOG"
+"$SEEDCTL" boot 2>/dev/null
+grep -q "docker build .* -t $IMG " "$LOG" && grep -q 'container_name: inzyght-yb-fast' "$c" || fail "boot on a new instance rebuilds Inzyght and renders the explorer"
+[ "$(grep -n -m1 '^up ycash-yb-fast$' "$LOG" | cut -d: -f1)" -lt "$(grep -n -m1 '^docker build ' "$LOG" | cut -d: -f1)" ] && [ "$(grep -c '^up ycash-yb-fast$' "$LOG")" = 2 ] || fail "boot starts the node before the build, then Inzyght"
+ok "boot on a new instance: the node first, then the image rebuilt from the data volume's copies and Inzyght started"
+touch "$D/yb-fast/explorer/pg/PG_VERSION" "$D/yb-fast/explorer/caddy/data/cert"
+"$SEEDCTL" reset yb-fast "$EXPL" 2>/dev/null
+[ ! -e "$D/yb-fast/explorer/pg/PG_VERSION" ] && [ -e "$D/yb-fast/explorer/caddy/data/cert" ] && grep -qx "INZYGHT_DB_PASSWORD=$pgpw" "$D/yb-fast/explorer/pg.env" || fail "reset: the index goes with the chain; the certificate and the secrets stay"
+ok "reset: the index is wiped with the chain, the certificate kept"
+BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.log_level = "DEBUG"' | b64)
+if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "accepted DEBUG (it logs the database password)"; fi
+BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.hostname = "x\nemail evil"' | b64)
+if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "accepted a newline in the host name"; fi
+BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.build.context_sha256 = "abababababababababababababababababababababababababababababababab"' | b64)
+if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "built from a context that does not match its sha256"; fi
+ok "refuses DEBUG, an injected host name, a build context that does not match"
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null
+grep -q 'network_mode: host' "$c" && ! grep -q postgres "$c" && grep -q 'docker rm -f postgres-yb-fast inzyght-yb-fast proxy-yb-fast' "$LOG" && grep -qx 'YCASHD_INSIGHT=0' "$e" || fail "an explorer removed from the config"
+ok "an explorer removed from the config is removed from the host"
+# 12. detach: the command runs as a transient unit (here at once), status reports it
+: > "$LOG"
+"$SEEDCTL" detach apply yb-fast "$EXPL" 2>/dev/null
+grep -q "^systemd-run --unit=ycash-seedctl-job .* $(readlink -f "$SEEDCTL") job$" "$LOG" && [ ! -e "$D/job.args" ] && grep -q 'container_name: postgres-yb-fast' "$c" || fail "detach runs the apply as ycash-seedctl-job"
+s=$("$SEEDCTL" status yb-fast)
+echo "$s" | jq -e '.job.command == "apply yb-fast" and .job.state == "succeeded" and .job.phase == "done" and (.job.finished | type == "string")' >/dev/null || fail "status reports the detached run: $s"
+[ "$(stat -c %a "$D/job.log")" = 600 ] || fail "the job's log is private"
+BADJ=$(echo "$EXPL" | base64 -d | jq -c '.explorer.log_level = "DEBUG"' | b64)
+"$SEEDCTL" detach apply yb-fast "$BADJ" 2>/dev/null
+s=$("$SEEDCTL" status yb-fast)
+echo "$s" | jq -e '.job.state == "failed" and (.job.message | test("not valid"))' >/dev/null || fail "a failed detached run: $s"
+if "$SEEDCTL" detach stop yb-fast 2>/dev/null; then fail "detach accepted stop"; fi
+ok "detach: apply in the background, its result and phase in status"
+# 12b. a detached run still going (it holds the host lock): status answers at once with its phase,
+#      install-files (a second deploy's first command) refuses at once naming the phase, detach too
+mkdir -p "$SEEDCTL_ROOT/run"
+jq -cn '{command: "apply yb-fast", state: "running", phase: "building the Inzyght image", phaseSince: "2026-11-14T10:00:00Z", started: "2026-11-14T09:58:00Z"}' > "$D/job.json"
+touch "$T/active"; export FAKE_ACTIVE="$T/active"
+flock "$SEEDCTL_ROOT/run/ycash-seedctl.lock" sleep 60 & holder=$!
+sleep 1
+t0=$(date +%s)
+s=$(timeout 20 "$SEEDCTL" status yb-fast) || fail "status during a held lock did not answer"
+echo "$s" | jq -e '.job.state == "running" and .job.phase == "building the Inzyght image"' >/dev/null || fail "status during a detached run: $s"
+if timeout 20 "$SEEDCTL" install-files "$T/hf.json" 2>"$T/err"; then fail "install-files ran during a detached run"; fi
+grep -qF 'a detached run is still going: phase building the Inzyght image (seedctl apply yb-fast, since 2026-11-14T10:00:00Z); run status' "$T/err" || fail "install-files during a detached run: $(cat "$T/err")"
+if timeout 20 "$SEEDCTL" detach apply yb-fast "$EXPL" 2>"$T/err"; then fail "a second detach started"; fi
+grep -qF 'a detached run is still going: phase building the Inzyght image' "$T/err" || fail "detach during a detached run: $(cat "$T/err")"
+[ $(($(date +%s) - t0)) -lt 10 ] || fail "status, install-files and detach waited on the lock"
+kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+ok "a detached run holding the lock: status answers at once with its phase; install-files and detach refuse at once, naming it"
+# 12c. before the first applied.json: status (all) prints the job; after a reboot it is interrupted
+mkdir -p "$T/kept"; for f in "$D"/*/applied.json; do mv "$(dirname "$f")" "$T/kept/"; done
+s=$("$SEEDCTL" status)
+echo "$s" | jq -e '.host == "seed-0" and .job.state == "running" and .job.phase == "building the Inzyght image" and (has("network") | not)' >/dev/null || fail "status all before the first applied.json: $s"
+s=$("$SEEDCTL" status yb-fast)
+echo "$s" | jq -e '.network == "yb-fast" and .container == "running" and .job.state == "running" and (has("explorer") | not)' >/dev/null || fail "status NET before the first applied.json: $s"
+rm -f "$T/active"
+s=$("$SEEDCTL" status)
+echo "$s" | jq -e '.job.state == "interrupted" and .job.phase == "building the Inzyght image"' >/dev/null || fail "status after a reboot: $s"
+"$SEEDCTL" install-files "$T/hf.json" 2>/dev/null || fail "install-files after an interrupted run"
+mv "$T/kept"/* "$D/"; rm -f "$D/job.json"; unset FAKE_ACTIVE
+[ -z "$(SEEDCTL_ROOT="$T/empty" bash -c 'mkdir -p "$SEEDCTL_ROOT/opt/ycash-seed"; cp "$1" "$SEEDCTL_ROOT/opt/ycash-seed/"; "$2" status' x "$O/seed.env" "$SEEDCTL")" ] || fail "a host with no network and no job prints nothing (as before)"
+ok "status before the first applied.json: the job's phase and state, interrupted after a reboot; nothing on a host without a job"
+# 13. a host without the prefix tools (an instance made by this module revision, its root without
+#     the host_files output): an empty datadir refuses at once, nothing is fetched
+rm -f "$O/prefix-restore.sh"; rm -rf "$D/yb-slow" "$D/prefix-cache"; : > "$LOG"
+if "$SEEDCTL" apply yb-slow "$SLOW" 2>"$T/err"; then fail "applied without the prefix tools"; fi
+grep -q 'prefix-restore.sh is missing: the prefix tools come with the module.s host_files output' "$T/err" && ! grep -q '^restore ' "$LOG" || fail "no prefix tools: $(cat "$T/err")"
+ok "no prefix tools on the host: refused at once, with the reason"
 echo "seedctl: all checks passed"

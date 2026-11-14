@@ -15,16 +15,27 @@
 #                              host's verified cache, so a reset downloads nothing twice)
 #   seedctl stop NET           stop NET's container; its data stays
 #   seedctl sync ALL           apply every network in ALL, stop every applied network not in it
-#   seedctl status [NET]       one JSON line per network: container, image, chain, height, peers
+#   seedctl status [NET]       one JSON line per network: container, image, chain, height, peers;
+#                              before the first applied network, one line with the detached job only
 #   seedctl boot               start every applied network from its last applied config (a new
 #                              instance on an old data volume); systemd runs it at boot
 #   seedctl prefix-check       once a network holds the whole prefix, drop its -loadblock flags
 #                              and the framed copies (a systemd timer runs it every 10 minutes)
+#   seedctl install-files F    put the module's host_files (F: the decoded JSON) into /opt/ycash-seed:
+#                              the prefix tools, seedctl-explorer, the Inzyght build context; nothing
+#                              else (an allow-list); the workflow runs it before each change (never
+#                              for status); refused at once while a detached run holds the lock
+#   seedctl detach CMD ARGS    run `seedctl CMD ARGS` (apply, reset or sync) in the background, as
+#                              the transient systemd unit ycash-seedctl-job, and return at once;
+#                              status then reports it (a `job` field: running, its phase, the result)
 #
 # A network whose config has a `pool` also runs yolo (the stratum pool) in the same compose project,
 # container yolo-NET, host networking: stratum on pool.port, its status page on 127.0.0.1:pool.status_port,
 # the node's RPC on 127.0.0.1 through NET/pool.conf (the node's credential, readable by yolo's uid
 # only). apply, reset, stop, sync and boot act on both containers together; status adds a `pool` field.
+#
+# A network whose config has an `explorer` also runs the explorer (PostgreSQL, Inzyght, a TLS proxy)
+# in the same project; that half is seedctl-explorer, beside this file (its header).
 #
 # Layout: /srv/ycash-data (the data volume) holds per network NET/node (the datadir, mounted at
 # /var/lib/ycash), NET/rpc.env (its RPC credential, made here, never leaves the host) and
@@ -69,7 +80,27 @@ check_config() { # file name
       and (.pool.port | type == "number") and (.pool.status_port | type == "number")
       and ((.pool.text // "") | test("^[A-Za-z0-9 ._:/-]{0,60}$"))
       and ((.pool.share_ratio // 1) | type == "number" and . >= 1 and . == floor)))
+    and ((.insight // false) | type == "boolean")
+    and (.zmq_port == null or (.zmq_port | type == "number" and . >= 1024 and . <= 65535 and . == floor))
   ' "$1" >/dev/null || die "config for $2 is not valid"
+  if ex_of "$1"; then need_explorer; explorer_check "$1" "$2"; fi
+}
+
+# seedctl-explorer: from the deploy workflow (install-files; user_data has no room), kept on the data
+# volume for boot.
+ex_of() { [ "$(cfg "$1" '.explorer != null' 2>/dev/null)" = true ]; }   # config file
+need_explorer() {
+  local p
+  [ -z "${EX_LOADED:-}" ] || return 0
+  for p in "$O/seedctl-explorer" "$D/seedctl-explorer"; do
+    [ -s "$p" ] || continue
+    if [ "$p" != "$D/seedctl-explorer" ] && ! cmp -s "$p" "$D/seedctl-explorer"; then
+      cp "$p" "$D/seedctl-explorer.new" && mv -f "$D/seedctl-explorer.new" "$D/seedctl-explorer"
+    fi
+    # shellcheck source=/dev/null
+    . "$p"; EX_LOADED=1; return 0
+  done
+  die "no seedctl-explorer on this host (the deploy workflow installs it)"
 }
 
 decode_to() { # base64 file
@@ -87,11 +118,15 @@ cli() { # net args...: ycash-cli in the network's container, against its own RPC
 }
 
 # Write /opt/ycash-seed/net/NET/{node.env,compose.yaml} from a config file. The -loadblock flags
-# are added while a framed prefix waits to be imported.
+# are added while a framed prefix waits to be imported; ZMQ (zmq_port) only after that. An
+# explorer's node: RPC for its backend network, ZMQ on its backend address (seedctl-explorer).
 render() { # net file
   local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1"
-  local p2p rpc args p lb=""
+  local p2p rpc args p lb="" zmq="" zp ex insight=0 bind=127.0.0.1 allow=127.0.0.1 zb=127.0.0.1
   p2p=$(cfg "$f" .p2p_port); rpc=$(cfg "$f" .rpc_port)
+  ex=$(cfg "$f" '.explorer != null')
+  [ "$(cfg "$f" '.insight // false')" = true ] && insight=1
+  if [ "$ex" = true ]; then need_explorer; bind=0.0.0.0; allow=$EX_INZYGHT; zb=$EX_BACKEND.11; fi
   args="-port=$p2p -externalip=$EXTERNAL_IP $(cfg "$f" .node_args)"
   [ "$(cfg "$f" .dnsseed)" = true ] || args="$args -dnsseed=0"
   for p in $(cfg "$f" '.peers[]'); do
@@ -103,20 +138,25 @@ render() { # net file
       [ -e "$p" ] && lb="$lb -loadblock=/var/lib/ycash/prefix/load/${p##*/}"
     done
   fi
+  zp=$(cfg "$f" '.zmq_port // empty')
+  if [ -n "$zp" ] && [ -z "$lb" ]; then zmq=" -zmqpubhashblock=tcp://$zb:$zp -zmqpubhashtx=tcp://$zb:$zp"; fi
   mkdir -p "$R"
   cat > "$R/node.env" <<ENV
 YCASHD_NETWORK=$(cfg "$f" .network)
 YCASHD_TESTNET_PROFILE=$(cfg "$f" .profile)
-YCASHD_INSIGHT=0
+YCASHD_INSIGHT=$insight
 YCASHD_LISTEN=1
-YCASHD_RPC_BIND=127.0.0.1
-YCASHD_RPC_ALLOWIP=127.0.0.1
+YCASHD_RPC_BIND=$bind
+YCASHD_RPC_ALLOWIP=$allow
 YCASHD_RPC_PORT=$rpc
 YCASHD_RPC_THREADS=4
 YCASHD_RPC_WORKQUEUE=16
-YCASHD_EXTRA_ARGS=$(echo "$args$lb" | tr -s ' ' | sed 's/^ //;s/ $//')
+YCASHD_EXTRA_ARGS=$(echo "$args$lb$zmq" | tr -s ' ' | sed 's/^ //;s/ $//')
 ENV
-  cat > "$R/compose.yaml" <<YAML
+  if [ "$ex" = true ]; then
+    render_explorer_node "$net" "$f" "$lb"
+  else
+    cat > "$R/compose.yaml" <<YAML
 name: ycash-$net
 services:
   ycashd:
@@ -129,6 +169,7 @@ services:
     stop_grace_period: 180s
     logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
 YAML
+  fi
   [ "$(cfg "$f" .pool)" != null ] && render_pool "$net" "$f"
   return 0
 }
@@ -218,6 +259,11 @@ bootstrap() { # net file
     [ "${x##*/}" = prefix ] || other="$other ${x##*/}"
   done
   if [ -n "$other" ]; then log "$net: datadir holds a chain:$other; no bootstrap"; return 0; fi
+  # The prefix tools reach the host with the module's host_files (an instance made by this module
+  # revision has none in its user_data): refuse at once rather than retry a missing script.
+  for x in prefix-restore.sh frame.py; do
+    [ -s "$O/$x" ] || die "$net: $O/$x is missing: the prefix tools come with the module's host_files output, which the deploy workflow installs before every run (the root must export output \"host_files\"; ycash-ops README, bumping the seeds module)"
+  done
   pin=$(cfg "$f" .prefix.sums_sha256)
   pnet=$(cfg "$f" '.prefix.network // "zcash-testnet"')
   # one cache per prefix network: fast's zcash-testnet and slow/legacy's ycash-mainnet live side by side
@@ -248,22 +294,33 @@ wait_rpc() { # net seconds
 }
 
 apply() { # net config-b64 | net - (the config is already in NET/desired.json)
-  local net=$1 N="$D/$1/node" tmp
+  local net=$1 N="$D/$1/node" tmp xb
   valid_name "$net"
   mkdir -p "$D/$net"
   tmp="$D/$net/desired.json"
   [ "$2" = - ] || decode_to "$2" "$tmp"
   check_config "$tmp" "$net"
+  # an explorer's config carries the certificate contact: root only (applied.json keeps the mode)
+  if ex_of "$tmp"; then chmod 0600 "$tmp"; fi
   mkdir -p "$N"
   if [ ! -s "$D/$net/rpc.env" ]; then
     (umask 077; printf 'YCASHD_RPC_USER=seed\nYCASHD_RPC_PASSWORD=%s\n' "$(openssl rand -hex 24)" > "$D/$net/rpc.env")
   fi
+  job_phase "preparing the chain (prefix download and framing when the datadir is empty)"
   bootstrap "$net" "$tmp"
+  # An Inzyght image that does not build keeps Inzyght down, never the node: the rest starts and
+  # apply fails at the end, naming the reason (status shows it too).
+  xb=0
+  if ex_of "$tmp"; then need_explorer; job_phase "building the Inzyght image"; explorer_build "$net" "$tmp" || xb=1; fi
   if [ "$(id -u)" = 0 ]; then chown -R "$UID_NODE:$UID_NODE" "$N"; fi
   render "$net" "$tmp"
-  retry compose "$net" pull -q
+  job_phase "pulling the images"
+  # shellcheck disable=SC2046  # one word per service, none for all of them
+  retry compose "$net" pull -q $(if ex_of "$tmp"; then pull_services "$tmp"; fi)
+  job_phase "starting the containers"
   compose "$net" up -d
   mv "$tmp" "$D/$net/applied.json"
+  job_phase "waiting for the node's RPC"
   if wait_rpc "$net" 900; then
     log "$net up: $(cfg "$D/$net/applied.json" .image), $EXTERNAL_IP:$(cfg "$D/$net/applied.json" .p2p_port)"
   else
@@ -276,6 +333,11 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   else
     docker rm -f "yolo-$net" >/dev/null 2>&1 || true   # a pool removed from the config
   fi
+  if ex_of "$D/$net/applied.json"; then job_phase "waiting for the explorer"; explorer_up "$net"
+  elif [ -d "$D/$net/explorer" ]; then
+    docker rm -f "postgres-$net" "inzyght-$net" "proxy-$net" >/dev/null 2>&1 || true   # an explorer removed from the config
+  fi
+  [ "$xb" = 0 ] || die "$net: the node, PostgreSQL and the proxy are up but Inzyght is not: $(explorer_build_reason "$net") (seedctl status shows it; a deploy retries the build)"
 }
 
 reset() { # net config-b64
@@ -283,8 +345,8 @@ reset() { # net config-b64
   valid_name "$net"
   log "$net: RESET: stopping and deleting its chain"
   if [ -e "$O/net/$net/compose.yaml" ]; then compose "$net" down --timeout 180 || true; fi
-  docker rm -f "ycashd-$net" "yolo-$net" >/dev/null 2>&1 || true
-  rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json"
+  docker rm -f "ycashd-$net" "yolo-$net" "postgres-$net" "inzyght-$net" "proxy-$net" >/dev/null 2>&1 || true
+  rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json" "$D/$net/explorer/pg"
   apply "$net" "$2"
 }
 
@@ -317,12 +379,29 @@ boot() {
   for net in $(applied_nets); do
     render "$net" "$D/$net/applied.json"
     compose "$net" up -d || log "$net: did not start"
+    # A new instance has no locally built Inzyght image: the node, PostgreSQL and the proxy are up
+    # already (render leaves Inzyght out); build the image from the kept context, then start it.
+    if ex_of "$D/$net/applied.json" && ! explorer_image_ready "$D/$net/applied.json"; then
+      if explorer_build "$net" "$D/$net/applied.json"; then
+        render "$net" "$D/$net/applied.json"
+        compose "$net" up -d || log "$net: did not start"
+      else
+        log "$net: the Inzyght image did not build: $(explorer_build_reason "$net")"
+      fi
+    fi
   done
 }
 
 status() { # [net]
-  local nets net st img info peers pool
-  nets=${1:-$(applied_nets)}
+  local nets net st img info peers pool ex job
+  nets=${1:-$(applied_nets || true)}   # (applied_nets fails when there is none)
+  # before a host's first applied.json (a detached first deploy still going, or interrupted by a
+  # reboot): one line with the job, so its phase and state show from the start
+  if [ -z "$nets" ]; then
+    job=$(job_json)
+    [ "$job" = null ] || jq -cn --arg host "$SEED_NAME" --arg ip "$EXTERNAL_IP" --argjson job "$job" '{host: $host, ip: $ip, job: $job}'
+    return 0
+  fi
   for net in $nets; do
     valid_name "$net"
     st=$(docker inspect -f '{{.State.Status}}' "ycashd-$net" 2>/dev/null || echo absent)
@@ -335,10 +414,14 @@ status() { # [net]
         --arg img "$(docker inspect -f '{{.Config.Image}}' "yolo-$net" 2>/dev/null || echo -)" \
         '{container: $st, image: $img} + .' <<<"$pool")
     fi
+    ex=null
+    if ex_of "$D/$net/applied.json"; then ex=$( (need_explorer && explorer_status "$net") 2>/dev/null || echo '{"error": "seedctl-explorer is not on this host"}'); fi
+    job=$(job_json)
     jq -cn --arg host "$SEED_NAME" --arg ip "$EXTERNAL_IP" --arg net "$net" --arg st "$st" --arg img "$img" \
-      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" \
+      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" --argjson ex "$ex" --argjson job "$job" \
       '{host: $host, ip: $ip, network: $net, container: $st, image: $img} + $info + $peers
-       + (if $pool == null then {} else {pool: $pool} end)'
+       + (if $pool == null then {} else {pool: $pool} end) + (if $ex == null then {} else {explorer: $ex} end)
+       + (if $job == null then {} else {job: $job} end)'
   done
 }
 
@@ -358,14 +441,105 @@ prefix_check() {
   done
 }
 
+# The module's host files only (main.tf local.host_files): an allow-list of names, so a payload can
+# never write seed.env, setup.sh, seedctl or anything outside /opt/ycash-seed. Checked whole before
+# anything is written; one file or several per call (the workflow may split them across commands).
+HOST_FILES='["prefix-restore.sh", "frame.py", "seedctl-explorer", "inzyght-build.json"]'
+install_files() { # json: { name: { mode, content } }
+  local k m
+  jq -e --argjson ok "$HOST_FILES" 'type == "object" and length > 0
+    and all(keys[]; . as $k | $ok | index($k) != null)
+    and all(.[]; type == "object" and (.content | type == "string") and (.mode == "0644" or .mode == "0755"))' "$1" >/dev/null \
+    || die "host files: only $(jq -r 'join(", ")' <<<"$HOST_FILES"), each { mode 0644 or 0755, content }"
+  for k in $(jq -r 'keys[]' "$1"); do
+    [[ "$k" =~ ^[a-z][a-z0-9.-]{0,40}$ && "$k" != *..* ]] || die "bad host file name $k"
+    m=$(jq -r --arg k "$k" '.[$k].mode' "$1")
+    jq -j --arg k "$k" '.[$k].content' "$1" > "$O/$k.new"
+    chmod "$m" "$O/$k.new"; mv -f "$O/$k.new" "$O/$k"
+  done
+  log "installed host files: $(jq -r 'keys | join(", ")' "$1")"
+}
+
+# ---- detached runs (seedctl detach): a long first deploy without a waiting workflow runner ------
+JOB_UNIT=ycash-seedctl-job
+job_phase() { # text: the running job's current step (a no-op outside a detached run)
+  [ -n "${SEEDCTL_JOB:-}" ] && [ -s "$D/job.json" ] || return 0
+  { jq -c --arg p "$1" --arg t "$(date -u +%FT%TZ)" '.phase = $p | .phaseSince = $t' "$D/job.json" > "$D/job.json.new" \
+    && mv -f "$D/job.json.new" "$D/job.json"; } || true
+}
+job_write() { # state label phase message
+  jq -cn --arg s "$1" --arg c "$2" --arg p "$3" --arg m "$4" --arg t "$(date -u +%FT%TZ)" \
+    --argjson old "$(cat "$D/job.json" 2>/dev/null || echo '{}')" '
+    {command: $c, state: $s, phase: $p, phaseSince: $t,
+     started: (if $s == "running" then $t else ($old.started // $t) end)}
+    + (if $s == "running" then {} else {finished: $t} end) + (if $m == "" then {} else {message: $m} end)' > "$D/job.json.new"
+  mv -f "$D/job.json.new" "$D/job.json"
+}
+job_json() { # the last detached run, or null; "running" without its unit = interrupted (a reboot)
+  [ -s "$D/job.json" ] || { echo null; return 0; }
+  if [ "$(jq -r .state "$D/job.json" 2>/dev/null)" = running ] && ! systemctl is-active --quiet "$JOB_UNIT" 2>/dev/null; then
+    jq -c '.state = "interrupted"' "$D/job.json"
+  else
+    jq -c . "$D/job.json" 2>/dev/null || echo null
+  fi
+}
+job_busy() { [ "$(job_json | jq -r '.state // ""' 2>/dev/null)" = running ]; }   # a detached run is going
+job_busy_msg() {
+  job_json | jq -r '"a detached run is still going: phase " + (.phase // "?") + " (seedctl " + (.command // "?")
+    + ", since " + (.phaseSince // .started // "?") + "); run status"'
+}
+detach() { # cmd args...
+  local c=${1:-} label
+  case "$c" in
+    apply | reset) [ $# -eq 3 ] || die "usage: seedctl detach $c NET CONFIG"; valid_name "$2"; label="$c $2" ;;
+    sync) [ $# -eq 2 ] || die "usage: seedctl detach sync ALL"; label=sync ;;
+    *) die "detach: apply, reset or sync only" ;;
+  esac
+  job_busy && die "$(job_busy_msg)"
+  mkdir -p "$D"
+  ( umask 077; printf '%s\n' "$@" > "$D/job.args" )
+  job_write running "$label" "starting" ""
+  if ! systemd-run --unit="$JOB_UNIT" --description="Ycash seed: seedctl $label (detached)" --collect --quiet \
+      --property=Type=exec "$SELF" job; then
+    rm -f "$D/job.args"; job_write failed "$label" "" "systemd-run did not start the job"
+    die "systemd-run did not start seedctl $label"
+  fi
+  log "started seedctl $label in the background (unit $JOB_UNIT); seedctl status reports its progress"
+}
+job() { # the unit's body: the stored command as a child seedctl (its own lock and errexit), the result kept
+  local a=() rc=0 label
+  [ -s "$D/job.args" ] || die "job: nothing to run (seedctl detach starts it)"
+  mapfile -t a < "$D/job.args"; rm -f "$D/job.args"
+  label=${a[0]}; [ "${a[0]}" = sync ] || label="${a[0]} ${a[1]}"
+  SEEDCTL_JOB=1 "$SELF" "${a[@]}" > "$D/job.log" 2>&1 || rc=$?
+  chmod 0600 "$D/job.log"
+  cat "$D/job.log" >&2   # the unit's journal too
+  if [ "$rc" = 0 ]; then job_write succeeded "$label" "done" ""; else
+    job_write failed "$label" "$(jq -r '.phase // ""' "$D/job.json" 2>/dev/null || true)" \
+      "$( (grep -h 'ERROR' "$D/job.log" || tail -n 1 "$D/job.log") | tail -n 1 | cut -c1-400)"
+  fi
+  return "$rc"
+}
+
 cmd=${1:-}
 [ -n "$cmd" ] || { sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d'; exit 2; }
 shift
-# One change at a time per host: the timer, a boot and a workflow run never interleave.
-if [ "$cmd" != status ]; then
+# One change at a time per host: the timer, a boot and a workflow run never interleave. (detach
+# and job only start the command, which then takes the lock as a child seedctl; status never takes
+# it.) install-files never waits out a detached run, which holds the lock for up to an hour: it
+# refuses at once, naming the run's phase; held by anything else (the timer, a boot, another
+# workflow run), it waits at most 9 minutes, inside the workflow's 10-minute command timeout.
+SELF=$(readlink -f "$0")
+if [ "$cmd" != status ] && [ "$cmd" != detach ] && [ "$cmd" != job ]; then
   mkdir -p "$R/run"
   exec 9>"$R/run/ycash-seedctl.lock"
-  if [ "$cmd" = prefix-check ]; then flock -n 9 || exit 0; else flock -w 3600 9; fi
+  if [ "$cmd" = prefix-check ]; then flock -n 9 || exit 0
+  elif [ "$cmd" = install-files ]; then
+    if ! flock -n 9; then
+      job_busy && die "$(job_busy_msg)"
+      flock -w 540 9 || die "another seedctl run has held this host's lock for 9 minutes; run status, then try again"
+    fi
+  else flock -w 3600 9; fi
 fi
 case "$cmd" in
   apply)        [ $# -eq 2 ] || die "usage: seedctl apply NET CONFIG"; apply "$1" "$2" ;;
@@ -375,5 +549,8 @@ case "$cmd" in
   status)       status "${1:-}" ;;
   boot)         boot ;;
   prefix-check) prefix_check ;;
+  install-files) [ $# -eq 1 ] || die "usage: seedctl install-files FILE"; install_files "$1" ;;
+  detach)       detach "$@" ;;
+  job)          job ;;
   *)            die "unknown command $cmd" ;;
 esac
