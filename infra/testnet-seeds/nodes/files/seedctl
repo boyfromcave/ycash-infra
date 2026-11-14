@@ -331,7 +331,8 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   else
     docker rm -f "yolo-$net" >/dev/null 2>&1 || true   # a pool removed from the config
   fi
-  if ex_of "$D/$net/applied.json"; then job_phase "waiting for the explorer"; explorer_up "$net"; else
+  if ex_of "$D/$net/applied.json"; then job_phase "waiting for the explorer"; explorer_up "$net"
+  elif [ -d "$D/$net/explorer" ]; then
     docker rm -f "postgres-$net" "inzyght-$net" "proxy-$net" >/dev/null 2>&1 || true   # an explorer removed from the config
   fi
   [ "$xb" = 0 ] || die "$net: the node, PostgreSQL and the proxy are up but Inzyght is not: $(explorer_build_reason "$net") (seedctl status shows it; a deploy retries the build)"
