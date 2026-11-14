@@ -83,6 +83,45 @@ periodic: every snapshot here is either an epoch boundary another tool compares 
    stays, and it reproduces the tarball byte for byte (`snapshot.py pack`, same tools), which the
    recorded `sha256` then confirms.
 
+### `full-insight`: explorers and light-wallet backends
+
+An explorer (Inzyght), lightwalletd-dd's backend and `yindex`'s parity checks need a node with
+the address, spent and transaction indexes: `experimentalfeatures=1`, `insightexplorer=1`,
+`txindex=1`, the set the ycashd image turns on by default (`YCASHD_INSIGHT=1`). Those indexes are
+built from block 0, so turning them on costs a full `-reindex` even on a synced node. A `full-insight`
+bundle carries them (`blocks/insight-index/`, and the transaction index inside `blocks/index/`).
+
+The producer is a node that ran with those three flags from its first block or its last `-reindex`.
+The flavour comes from the capture: `snapshot.py` packs `full-insight` when the clone holds
+`blocks/insight-index/`, and refuses `--flavour full` on such a capture, because its `blocks/index/`
+still records `txindex` and `insightexplorer` and a node restored from it without those flags refuses
+to start. For `full-insight` the offline statement node runs with the same three flags, and
+`statement` also checks that the indexes answer at H (the newest coinbase paying a transparent address,
+through `getrawtransaction`, `getaddressdeltas` and `getaddressfirstlastheight`), recorded under
+`insight_check` in `meta.json`. The statement and manifest fields are unchanged.
+
+```bash
+# the tip of an indexed node: adopt it, wait until it has been synced for 30 minutes, stop, clone, restart
+nohup python3 -I supervise.py --datadir <its datadir> --bin <its bin dir> \
+  --snapdir $WS/wt/.snapshots/ycash-mainnet-insight --heights "" --tip --tip-settle 1800 >> supervise.log 2>&1 &
+python3 -I snapshot.py all --capture $WS/wt/.snapshots/ycash-mainnet-insight/tip-<H> --bin <its bin dir> \
+  --flavour full-insight
+```
+
+**Restoring** (the same as `full`, plus the three flags):
+
+```bash
+# from <base>/main-insight/<H>/ (or main-insight/latest), after checking SHA256SUMS as for full
+mkdir -p <datadir> && tar -xzf ycash6-main-<H>-full-insight.tar.gz -C <datadir> --strip-components=1
+printf 'experimentalfeatures=1\ninsightexplorer=1\ntxindex=1\n' >> <datadir>/ycash.conf
+ycashd -datadir=<datadir>        # no -reindex: it starts at H and syncs the rest from peers
+```
+
+What the bundle does not prove: the insight index is covered by the tree hash (the files are the
+producer's) but by no statement field (no second implementation computes it). It is not consensus
+state: a wrong index shows wrong address history, it cannot make the node accept a block. An
+operator who wants it from the blocks alone runs `-reindex` once, which is what the bundle saves.
+
 ### kogany
 
 kogany's sync-gate driver (W1-Y8) owns the kogany node; nothing here starts it. For a snapshot at H
@@ -122,6 +161,8 @@ Restore a pruned bundle only into a kogany configured `[state.storage_mode.prune
 `publish-s3.sh DIR s3://<bucket>/<prefix>` uploads one verified bundle:
 - `ycash-state/2`: to `<prefix>/main/<H>/`, then `<prefix>/main/latest/manifest.json` when H is the
   newest;
+- `ycash-state/2` `full-insight`: to `<prefix>/main-insight/<H>/` and its own `main-insight/latest/`, so
+  `main/latest` never names a datadir that needs the index flags;
 - `kogany-state/1` and archive `kogany-state/2`: to `<prefix>/kogany-main/<H>/` and `latest-<state_format>/`;
 - pruned `kogany-state/2`: to `<prefix>/kogany-main-pruned/<H>/` and `latest-<state_format>/` there.
 

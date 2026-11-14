@@ -173,6 +173,12 @@ reproducible from the same datadir with the same tools.
 
 **Height.** Any height. The heights captured and why: `bundles/state/mainnet/README.md`.
 
+**Flavour.** v1's `full` and `full-insight`, with v1's meaning. The flavour is the producer's: a capture
+holding `blocks/insight-index/` is packed `full-insight` and never `full` (its `blocks/index/` records the
+`txindex` and `insightexplorer` flags, which a restored node checks at start). A `full-insight` tarball
+holds at least one file under `main/blocks/insight-index/`. The `ycash6` statement for it is taken by
+an offline node with `-experimentalfeatures -insightexplorer -txindex`; its fields are v2's.
+
 **Statements.** At least one statement, and `statement-ycash6.json` is required. A v2 statement may
 add two fields to v1's:
 
@@ -203,7 +209,10 @@ byte-identical over the fields the bundle keeps.
 **Files.** The tarball, `manifest.json`, the statements, `treestate.json`, `SHA256SUMS`, and nothing
 else. Signatures (`*.minisig`) sit beside them and are not listed, as in v1.
 
-**Where it is published.** As v1: `<base>/main/<H>/<file>` and `<base>/main/latest/manifest.json`.
+**Where it is published.** As v1: `<base>/main/<H>/<file>` and `<base>/main/latest/manifest.json`. A
+`full-insight` bundle has its own tree, `<base>/main-insight/<H>/<file>` and
+`<base>/main-insight/latest/manifest.json`, so `main/latest` always names a datadir that starts without
+the index flags.
 `latest` only ever moves to a higher height (`bundles/state/mainnet/publish-s3.sh`).
 
 ## What v2 does not prove

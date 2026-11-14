@@ -138,6 +138,9 @@ def check_tar(path, network, flavour, errors, tree=False, kogany=False, kogany_n
         for d in ("blocks", "chainstate"):
             if f"{network}/{d}" not in {n.rstrip("/") for n in names}:
                 errors.append(f"tar: no {network}/{d}/")
+        if flavour == "full-insight" and not any(n.startswith(f"{network}/blocks/insight-index/") and
+                                                 not n.endswith("/") for n in names):
+            errors.append(f"tar: full-insight without a file under {network}/blocks/insight-index/")
     elif nf_seen != kogany_nf:
         errors.append(f"tar: {nf_seen} non-finalized block file(s), the manifest says {kogany_nf}")
     return th.hexdigest() if th is not None else None

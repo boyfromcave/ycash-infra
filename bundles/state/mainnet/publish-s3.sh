@@ -11,6 +11,9 @@
 #
 # Usage:  publish-s3.sh DIR s3://bucket/prefix
 #   ycash-state/2:   <prefix>/<network>/<H>/<file>         and <prefix>/<network>/latest/manifest.json
+#   ycash-state/2 full-insight:
+#                    <prefix>/<network>-insight/<H>/<file> and <prefix>/<network>-insight/latest/manifest.json
+#                    (its own latest: a full-insight datadir needs -insightexplorer -txindex to start)
 #   kogany-state/1, kogany-state/2 archive:
 #                    <prefix>/kogany-<network>/<H>/<file>  and <prefix>/kogany-<network>/latest-<state_format>/manifest.json
 #   kogany-state/2 pruned:
@@ -29,7 +32,12 @@ python3 -I "$HERE/../verify.py" "$DIR" > /dev/null
 field() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$DIR/manifest.json" "$1"; }
 format=$(field format); network=$(field network); height=$(field height); tarball=$(field tarball)
 case "$format" in
-  ycash-state/2) root="$BASE/$network"; latest="$root/latest/manifest.json" ;;
+  ycash-state/2)
+    case "$(field flavour)" in
+      full-insight) root="$BASE/$network-insight" ;;
+      *) root="$BASE/$network" ;;
+    esac
+    latest="$root/latest/manifest.json" ;;
   kogany-state/1) root="$BASE/kogany-$network"; latest="$root/latest-$(field state_format)/manifest.json" ;;
   kogany-state/2)
     case "$(field storage_mode)" in
