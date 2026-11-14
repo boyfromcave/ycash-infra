@@ -184,8 +184,7 @@ class Mainnet(unittest.TestCase):
         self.rewrite_manifest(verifiers=["other"])
         self.assertTrue(any("statement-ycash6.json is required" in e for e in verify.verify(self.out)))
 
-    def test_publish_order(self):
-        self.build()
+    def published(self):
         log = os.path.join(self.tmp.name, "aws.log")
         fake = os.path.join(self.tmp.name, "aws")
         with open(fake, "w") as f:
@@ -197,11 +196,25 @@ class Mainnet(unittest.TestCase):
                            env=dict(os.environ, AWS=fake), capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(log) as f:
-            dests = [l.split()[-1] for l in f.read().splitlines() if l.startswith("s3 cp") and not l.endswith(" -")]
+            return [l.split()[-1] for l in f.read().splitlines() if l.startswith("s3 cp") and not l.endswith(" -")]
+
+    def test_publish_order(self):
+        self.build()
+        dests = self.published()
         base = "s3://bucket-x/snap/main/570000/"
         self.assertEqual(dests[0], base + "ycash6-main-570000-full.tar.gz")
         self.assertEqual(dests[-3:], [base + "manifest.json", base + "SHA256SUMS",
                                       "s3://bucket-x/snap/main/latest/manifest.json"])
+
+    def test_publish_full_insight_has_its_own_latest(self):
+        self.add_insight()
+        self.build()
+        dests = self.published()
+        base = "s3://bucket-x/snap/main-insight/570000/"
+        self.assertEqual(dests[0], base + "ycash6-main-570000-full-insight.tar.gz")
+        self.assertEqual(dests[-3:], [base + "manifest.json", base + "SHA256SUMS",
+                                      "s3://bucket-x/snap/main-insight/latest/manifest.json"])
+        self.assertFalse(any("/snap/main/" in d for d in dests))
 
     def test_unexpected_file_fails(self):
         self.build()

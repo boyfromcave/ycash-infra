@@ -111,6 +111,7 @@ python3 -I snapshot.py all --capture $WS/wt/.snapshots/ycash-mainnet-insight/tip
 **Restoring** (the same as `full`, plus the three flags):
 
 ```bash
+# from <base>/main-insight/<H>/ (or main-insight/latest), after checking SHA256SUMS as for full
 mkdir -p <datadir> && tar -xzf ycash6-main-<H>-full-insight.tar.gz -C <datadir> --strip-components=1
 printf 'experimentalfeatures=1\ninsightexplorer=1\ntxindex=1\n' >> <datadir>/ycash.conf
 ycashd -datadir=<datadir>        # no -reindex: it starts at H and syncs the rest from peers
@@ -160,6 +161,8 @@ Restore a pruned bundle only into a kogany configured `[state.storage_mode.prune
 `publish-s3.sh DIR s3://<bucket>/<prefix>` uploads one verified bundle:
 - `ycash-state/2`: to `<prefix>/main/<H>/`, then `<prefix>/main/latest/manifest.json` when H is the
   newest;
+- `ycash-state/2` `full-insight`: to `<prefix>/main-insight/<H>/` and its own `main-insight/latest/`, so
+  `main/latest` never names a datadir that needs the index flags;
 - `kogany-state/1` and archive `kogany-state/2`: to `<prefix>/kogany-main/<H>/` and `latest-<state_format>/`;
 - pruned `kogany-state/2`: to `<prefix>/kogany-main-pruned/<H>/` and `latest-<state_format>/` there.
 

@@ -209,7 +209,10 @@ byte-identical over the fields the bundle keeps.
 **Files.** The tarball, `manifest.json`, the statements, `treestate.json`, `SHA256SUMS`, and nothing
 else. Signatures (`*.minisig`) sit beside them and are not listed, as in v1.
 
-**Where it is published.** As v1: `<base>/main/<H>/<file>` and `<base>/main/latest/manifest.json`.
+**Where it is published.** As v1: `<base>/main/<H>/<file>` and `<base>/main/latest/manifest.json`. A
+`full-insight` bundle has its own tree, `<base>/main-insight/<H>/<file>` and
+`<base>/main-insight/latest/manifest.json`, so `main/latest` always names a datadir that starts without
+the index flags.
 `latest` only ever moves to a higher height (`bundles/state/mainnet/publish-s3.sh`).
 
 ## What v2 does not prove
