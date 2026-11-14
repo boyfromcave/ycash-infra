@@ -3,11 +3,32 @@
 #   fastnet-explorer.ycash.team  automatic HTTPS: Caddy obtains and renews a Let's Encrypt
 #                                certificate itself and redirects HTTP to HTTPS (ports 80 and 443
 #                                must reach it from the internet; PROXY_BIND=0.0.0.0)
+# What this proxy limits and what it does not: README.md "Limits".
 {
 	admin off
+	servers {
+		# HTTP/1.1 and HTTP/2 only: HTTP/3 would need UDP 443 published as well (README.md "TLS")
+		protocols h1 h2
+		timeouts {
+			# a client gets 10 s to send its request headers, and an idle keep-alive connection
+			# is closed after 2 minutes; no read/write timeout, which would cut Inzyght's WebSocket
+			read_header 10s
+			idle 2m
+		}
+	}
 }
 
 {$EXPLORER_SITE::80} {
+	# one JSON line per request on stdout: the container log, bounded by the stack's Docker log
+	# options (20 MB x 3 files per container)
+	log {
+		output stdout
+		format json
+	}
+	# Inzyght's API is read-only (GET) and its own limit is 1 MB (max_body_size)
+	request_body {
+		max_size 1MB
+	}
 	encode zstd gzip
 	header {
 		X-Content-Type-Options nosniff
@@ -15,6 +36,10 @@
 		Referrer-Policy strict-origin-when-cross-origin
 		-Server
 	}
+	# HSTS on HTTPS responses only, which exist only when EXPLORER_SITE is a domain (plain-HTTP runs
+	# never send it). One year, this name only: no includeSubDomains, no preload.
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000"
 	# Caddy replaces any X-Forwarded-For the client sent (no trusted_proxies here), so Inzyght, which
 	# trusts only this proxy's address, rate-limits on the real client address. WebSocket (/ws)
 	# upgrades pass through.

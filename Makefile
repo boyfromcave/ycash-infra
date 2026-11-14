@@ -53,7 +53,7 @@ ROLLOUT_TIMEOUT ?= 10m
 KOGANY_CLUSTER ?= ycash-kogany
 KOGANY_VALUES  := values-kind.yaml values-kind-kogany.yaml
 
-.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status image-prefix-frame services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner image-yolo miners-test image-inzyght explorer-up explorer-down explorer-status explorer-logs explorer-psql explorer-wipe
+.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status image-prefix-frame services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner image-yolo miners-test image-inzyght explorer-up explorer-down explorer-status explorer-logs explorer-psql explorer-wipe explorer-wipe-index explorer-lint
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -71,6 +71,7 @@ STAMP_yindex        = images/yindex/Dockerfile
 STAMP_web           = images/web/Dockerfile images/web/nginx.conf bundles/zcash-params/SHA256SUMS
 STAMP_faucet        = images/faucet/Dockerfile images/faucet/faucet.py images/faucet/fetch-params.py images/faucet/index.html images/faucet/app.js images/faucet/testnet.html images/faucet/testnet.js
 STAMP_testnet_status = images/testnet-status/Dockerfile images/testnet-status/probe.py images/testnet-status/status.py images/testnet-status/index.html images/testnet-status/status.js
+STAMP_inzyght       = images/inzyght/Dockerfile images/inzyght/entrypoint.sh
 # ALLOW_STALE_IMAGES=1 (every image) or =ycashd,lightwalletd (by name): kind-load warns about a stale
 # image instead of failing (e.g. a node image built before stamps from an unchanged Dockerfile)
 ALLOW_STALE_IMAGES ?=
@@ -272,7 +273,7 @@ lint-kogany: ## the kogany backend renders (nodeLine kogany, render-only): helm 
 	helm template $(RELEASE) $(CHART) -f $(CHART)/values-kind.yaml -f $(CHART)/values-kind-kogany.yaml | kubeconform -strict -summary $(KUBECONFORM_SCHEMAS)
 	scripts/tests/test-kogany-render.sh
 
-lint: lint-testnet lint-kogany ## helm lint + image pins + kubeconform + go vet
+lint: lint-testnet lint-kogany explorer-lint ## helm lint + image pins + kubeconform + go vet + the explorer stack (explorer-lint)
 	helm lint $(CHART) -f $(CHART)/values-kind.yaml
 	scripts/lint-images.sh
 	helm lint $(CHART) -f $(CHART)/values-eks.yaml $(EKS_LINT_SET)
@@ -372,28 +373,59 @@ EXPLORER_HOST_NODE ?=
 EXPLORER_COMPOSE = docker compose --project-directory explorer --env-file $(EXPLORER_ENV) -f explorer/compose.yaml $(if $(EXPLORER_HOST_NODE),-f explorer/compose.host-node.yaml)
 
 image-inzyght: ## Inzyght, unmodified, from github.com/miodragpop/inzyght at INZYGHT_COMMIT (images/inzyght; local only, never pushed)
-	docker build --platform $(PLATFORM) --build-arg INZYGHT_COMMIT=$(INZYGHT_COMMIT) -t $(REGISTRY)/inzyght:$(shell echo $(INZYGHT_COMMIT) | cut -c1-12) -t $(REGISTRY)/inzyght:local images/inzyght
+	s=$$(scripts/image-stamp.sh hash $(STAMP_inzyght)) && docker build --platform $(PLATFORM) --build-arg INZYGHT_COMMIT=$(INZYGHT_COMMIT) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/inzyght:$(shell echo $(INZYGHT_COMMIT) | cut -c1-12) -t $(REGISTRY)/inzyght:local images/inzyght
 
-explorer-up: ## the explorer stack (explorer/compose.yaml): writes EXPLORER_ENV with new passwords on first use, builds the Inzyght image if missing, starts it all; prints the URL
+# the settings file as the recipes below source it (EXPLORER_ENV may be relative or absolute)
+EXPLORER_ENV_SH = $(abspath $(EXPLORER_ENV))
+
+explorer-up: ## the explorer stack (explorer/compose.yaml): writes EXPLORER_ENV with new passwords on first use, (re)builds the Inzyght image when it is missing or its stamp is stale, starts it all; prints the URL
 	@test "$(EXPLORER_ENV)" != explorer/.env || explorer/env-init.sh
 	@test -f $(EXPLORER_ENV) || { echo "$(EXPLORER_ENV) missing (copy explorer/.env.example and set the passwords)"; exit 1; }
-	@docker image inspect $(REGISTRY)/inzyght:local >/dev/null 2>&1 || $(MAKE) image-inzyght
+	@{ docker image inspect $(REGISTRY)/inzyght:local >/dev/null 2>&1 && scripts/image-stamp.sh check $(REGISTRY)/inzyght:local image-inzyght $(STAMP_inzyght) >/dev/null; } || $(MAKE) image-inzyght
 	$(EXPLORER_COMPOSE) up -d
-	@. ./$(EXPLORER_ENV); echo "explorer: http://$${PROXY_BIND:-127.0.0.1}:$${PROXY_HTTP_PORT:-8090}/ (the first start restores the block prefix and syncs: make explorer-status)"
+	@. "$(EXPLORER_ENV_SH)"; echo "explorer: http://$${PROXY_BIND:-127.0.0.1}:$${PROXY_HTTP_PORT:-8090}/ (the first start restores the block prefix and syncs: make explorer-status)"
 
-explorer-down: ## stop and remove the explorer's containers; the chain and the index stay in their volumes
-	$(EXPLORER_COMPOSE) down
+explorer-down: ## stop and remove the explorer's containers; the chain, the index and the certificates stay in their volumes
+	$(EXPLORER_COMPOSE) --profile bundled-node down
 
-explorer-wipe: ## explorer-down, then delete its volumes too (the node's chain, the PostgreSQL index, the proxy's certificates)
-	$(EXPLORER_COMPOSE) --profile bundled-node down --volumes
+# Deletes the stack's named volumes $(1) (a NODE_DATA / PG_DATA host directory is left to the operator).
+# The proxy's certificates (caddy-data, caddy-config) survive explorer-wipe unless WIPE_CERTS=1: each
+# new certificate counts against Let's Encrypt's limit of 5 duplicate certificates a week.
+WIPE_CERTS ?=
+define explorer_drop_volumes
+	@. "$(EXPLORER_ENV_SH)"; p=$${EXPLORER_PROJECT:-ycash-explorer}; \
+	for v in $(1); do \
+	  case $$v in node-data) d=$${NODE_DATA:-} ;; pg-data) d=$${PG_DATA:-} ;; *) d= ;; esac; \
+	  case "$$d" in */*) echo "  $$v is the host directory $$d: delete it yourself"; continue ;; esac; \
+	  if docker volume inspect "$${p}_$$v" >/dev/null 2>&1; then docker volume rm "$${p}_$$v" >/dev/null && echo "  deleted the volume $${p}_$$v"; fi; \
+	done
+endef
+
+explorer-wipe: ## explorer-down, then delete the node's chain and the PostgreSQL index; the proxy's certificates stay (WIPE_CERTS=1 deletes them too)
+	$(EXPLORER_COMPOSE) --profile bundled-node down
+	$(call explorer_drop_volumes,node-data pg-data $(if $(filter 1,$(WIPE_CERTS)),caddy-data caddy-config))
+
+explorer-wipe-index: ## re-index from scratch: stop Inzyght and PostgreSQL, delete only the index volume (pg-data), start the stack again; the chain and the certificates stay
+	$(EXPLORER_COMPOSE) rm --stop --force inzyght postgres
+	$(call explorer_drop_volumes,pg-data)
+	$(EXPLORER_COMPOSE) up -d
 
 explorer-status: ## containers, the node's height, Inzyght's sync progress
 	@$(EXPLORER_COMPOSE) ps
 	@echo "-- node"; $(EXPLORER_COMPOSE) exec -T node sh -c 'ycash-cli -datadir=/var/lib/ycash -conf=/var/lib/ycash/ycash.conf getblockchaininfo' 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print("  blocks %s headers %s progress %.4f" % (d["blocks"], d["headers"], d["verificationprogress"]))' || echo "  (no node service, or still restoring the prefix: make explorer-logs S=node)"
-	@echo "-- inzyght"; . ./$(EXPLORER_ENV); curl -fsS --max-time 10 "http://$${PROXY_BIND:-127.0.0.1}:$${PROXY_HTTP_PORT:-8090}/api/v1/sync/progress" || echo "  (not answering yet)"; echo
+	@echo "-- inzyght"; . "$(EXPLORER_ENV_SH)"; curl -fsS --max-time 10 "http://$${PROXY_BIND:-127.0.0.1}:$${PROXY_HTTP_PORT:-8090}/api/v1/sync/progress" || echo "  (not answering yet)"; echo
 
 explorer-logs: ## follow the stack's logs (S=<service> for one)
 	$(EXPLORER_COMPOSE) logs -f --tail 100 $(S)
 
 explorer-psql: ## psql into Inzyght's index as its own role
 	$(EXPLORER_COMPOSE) exec postgres sh -c 'psql -U "$$INZYGHT_DB_USER" "$$INZYGHT_DB"'
+
+# The explorer's offline checks (the lint job in ci.yml): its shell scripts, and both Compose
+# variants (the bundled node, the host-node override) resolved with placeholder secrets.
+EXPLORER_LINT_ENV = RPC_USER=ci RPC_PASSWORD=ci PG_SUPERUSER_PASSWORD=ci PG_PASSWORD=ci HOST_RPC_PORT=1 HOST_ZMQ_PORT=1
+EXPLORER_LINT_COMPOSE = env $(EXPLORER_LINT_ENV) docker compose --project-directory explorer --env-file explorer/.env.example -f explorer/compose.yaml
+explorer-lint: ## shellcheck the explorer's scripts; docker compose config -q over explorer/compose.yaml (and with the host-node override), placeholder values
+	shellcheck -s sh images/inzyght/entrypoint.sh explorer/env-init.sh explorer/postgres-init/*.sh
+	$(EXPLORER_LINT_COMPOSE) config -q
+	$(EXPLORER_LINT_COMPOSE) -f explorer/compose.host-node.yaml config -q

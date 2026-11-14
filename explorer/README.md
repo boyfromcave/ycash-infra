@@ -9,10 +9,20 @@ containers are what the `fastnet-explorer.ycash.team` host will run (phase E3).
 make explorer-up       # first run: writes explorer/.env with new passwords, builds the Inzyght image
 make explorer-status   # containers, node height, Inzyght's sync progress
 make explorer-logs     # S=node | postgres | inzyght | proxy for one
-make explorer-down     # stop; the chain and the index stay in their volumes
-make explorer-wipe     # stop and delete the volumes (chain, index, certificates)
-make explorer-psql     # psql into the index
+make explorer-down         # stop; the chain, the index and the certificates stay in their volumes
+make explorer-wipe-index   # re-index: delete only the PostgreSQL index (pg-data) and start again
+make explorer-wipe         # stop and delete the chain and the index; the certificates stay
+make explorer-wipe WIPE_CERTS=1   # ... and the proxy's certificates (caddy-data, caddy-config) too
+make explorer-psql         # psql into the index
+make explorer-lint         # offline: shellcheck the scripts, docker compose config -q (CI runs it)
 ```
+
+What to wipe: a broken or outdated index needs only `explorer-wipe-index` (about 4 minutes to
+re-index yb-fast; the node keeps its chain). `explorer-wipe` costs the 20-minute prefix import as
+well. Keep the certificates unless they are the problem: Let's Encrypt issues at most 5 certificates
+a week for the same name, and every wipe with `WIPE_CERTS=1` on a host with a domain spends one. A
+`NODE_DATA` or `PG_DATA` host directory is never deleted by these targets (they say so; delete it
+yourself).
 
 The explorer is then at <http://127.0.0.1:8090/>.
 
@@ -32,21 +42,33 @@ registry. There is no image-publishing workflow for it until its author has answ
                        ┌──────▼──────┐        ┌────────────┐
                        │   inzyght   ├───────►│  postgres  │  volume pg-data
                        └──────┬──────┘        └────────────┘
-                RPC 18832, ZMQ 28332
+                RPC 18832, ZMQ 28332 (backend only)
                        ┌──────▼──────┐  edge network: P2P out to fastnet-seed.ycash.team:18833
                        │    node     │  ycashd beta2, -txindex -insightexplorer, ZMQ, listen=0
-                       └─────────────┘  volume node-data; RPC also on 127.0.0.1:18872
+                       └─────────────┘  volume node-data
 ```
 
 | Service | Image | Runs as | Notes |
 |---|---|---|---|
-| `node` | `ghcr.io/boyfromcave/ycashd@sha256:70c0a29f…ad340` (6.22.0-beta2, the yb-fast seeds' digest; linux/amd64) | uid 2001, read-only root, no capabilities | `YCASHD_INSIGHT=1`, `YCASHD_LISTEN=0`, ZMQ `hashblock`/`hashtx` on the backend network, `YCASHD_BOOTSTRAP=prefix` |
-| `postgres` | `postgres:17-alpine` (by digest) | the image drops to `postgres` | `postgres-init/10-inzyght.sh` creates the database and a non-superuser owner role on first start; Inzyght's tuning values on the command line |
-| `inzyght` | `ycash/inzyght:local` | uid 2005, read-only root, no capabilities, 2 GB limit | applies its schema on first start; trusts `X-Forwarded-For` only from the proxy's fixed address |
-| `proxy` | `caddy:2.10-alpine` (by digest) | root in the container, every capability dropped except binding low ports, read-only root | the only service with a port meant for browsers |
+| `node` | `ghcr.io/boyfromcave/ycashd@sha256:70c0a29f…ad340` (6.22.0-beta2, the yb-fast seeds' digest; linux/amd64) | uid 2001, read-only root, no capabilities, `NODE_MEM_LIMIT` 1536m | `YCASHD_INSIGHT=1`, `YCASHD_LISTEN=0`, `YCASHD_BOOTSTRAP=prefix`; ZMQ `hashblock`/`hashtx` bound to its backend address (.11); RPC admits 127.0.0.1 and the backend subnet only (`YCASHD_RPC_ALLOWIP`) |
+| `postgres` | `postgres:17-alpine` (by digest) | starts as root, drops to `postgres`; only CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID kept; `PG_MEM_LIMIT` 768m | `postgres-init/10-inzyght.sh` creates the database and a non-superuser owner role on first start; Inzyght's tuning values on the command line; 60 s to stop cleanly |
+| `inzyght` | `ycash/inzyght:local` | uid 2005, read-only root, no capabilities, `INZYGHT_MEM_LIMIT` 768m | checks (and repairs) its schema on every start; trusts `X-Forwarded-For` only from the proxy's fixed address |
+| `proxy-volumes` | `caddy:2.10-alpine` | root, CHOWN and DAC_READ_SEARCH only, no network | one shot before the proxy: hands the certificate volumes to uid 2006 |
+| `proxy` | `caddy:2.10-alpine` (by digest) | uid 2006, read-only root, every capability dropped except NET_BIND_SERVICE (the image's `caddy` binary carries it as a file capability and cannot be exec'd without it), `PROXY_MEM_LIMIT` 128m | the only service with published ports |
 
-Bindings: the proxy publishes on `PROXY_BIND` (127.0.0.1 by default); the node's RPC is published on
-127.0.0.1 only, for inspection; PostgreSQL and Inzyght publish nothing.
+Bindings: the proxy publishes on `PROXY_BIND` (127.0.0.1 by default); nothing else publishes a port.
+The node's RPC is for Inzyght and for `docker compose exec node ycash-cli …` (what `make
+explorer-status` uses). On the backend network the proxy (.10) and the node (.11) have fixed
+addresses; every other container takes one from the upper half (.128/25), so recreating containers
+in any order never collides with them.
+
+**Memory:** every service has a `mem_limit`; the defaults (about 3.2 GiB together) are for a 4 GiB
+host. `YCASHD_DBCACHE` (512 MB) stays well under the node's limit.
+
+**Logs:** every container logs to Docker's `json-file` driver, 20 MB × 3 files each. The proxy writes
+one JSON access-log line per request to stdout (client address, method, URI, status, duration);
+Inzyght writes to stdout only (its `inzyght.log` is `/dev/null`, and Drogon's own log goes to stdout
+at WARN, so no rotated files collect in its 256 MB tmpfs).
 
 ## First start (yb-fast)
 
@@ -79,12 +101,38 @@ there lets it sync past the prefix during the import, which fails the restore.
   itself (HTTP-01 on port 80), renews it, redirects HTTP to HTTPS, and keeps the certificate in the
   `caddy-data` volume. The host must then publish 80 and 443 to the internet: `PROXY_BIND=0.0.0.0`,
   `PROXY_HTTP_PORT=80`, `PROXY_HTTPS_PORT=443`, and the name's A record must point at the host.
+  HTTPS responses carry `Strict-Transport-Security: max-age=31536000` (this name only, no preload);
+  plain-HTTP runs never send it.
+
+HTTP/3 is off (`protocols h1 h2`): it would need UDP 443 published and opened as well, for no gain
+an explorer needs. Browsers use HTTP/2 over TCP 443.
+
+## Limits
+
+What the stack limits without a Caddy plugin:
+
+- **Request size and slow clients:** request bodies over 1 MB are refused (Inzyght's API is
+  read-only), request headers must arrive within 10 s, idle keep-alive connections close after 2 min.
+  There is no read or write timeout, which would cut Inzyght's WebSocket.
+- **Request rate per client:** Inzyght's own per-IP limiter (`INZYGHT_API_MAX_REQUESTS` 120 a
+  minute for the API, `INZYGHT_ADDRESS_MAX_REQUESTS` 20 a minute for address lookups), keyed on the
+  real client address (the proxy sets `X-Forwarded-For`, Inzyght trusts it only from the proxy).
+- **Memory:** each container's `mem_limit`.
+
+What it does not limit: concurrent connections per client, request rate at the proxy itself, and
+static files and `/ws` (outside Inzyght's API limiter). Stock Caddy has no connection or rate limit
+directive (those are third-party plugins and would need a custom Caddy build, which this stack
+avoids). If abuse appears, the answer is a CDN or a filtering front (for example CloudFront with AWS
+WAF rate rules) in front of the host, not a bigger proxy here.
 
 ## Outside calls
 
 - Inzyght's network page sends the node's peer IP addresses to `http://ip-api.com/batch`. The URL is
   hard-coded and has no switch. Here Inzyght sits only on the internal `backend` network, so the call
   cannot leave the host (it fails and the peer map stays empty). Nothing else in Inzyght needs egress.
+- The API itself publishes the node's peers: `/api/v1/network/peers` returns each connected peer's
+  IP address and port (from `getpeerinfo`). Accepted for the testnet (its peers are the project's
+  seeds); reconsider before a mainnet explorer.
 - The frontend loads its JavaScript and CSS libraries from `cdn.jsdelivr.net`, `cdn.datatables.net`
   and `code.jquery.com` in the visitor's browser. Left as is; the plan (EX-7) serves them from the
   host later.
@@ -102,11 +150,34 @@ HOST_ZMQ_PORT=<its zmqpubhashblock port>
 make explorer-up EXPLORER_HOST_NODE=1
 ```
 
-The host node needs `-experimentalfeatures -insightexplorer -txindex` from its first sync,
-`-zmqpubhashblock` and `-zmqpubhashtx` on `tcp://127.0.0.1:<port>`, and RPC on 127.0.0.1. Inzyght then
-needs a route to the host, so it also joins the `edge` network; its HTTP client is pointed at a
-proxy address that refuses connections (`http_proxy`, with the node exempt), which keeps the
-peer-location call from leaving.
+This is a development aid; the public host runs the bundled node. The host node needs
+`-experimentalfeatures -insightexplorer -txindex` from its first sync and `-zmqpubhashblock` /
+`-zmqpubhashtx`. Where it listens depends on the engine:
+
+- **Docker Desktop (macOS, Windows):** `host.docker.internal` reaches the host's loopback, so
+  `rpcbind=127.0.0.1`, `rpcallowip=127.0.0.1` and `zmqpubhashblock=tcp://127.0.0.1:<port>` (same for
+  `zmqpubhashtx`) work.
+- **Linux:** `host-gateway` resolves to the `docker0` bridge address (`ip -4 addr show docker0`,
+  usually 172.17.0.1), not to the loopback, so a node on 127.0.0.1 is unreachable from the
+  container. Inzyght's connections arrive from its address on the stack's `edge` network. The node
+  needs, in `ycash.conf`:
+
+  ```
+  rpcbind=127.0.0.1
+  rpcbind=172.17.0.1                 # the docker0 address (docker0 must exist before ycashd starts)
+  rpcallowip=127.0.0.1
+  rpcallowip=172.16.0.0/12           # Docker's bridge networks; or exactly the edge subnet:
+                                     #   docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' ycash-explorer_edge
+  zmqpubhashblock=tcp://172.17.0.1:<port>
+  zmqpubhashtx=tcp://172.17.0.1:<port>
+  ```
+
+  Do not bind 0.0.0.0 on a host with a public interface. A host firewall (ufw, firewalld) may drop
+  container-to-host traffic; then allow the edge subnet to the RPC and ZMQ ports on `docker0`.
+
+Inzyght then needs a route to the host, so it also joins the `edge` network; its HTTP client is
+pointed at a proxy address that refuses connections (`http_proxy`, with the node exempt), which
+keeps the peer-location call from leaving.
 
 ## A second stack
 

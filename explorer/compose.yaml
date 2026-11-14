@@ -5,8 +5,14 @@
 # that is what keeps Inzyght's peer-location lookup (http://ip-api.com/batch, hard-coded) from
 # leaving the host. The node and the proxy also sit on `edge`, the node for its outbound P2P
 # connections and the proxy for the published port (and, with a domain, for Let's Encrypt).
-# Only the proxy publishes a port for the browser; the node's RPC is also published on 127.0.0.1 for
-# inspection (never on another interface). PostgreSQL publishes nothing: `make explorer-psql`.
+# Only the proxy publishes ports. The node's RPC and ZMQ answer on the backend network only (RPC
+# from 127.0.0.1 and the backend subnet, ZMQ bound to the node's backend address); inspect it with
+# `docker compose exec node ycash-cli ...` (make explorer-status). PostgreSQL: `make explorer-psql`.
+#
+# Addresses on `backend`: the proxy (.10) and the node (.11) are fixed; every other container gets
+# one from the upper half (.128/25, ip_range), so a recreated container can never take a fixed one.
+#
+# Memory: every service has a mem_limit (*_MEM_LIMIT); the defaults fit a 4 GiB host (README.md).
 name: ${EXPLORER_PROJECT:-ycash-explorer}
 
 x-hardening: &hardening
@@ -33,6 +39,9 @@ services:
       YCASHD_RPC_USER: ${RPC_USER:?run make explorer-up (it writes .env)}
       YCASHD_RPC_PASSWORD: ${RPC_PASSWORD:?run make explorer-up (it writes .env)}
       YCASHD_RPC_PORT: "${YCASHD_RPC_PORT:-18832}"
+      # RPC from the container itself (the healthcheck, make explorer-status) and the backend network
+      # (Inzyght); nothing else reaches it (the image's default also admits every private range)
+      YCASHD_RPC_ALLOWIP: 127.0.0.1 ${BACKEND_PREFIX:-172.31.250}.0/24
       # -txindex -insightexplorer -experimentalfeatures, before the first import (adding them later
       # costs a reindex)
       YCASHD_INSIGHT: "1"
@@ -46,20 +55,21 @@ services:
         dnsseed=0
         disablewallet=1
         maxtipage=999999999
-        dbcache=${YCASHD_DBCACHE:-1024}
-      # The seeds, and ZMQ for Inzyght's live updates (hashblock, hashtx) on the backend network.
-      # These go on the command line, NOT in ycash.conf: ycash-bootstrap's offline import node reads
-      # ycash.conf too, and an addnode there lets it fetch blocks past the prefix while it imports,
-      # which fails the restore ("the node is at N, above the bundle's 510247").
+        dbcache=${YCASHD_DBCACHE:-512}
+      # The seeds, and ZMQ for Inzyght's live updates (hashblock, hashtx), bound to the node's
+      # backend address only. These go on the command line, NOT in ycash.conf: ycash-bootstrap's
+      # offline import node reads ycash.conf too, and an addnode there lets it fetch blocks past the
+      # prefix while it imports, which fails the restore ("the node is at N, above the bundle's 510247").
       YCASHD_EXTRA_ARGS: >-
         -addnode=${YCASHD_ADDNODE:-fastnet-seed.ycash.team:18833}
-        -zmqpubhashblock=tcp://0.0.0.0:${ZMQ_PORT:-28332}
-        -zmqpubhashtx=tcp://0.0.0.0:${ZMQ_PORT:-28332}
+        -zmqpubhashblock=tcp://${BACKEND_PREFIX:-172.31.250}.11:${ZMQ_PORT:-28332}
+        -zmqpubhashtx=tcp://${BACKEND_PREFIX:-172.31.250}.11:${ZMQ_PORT:-28332}
     volumes:
       - ${NODE_DATA:-node-data}:/var/lib/ycash
-    ports:
-      - "127.0.0.1:${NODE_RPC_HOST_PORT:-18872}:${YCASHD_RPC_PORT:-18832}"
-    networks: [backend, edge]
+    networks:
+      backend: { ipv4_address: "${BACKEND_PREFIX:-172.31.250}.11" }
+      edge: {}
+    mem_limit: ${NODE_MEM_LIMIT:-1536m}
     stop_grace_period: 120s
     healthcheck:
       test: ["CMD-SHELL", "ycash-cli -datadir=/var/lib/ycash -conf=/var/lib/ycash/ycash.conf getblockcount >/dev/null 2>&1"]
@@ -71,6 +81,10 @@ services:
   postgres:
     <<: *hardening
     image: postgres:17-alpine@sha256:d3244e8ce3f165ee3c93d9c4a4b1d0fe48b3a89e2287b717fdcbbde92d405065
+    # The image's entrypoint starts as root, fixes the data directory's owner and drops to the
+    # postgres user: that needs these five capabilities and no others.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     environment:
       # the superuser only creates the database and the non-superuser role Inzyght connects as
       # (postgres-init/10-inzyght.sh); Inzyght itself applies its schema as that role
@@ -89,8 +103,13 @@ services:
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
     networks: [backend]
     shm_size: 256m
+    mem_limit: ${PG_MEM_LIMIT:-768m}
+    # a clean shutdown (a checkpoint) instead of crash recovery on the next start
+    stop_grace_period: 60s
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      # over TCP: the image's first-run initialisation server listens on the Unix socket only, so
+      # this stays unhealthy until the real server is up
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -107,7 +126,7 @@ services:
       INZYGHT_RPC_PORT: "${INZYGHT_RPC_PORT:-18832}"
       INZYGHT_RPC_USER: ${RPC_USER}
       INZYGHT_RPC_PASSWORD: ${RPC_PASSWORD}
-      INZYGHT_ZMQ_ENDPOINT: ${INZYGHT_ZMQ_ENDPOINT:-tcp://node:28332}
+      INZYGHT_ZMQ_ENDPOINT: ${INZYGHT_ZMQ_ENDPOINT:-tcp://node:${ZMQ_PORT:-28332}}
       INZYGHT_PG_HOST: postgres
       INZYGHT_PG_DATABASE: ${PG_DATABASE:-inzyght}
       INZYGHT_PG_USER: ${PG_USER:-inzyght}
@@ -120,19 +139,42 @@ services:
     networks: [backend]
     depends_on:
       postgres: { condition: service_healthy }
-    mem_limit: ${INZYGHT_MEM_LIMIT:-2g}
+    mem_limit: ${INZYGHT_MEM_LIMIT:-768m}
     healthcheck:
+      # "the process serves HTTP", not "the index is caught up" (that is /api/v1/sync/progress). The
+      # entrypoint waits for the node's RPC before it starts Inzyght, which on a first start is the
+      # length of the prefix import: the long start_period keeps that "starting", not "unhealthy".
       test: ["CMD", "perl", "-MIO::Socket::INET", "-e", "exit !IO::Socket::INET->new(q(127.0.0.1:8080))"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 6h
+
+  # One shot before the proxy: the proxy runs as uid 2006, and Docker creates its volumes owned by
+  # root (from the image's /data and /config), so this hands them over and exits.
+  proxy-volumes:
+    <<: *hardening
+    image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_READ_SEARCH]
+    entrypoint: ["chown", "-R", "2006:2006", "/data", "/config"]
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    mem_limit: 64m
 
   proxy:
     <<: *hardening
     # Caddy: plain HTTP when EXPLORER_SITE is ":80" (local); a domain name instead turns on automatic
     # HTTPS (Let's Encrypt, HTTP->HTTPS redirect, renewal). See README.md "TLS".
     image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    # Not root. The image's /usr/bin/caddy carries the file capability cap_net_bind_service, so the
+    # kernel refuses to exec it unless NET_BIND_SERVICE stays in the bounding set: that is the one
+    # capability kept (and it lets Caddy bind 80 and 443).
+    user: "2006:2006"
     read_only: true
     tmpfs: ["/tmp"]
     cap_drop: [ALL]
@@ -143,19 +185,26 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+    # TCP only: the Caddyfile turns HTTP/3 off, so there is no UDP 443 to publish
     ports:
       - "${PROXY_BIND:-127.0.0.1}:${PROXY_HTTP_PORT:-8090}:80"
       - "${PROXY_BIND:-127.0.0.1}:${PROXY_HTTPS_PORT:-8453}:443"
     networks:
       backend: { ipv4_address: "${BACKEND_PREFIX:-172.31.250}.10" }
       edge: {}
-    depends_on: [inzyght]
+    mem_limit: ${PROXY_MEM_LIMIT:-128m}
+    depends_on:
+      proxy-volumes: { condition: service_completed_successfully }
+      inzyght: { condition: service_started }
 
 networks:
   backend:
     internal: true
     ipam:
-      config: [{ subnet: "${BACKEND_PREFIX:-172.31.250}.0/24" }]
+      config:
+        - subnet: "${BACKEND_PREFIX:-172.31.250}.0/24"
+          # dynamic addresses only from the upper half; the fixed ones (.10, .11) are below it
+          ip_range: "${BACKEND_PREFIX:-172.31.250}.128/25"
   edge: {}
 
 volumes:
