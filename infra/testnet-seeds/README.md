@@ -269,13 +269,13 @@ module "explorer" {   # e.g. the operator's testnet-explorer/nodes root, one hos
       insight    = true                        # -txindex -insightexplorer, before the first import
       explorer = {
         hostname       = "<the explorer's name>"   # its A record points at the host's address
-        acme_email     = var.acme_email            # optional; from a secret, never committed
         build          = { repo = "https://github.com/miodragpop/inzyght", commit = "<40-hex sha>" }
         postgres_image = "postgres:17-alpine@sha256:..."
         proxy_image    = "caddy:2.10-alpine@sha256:..."
       }
     }
   }
+  explorer_acme_email = var.acme_email         # optional certificate contact; from a secret, never committed
   prefix = { ... }                             # the same testnet-prefix-v1 pin as the seeds
 }
 ```
@@ -409,8 +409,14 @@ module "nodes" {
   # networks: the default is the three testnets
   prefix = {}   # bootstrap on; each profile's prefix from the chart's values files
 }
-output "network_configs" { value = module.nodes.network_configs }
-output "all_networks_config" { value = module.nodes.all_networks_config }
+output "network_configs" {
+  value     = module.nodes.network_configs
+  sensitive = true
+}
+output "all_networks_config" {
+  value     = module.nodes.all_networks_config
+  sensitive = true
+}
 output "seedctl" { value = module.nodes.seedctl }
 output "host_files" { value = module.nodes.host_files }
 output "instance_ids" {

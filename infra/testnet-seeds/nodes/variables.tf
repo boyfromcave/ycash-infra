@@ -87,9 +87,8 @@ variable "networks" {
     "The explorer"): Inzyght, PostgreSQL and a TLS proxy (Caddy), the same four-service shape as
     explorer/compose.yaml. It needs `insight = true`; `zmq` defaults to 28332 for it. `hostname` is the
     public name the proxy obtains a Let's Encrypt certificate for (its A record must point at the
-    host's address); `acme_email` the optional contact for the certificate authority (pass it from a
-    secret, never commit it); `tls` (default true; false = plain HTTP on port 80, for a test without a
-    name). The Inzyght image is either `image` (a published image by digest) or `build` = { repo,
+    host's address; the optional certificate contact is var.explorer_acme_email); `tls` (default
+    true; false = plain HTTP on port 80, for a test without a name). The Inzyght image is either `image` (a published image by digest) or `build` = { repo,
     commit, jobs }: the host builds images/inzyght/Dockerfile itself (from this module's revision,
     delivered by the deploy workflow) against that repository at that full commit, and runs the
     locally built tag; this is the mode while Inzyght has no licence (no published image).
@@ -114,7 +113,6 @@ variable "networks" {
     zmq     = optional(number)
     explorer = optional(object({
       hostname       = string
-      acme_email     = optional(string, "")
       tls            = optional(bool, true)
       image          = optional(string)
       build          = optional(object({ repo = string, commit = string, jobs = optional(number, 2) }))
@@ -173,7 +171,6 @@ variable "networks" {
     condition = alltrue([for k, n in var.networks : n.explorer == null ? true : (
       n.insight && n.pool == null &&
       can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", n.explorer.hostname)) &&
-      can(regex("^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+)?$", n.explorer.acme_email)) &&
       (n.explorer.image == null) != (n.explorer.build == null) &&
       (n.explorer.image == null || can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", coalesce(n.explorer.image, "-")))) &&
       can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", n.explorer.postgres_image)) &&
@@ -183,7 +180,7 @@ variable "networks" {
       n.explorer.mem_limit_mb >= 256 && n.explorer.mem_limit_mb <= 65536 && floor(n.explorer.mem_limit_mb) == n.explorer.mem_limit_mb &&
       n.explorer.pg_shared_buffers_mb >= 32 && n.explorer.pg_shared_buffers_mb <= 16384 && floor(n.explorer.pg_shared_buffers_mb) == n.explorer.pg_shared_buffers_mb
     )])
-    error_message = "networks: an explorer needs insight = true and no pool; hostname a lowercase DNS name; acme_email empty or an e-mail address; exactly one of image (by digest) and build; postgres_image and proxy_image by digest; log_level INFO, WARN or ERROR; threads 1-64, mem_limit_mb 256-65536, pg_shared_buffers_mb 32-16384, whole numbers."
+    error_message = "networks: an explorer needs insight = true and no pool; hostname a lowercase DNS name; exactly one of image (by digest) and build; postgres_image and proxy_image by digest; log_level INFO, WARN or ERROR; threads 1-64, mem_limit_mb 256-65536, pg_shared_buffers_mb 32-16384, whole numbers."
   }
   validation {
     condition = alltrue([for k, n in var.networks : try(n.explorer.build, null) == null ? true : (
@@ -290,6 +287,17 @@ variable "explorer_ingress_cidrs" {
   validation {
     condition     = alltrue([for c in var.explorer_ingress_cidrs : can(cidrhost(c, 0))])
     error_message = "explorer_ingress_cidrs: IPv4 CIDRs."
+  }
+}
+
+variable "explorer_acme_email" {
+  description = "The contact an explorer's proxy gives Let's Encrypt for its certificate (optional; empty = none). Pass it from a secret, never commit it. Sensitive: it reaches only the network configs (seedctl renders it into the host's Caddyfile), never a plan line or another output."
+  type        = string
+  default     = ""
+  sensitive   = true
+  validation {
+    condition     = can(regex("^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+)?$", var.explorer_acme_email))
+    error_message = "explorer_acme_email: empty or an e-mail address."
   }
 }
 

@@ -102,7 +102,7 @@ locals {
     # The explorer beside this network's node (files/seedctl render_explorer).
     n.explorer == null ? {} : { explorer = {
       hostname             = n.explorer.hostname
-      acme_email           = n.explorer.acme_email
+      acme_email           = var.explorer_acme_email
       tls                  = n.explorer.tls
       image                = n.explorer.image
       build                = n.explorer.build == null ? null : merge(n.explorer.build, { context_sha256 = sha256(local.explorer_build_json) })

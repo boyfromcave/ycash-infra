@@ -240,14 +240,14 @@ run "explorer_host" {
         insight    = true
         explorer = {
           hostname       = "explorer.example.org"
-          acme_email     = "ops@example.org"
           build          = { repo = "https://github.com/example/inzyght", commit = "17f505f273c053247b59d20270e4d6a7b74994fb" }
           postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333"
           proxy_image    = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444"
         }
       }
     }
-    p2p_ingress_cidrs = []
+    p2p_ingress_cidrs   = []
+    explorer_acme_email = "ops@example.org"
   }
   assert {
     condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).insight && jsondecode(base64decode(output.network_configs["yb-fast"])).zmq_port == 28332 && endswith(jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args, "-listen=0 -addnode=fastnet-seed.example.org:18833 -disablewallet")

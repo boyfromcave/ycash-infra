@@ -22,13 +22,16 @@ output "networks" {
 }
 
 output "network_configs" {
-  description = "Per enabled network: the config seedctl applies (`seedctl apply <key> <value>`), base64 of canonical JSON. Holds addresses, ports and image references only, no secret."
+  description = "Per enabled network: the config seedctl applies (`seedctl apply <key> <value>`), base64 of canonical JSON. Holds addresses, ports, image references and an explorer's certificate contact, no secret; sensitive (the caller's root marks it sensitive too)."
   value       = { for k, c in local.network_config : k => base64encode(jsonencode(c)) }
+  # an explorer's certificate contact (var.explorer_acme_email, sensitive) is in it
+  sensitive = true
 }
 
 output "all_networks_config" {
   description = "Every enabled network's config in one value, for `seedctl sync <value>` (it also stops networks no longer listed)."
   value       = base64encode(jsonencode(local.network_config))
+  sensitive   = true
 }
 
 output "seedctl" {
