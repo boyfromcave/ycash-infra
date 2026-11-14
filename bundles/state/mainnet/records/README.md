@@ -11,3 +11,6 @@ The tarballs are not in git:
 
 `kogany/` beside a height holds that height's `kogany-state/1` manifest and sums, when there is one;
 `kogany-pruned/` a pruned `kogany-state/2` bundle's (the tip only, so far).
+
+`tip-<H>-insight/` holds a `full-insight` bundle (transaction and insight explorer indexes), published
+under `main-insight/<H>/`.

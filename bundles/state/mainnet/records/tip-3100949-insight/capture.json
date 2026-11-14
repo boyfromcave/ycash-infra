@@ -1,0 +1,10 @@
+{
+  "blockhash_logged": "000001164ad87f81ce045b4e305eb2df077187f2441544e50df73b0f49baa1df",
+  "clone_seconds": 0.2,
+  "datadir": "$HOME/ycash-explorer/data",
+  "height": 3100949,
+  "method": "stop-rpc-at-tip",
+  "pause_seconds": 0.2,
+  "restarted_at": "2026-11-14T09:19:22Z",
+  "stopped_at": "2026-11-14T09:19:22Z"
+}
