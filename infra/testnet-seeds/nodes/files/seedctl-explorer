@@ -8,9 +8,10 @@
 
 DIGEST_RE='^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$'
 UID_INZYGHT=2005             # the Inzyght image's user (images/inzyght/Dockerfile: useradd --uid 2005)
+UID_PROXY=2006               # Caddy runs as this uid, not root (explorer/compose.yaml)
 # The explorer's compose networks, fixed so the metadata rule, the node's RPC allow list and Inzyght's
 # trusted proxy can name them. One explorer per host (the module refuses two).
-EX_BACKEND=172.31.250        # internal: .10 proxy, .11 node, .12 inzyght, .13 postgres
+EX_BACKEND=172.31.250        # internal: .10 proxy, .11 node fixed; the others from .128/25
 EX_EDGE=172.31.251           # the node's P2P out and the proxy's published ports
 
 # check_config's explorer half: every value lands in a compose file, an env file or a Caddyfile.
@@ -66,6 +67,7 @@ services:
       edge: {}
     env_file: [$D/$net/rpc.env, $R/node.env]
     volumes: ["$N:/var/lib/ycash"]
+    mem_limit: 1536m
     stop_grace_period: 180s
     logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
 YAML
@@ -131,8 +133,8 @@ pull_services() { # file
 # of the module's revision (the context the deploy workflow installs beside seedctl as
 # inzyght-build.json, kept on the data volume so a new instance can build it again at boot), checked
 # against the sha256 in the config, at explorer.build.repo/commit. Inzyght has no licence, so its
-# image is built where it runs and never pushed anywhere. About 2 GB of memory with 2 jobs; 10 to 20
-# minutes on 2 vCPU.
+# image is built where it runs and never pushed anywhere. Its dependencies are cloned at pinned
+# commits and the compile runs with no network (the Dockerfile). About 2 GB of memory with 2 jobs.
 explorer_build() { # net file
   local net=$1 f=$2 E="$D/$1/explorer" img sha c ok="" dir
   [ "$(cfg "$f" '.explorer.build != null')" = true ] || return 0
@@ -150,8 +152,9 @@ explorer_build() { # net file
   jq -j '.Dockerfile' "$E/build-context.json" > "$dir/Dockerfile"
   jq -j '."entrypoint.sh"' "$E/build-context.json" > "$dir/entrypoint.sh"
   chmod 0755 "$dir/entrypoint.sh"
-  docker buildx version >/dev/null 2>&1 || apt-get install -y -q --no-install-recommends docker-buildx >/dev/null 2>&1 \
-    || log "warning: no docker-buildx; Docker's legacy builder builds the image"
+  # BuildKit (buildx) is required: the Dockerfile compiles with RUN --network=none
+  docker buildx version >/dev/null 2>&1 || { apt-get update -q >/dev/null 2>&1 || true; apt-get install -y -q --no-install-recommends docker-buildx >/dev/null 2>&1; } \
+    || die "$net: docker-buildx is needed to build Inzyght (apt-get install docker-buildx)"
   log "$net: building $img from $(cfg "$f" .explorer.build.repo) at $(cfg "$f" .explorer.build.commit) (log: $E/build.log)"
   if ! docker build --build-arg INZYGHT_REPO="$(cfg "$f" .explorer.build.repo)" \
       --build-arg INZYGHT_COMMIT="$(cfg "$f" .explorer.build.commit)" --build-arg JOBS="$(cfg "$f" .explorer.build.jobs)" \
@@ -170,34 +173,56 @@ explorer_build() { # net file
 # explorer/compose.yaml: backend internal, only the proxy publishes ports.
 render_explorer() { # net file loadblock-flags
   local net=$1 f=$2 importing=$3 R="$O/net/$1" E="$D/$1/explorer"
-  local host tls email site img pull="" ports hsts=""
+  local host tls email site img pull="" ports dep=""
   explorer_imds_guard
   explorer_secrets "$net"
   host=$(cfg "$f" .explorer.hostname); tls=$(cfg "$f" .explorer.tls); email=$(cfg "$f" '.explorer.acme_email // ""')
   img=$(explorer_image "$f")
   [ "$(cfg "$f" '.explorer.build != null')" = true ] && pull=$'\n    pull_policy: never'
-  if [ "$tls" = true ]; then
-    site=$host; ports='["80:80", "443:443"]'
-    hsts=$'\n\t\tStrict-Transport-Security "max-age=31536000"'
-  else
-    site=:80; ports='["80:80"]'
-  fi
+  if [ "$tls" = true ]; then site=$host; ports='["80:80", "443:443"]'; else site=:80; ports='["80:80"]'; fi
   mkdir -p "$R/postgres-init" "$E/pg" "$E/caddy/data" "$E/caddy/config"
-  { printf '# rendered by seedctl for %s (ycash-infra explorer/Caddyfile, the same design)\n{\n\tadmin off\n' "$net"
+  # Caddy runs as uid 2006: its data (the certificate) and config directories are handed to it here,
+  # on the host (the stack's one-shot proxy-volumes service does the same for its named volumes)
+  if [ "$(id -u)" = 0 ]; then chown -R "$UID_PROXY:$UID_PROXY" "$E/caddy"; fi
+  { printf '# rendered by seedctl for %s: ycash-infra explorer/Caddyfile, with the site and contact filled in\n{\n\tadmin off\n' "$net"
     [ -z "$email" ] || printf '\temail %s\n' "$email"
-    printf '\tservers {\n\t\tprotocols h1 h2\n\t}\n}\n\n'
     cat <<CADDY
+	servers {
+		# HTTP/1.1 and HTTP/2 only: HTTP/3 would need UDP 443, which the security group does not open
+		protocols h1 h2
+		timeouts {
+			# 10 s for the request headers, idle keep-alive closed after 2 minutes; no read/write
+			# timeout, which would cut Inzyght's WebSocket
+			read_header 10s
+			idle 2m
+		}
+	}
+}
+
 $site {
+	# one JSON line per request on stdout (the container log, bounded by its Docker log options)
+	log {
+		output stdout
+		format json
+	}
+	# Inzyght's API is read-only (GET) and its own limit is 1 MB (max_body_size)
+	request_body {
+		max_size 1MB
+	}
 	encode zstd gzip
 	header {
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
-		Referrer-Policy strict-origin-when-cross-origin$hsts
+		Referrer-Policy strict-origin-when-cross-origin
 		-Server
 	}
+	# HSTS on HTTPS responses only; one year, this name only
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000"
 	# Caddy replaces any X-Forwarded-For the client sent, so Inzyght, which trusts only this proxy's
 	# address, rate-limits on the real client address. WebSocket (/ws) upgrades pass through.
-	reverse_proxy $EX_BACKEND.12:8080
+	reverse_proxy inzyght:8080
+	# while Inzyght is not up (the prefix import, its first start): a plain page, not a bare 502
 	handle_errors 502 503 504 {
 		respond "This explorer is starting: the node is importing the chain or Inzyght is indexing it. Try again in a few minutes." 503
 	}
@@ -224,18 +249,23 @@ INIT
     container_name: postgres-$net
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
+    # the image's entrypoint fixes the data directory's owner and drops to postgres: these five only
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     env_file: [$E/pg.env]
     environment: { POSTGRES_USER: postgres, INZYGHT_DB: inzyght, INZYGHT_DB_USER: inzyght }
     command: ["postgres", "-c", "shared_buffers=$(cfg "$f" .explorer.pg_shared_buffers_mb)MB", "-c", "effective_cache_size=1GB", "-c", "maintenance_work_mem=128MB", "-c", "work_mem=16MB", "-c", "max_wal_size=2GB", "-c", "checkpoint_timeout=15min", "-c", "wal_compression=on", "-c", "synchronous_commit=off"]
     volumes: ["$E/pg:/var/lib/postgresql/data", "$R/postgres-init:/docker-entrypoint-initdb.d:ro"]
-    networks:
-      backend: { ipv4_address: "$EX_BACKEND.13" }
+    networks: [backend]
     shm_size: 256m
+    mem_limit: 768m
     stop_grace_period: 60s
-    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"], interval: 10s, timeout: 5s, retries: 10 }
+    # over TCP: the first-run initialisation server listens on the Unix socket only
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"], interval: 10s, timeout: 5s, retries: 10 }
     logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
 YAML
   if [ -z "$importing" ]; then
+    dep=$'\n    depends_on: { inzyght: { condition: service_started } }'
     cat >> "$R/compose.yaml" <<YAML
   inzyght:
     image: $img$pull
@@ -258,13 +288,12 @@ YAML
       INZYGHT_LOG_LEVEL: $(cfg "$f" .explorer.log_level)
       INZYGHT_TRUST_PROXY: "true"
       INZYGHT_TRUSTED_PROXIES: "$EX_BACKEND.10"
-    networks:
-      backend: { ipv4_address: "$EX_BACKEND.12" }
+    networks: [backend]
     depends_on:
       postgres: { condition: service_healthy }
       ycashd: { condition: service_started }
     mem_limit: $(cfg "$f" .explorer.mem_limit_mb)m
-    healthcheck: { test: ["CMD", "perl", "-MIO::Socket::INET", "-e", "exit !IO::Socket::INET->new(q(127.0.0.1:8080))"], interval: 15s, timeout: 5s, retries: 5, start_period: 60s }
+    healthcheck: { test: ["CMD", "perl", "-MIO::Socket::INET", "-e", "exit !IO::Socket::INET->new(q(127.0.0.1:8080))"], interval: 15s, timeout: 5s, retries: 5, start_period: 6h }
     stop_grace_period: 30s
     logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
 YAML
@@ -274,22 +303,28 @@ YAML
     image: $(cfg "$f" .explorer.proxy_image)
     container_name: proxy-$net
     restart: unless-stopped
+    # not root: the binary's file capability needs NET_BIND_SERVICE in the bounding set, the one kept
+    user: "$UID_PROXY:$UID_PROXY"
     read_only: true
     tmpfs: ["/tmp"]
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: ["no-new-privileges:true"]
     volumes: ["$R/Caddyfile:/etc/caddy/Caddyfile:ro", "$E/caddy/data:/data", "$E/caddy/config:/config"]
+    # TCP only (HTTP/3 is off)
     ports: $ports
     networks:
       backend: { ipv4_address: "$EX_BACKEND.10" }
-      edge: {}
+      edge: {}$dep
+    mem_limit: 128m
     stop_grace_period: 10s
     logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
 networks:
   backend:
     internal: true
-    ipam: { config: [{ subnet: "$EX_BACKEND.0/24" }] }
+    # the fixed addresses (.10 proxy, .11 node) below the dynamic range, so a recreated container
+    # can never take one
+    ipam: { config: [{ subnet: "$EX_BACKEND.0/24", ip_range: "$EX_BACKEND.128/25" }] }
   edge:
     ipam: { config: [{ subnet: "$EX_EDGE.0/24" }] }
 YAML

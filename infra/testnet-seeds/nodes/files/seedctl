@@ -113,14 +113,14 @@ cli() { # net args...: ycash-cli in the network's container, against its own RPC
 
 # Write /opt/ycash-seed/net/NET/{node.env,compose.yaml} from a config file. The -loadblock flags
 # are added while a framed prefix waits to be imported; ZMQ (zmq_port) only after that. An
-# explorer's node: RPC for Inzyght's address, ZMQ on its own (seedctl-explorer).
+# explorer's node: RPC for its backend network, ZMQ on its backend address (seedctl-explorer).
 render() { # net file
   local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1"
   local p2p rpc args p lb="" zmq="" zp ex insight=0 bind=127.0.0.1 allow=127.0.0.1 zb=127.0.0.1
   p2p=$(cfg "$f" .p2p_port); rpc=$(cfg "$f" .rpc_port)
   ex=$(cfg "$f" '.explorer != null')
   [ "$(cfg "$f" '.insight // false')" = true ] && insight=1
-  if [ "$ex" = true ]; then need_explorer; bind=0.0.0.0; allow=$EX_BACKEND.12; zb=$EX_BACKEND.11; fi
+  if [ "$ex" = true ]; then need_explorer; bind=0.0.0.0; allow=$EX_BACKEND.0/24; zb=$EX_BACKEND.11; fi
   args="-port=$p2p -externalip=$EXTERNAL_IP $(cfg "$f" .node_args)"
   [ "$(cfg "$f" .dnsseed)" = true ] || args="$args -dnsseed=0"
   for p in $(cfg "$f" '.peers[]'); do

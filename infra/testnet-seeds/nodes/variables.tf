@@ -121,7 +121,7 @@ variable "networks" {
       postgres_image = string
       proxy_image    = string
       threads        = optional(number, 4)
-      mem_limit_mb   = optional(number, 2048)
+      mem_limit_mb   = optional(number, 768)
       log_level      = optional(string, "INFO")
       # PostgreSQL's shared_buffers, MiB (Inzyght's pg_tune.sh value for a small host)
       pg_shared_buffers_mb = optional(number, 256)

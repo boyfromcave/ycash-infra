@@ -206,7 +206,7 @@ EXPL=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c --arg s "$CTXSHA" '.insigh
   threads: 4, mem_limit_mb: 2048, log_level: "INFO", pg_shared_buffers_mb: 256}' | b64)
 "$SEEDCTL" apply yb-fast "$EXPL" 2>"$T/err" || { cat "$T/err"; fail "apply with an explorer"; }
 c="$O/net/yb-fast/compose.yaml"; e="$O/net/yb-fast/node.env"; IMG=ycash-local/inzyght:17f505f273c0-${CTXSHA:0:12}
-grep -qx 'YCASHD_INSIGHT=1' "$e" && grep -qx 'YCASHD_RPC_BIND=0.0.0.0' "$e" && grep -qx 'YCASHD_RPC_ALLOWIP=172.31.250.12' "$e" && ! grep -q zmqpub "$e" && grep -q -- '-loadblock=' "$e" || fail "the node while importing: indexes, RPC for Inzyght only, no ZMQ yet: $(cat "$e")"
+grep -qx 'YCASHD_INSIGHT=1' "$e" && grep -qx 'YCASHD_RPC_BIND=0.0.0.0' "$e" && grep -qx 'YCASHD_RPC_ALLOWIP=172.31.250.0/24' "$e" && ! grep -q zmqpub "$e" && grep -q -- '-loadblock=' "$e" || fail "the node while importing: indexes, RPC for the backend network only, no ZMQ yet: $(cat "$e")"
 ! grep -q 'network_mode: host' "$c" && grep -q 'ipv4_address: "172.31.250.11"' "$c" && grep -q 'read_only: true' "$c" && grep -q 'container_name: postgres-yb-fast' "$c" && grep -q 'container_name: proxy-yb-fast' "$c" && ! grep -q 'container_name: inzyght-yb-fast' "$c" || fail "while importing: node, PostgreSQL and proxy, no Inzyght: $(cat "$c")"
 grep -q 'internal: true' "$c" && grep -qF 'ports: ["80:80", "443:443"]' "$c" && [ "$(grep -c 'ports:' "$c")" = 1 ] || fail "backend internal; the proxy publishes 80 and 443, nothing else publishes"
 grep -q "docker build --build-arg INZYGHT_REPO=https://github.com/example/inzyght --build-arg INZYGHT_COMMIT=17f505f273c053247b59d20270e4d6a7b74994fb --build-arg JOBS=2 --label org.ycash.infra.context=$CTXSHA -t $IMG " "$LOG" || fail "Inzyght built from the checked context: $(grep 'docker build' "$LOG")"
@@ -215,7 +215,7 @@ cmp -s "$D/yb-fast/explorer/build-context.json" "$T/ctx.json" && cmp -s "$D/seed
 [ "$(stat -c %a "$D/yb-fast/explorer/pg.env")" = 400 ] && [ "$(stat -c %a "$D/yb-fast/explorer/inzyght.env")" = 400 ] && [ "$(stat -c %a "$D/yb-fast/explorer")" = 700 ] || fail "the explorer's secrets: 0400 in a 0700 directory"
 pgpw=$(sed -n 's/^INZYGHT_DB_PASSWORD=//p' "$D/yb-fast/explorer/pg.env"); pw=$(sed -n 's/^YCASHD_RPC_PASSWORD=//p' "$D/yb-fast/rpc.env")
 grep -qx "INZYGHT_PG_PASSWORD=$pgpw" "$D/yb-fast/explorer/inzyght.env" && grep -qx "INZYGHT_RPC_PASSWORD=$pw" "$D/yb-fast/explorer/inzyght.env" && ! grep -rqF -e "$pgpw" -e "$pw" "$O/net/yb-fast" || fail "Inzyght's credentials only in its env file, never in a rendered file"
-grep -qx 'explorer.example.org {' "$O/net/yb-fast/Caddyfile" && grep -qx '	email ops@example.org' "$O/net/yb-fast/Caddyfile" && grep -q 'reverse_proxy 172.31.250.12:8080' "$O/net/yb-fast/Caddyfile" || fail "the Caddyfile: the name, the contact, Inzyght"
+grep -qx 'explorer.example.org {' "$O/net/yb-fast/Caddyfile" && grep -qx '	email ops@example.org' "$O/net/yb-fast/Caddyfile" && grep -q 'reverse_proxy inzyght:8080' "$O/net/yb-fast/Caddyfile" && grep -q 'user: "2006:2006"' "$c" && [ "$(grep -c 'mem_limit:' "$c")" = 3 ] || fail "the Caddyfile: the name, the contact, Inzyght"
 grep -qx 'iptables -I DOCKER-USER 1 -s 172.31.250.0/23 -d 169.254.169.254/32 -j REJECT' "$LOG" || fail "the explorer's networks are refused the metadata service"
 ok "an explorer while the prefix imports: node on its networks, PostgreSQL and proxy, Inzyght built, secrets private"
 "$SEEDCTL" prefix-check 2>/dev/null

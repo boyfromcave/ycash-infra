@@ -284,18 +284,18 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
 
 | Container | Image | Runs as | Networks | Notes |
 |---|---|---|---|---|
-| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend`, `edge` | `YCASHD_INSIGHT=1`; RPC bound inside the container, allowed for Inzyght's address only (and loopback, for `seedctl`'s `docker exec`); ZMQ `hashblock`/`hashtx` on its `backend` address once the prefix is imported; `-listen=0 -disablewallet`, P2P out through `edge` |
-| `postgres-<key>` | `explorer.postgres_image` (by digest) | the image drops to `postgres` | `backend` | data in `/srv/ycash-data/<key>/explorer/pg` on the data volume; the database and a non-superuser owner role made at its first start (explorer's `postgres-init/10-inzyght.sh`); Inzyght's tuning values |
-| `inzyght-<key>` | built on the host, or `explorer.image` by digest | uid 2005, read-only root, no capabilities, `mem_limit_mb` | `backend` only | applies its schema to an empty database; trusts `X-Forwarded-For` from the proxy's fixed address only; started once the prefix is imported |
-| `proxy-<key>` | `explorer.proxy_image` (Caddy, by digest) | root in the container, every capability dropped but binding low ports, read-only root | `backend`, `edge` | the only published ports, 80 and 443; Let's Encrypt certificate for `hostname` (HTTP-01), renewal, redirect to HTTPS, HSTS; certificate in `/srv/ycash-data/<key>/explorer/caddy` (kept across resets and new instances, so the certificate authority's rate limits are never met); a plain 503 page while Inzyght is not up |
+| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend`, `edge` | `YCASHD_INSIGHT=1`; RPC bound inside the container, allowed for the `backend` subnet only (and loopback, for `seedctl`'s `docker exec`); no published port; ZMQ `hashblock`/`hashtx` on its fixed `backend` address (.11) once the prefix is imported; `-listen=0 -disablewallet`, P2P out through `edge`; 1536 MiB (with `-dbcache=512`) |
+| `postgres-<key>` | `explorer.postgres_image` (by digest) | the image drops to `postgres`; every capability dropped but the five its entrypoint needs; 768 MiB | `backend` | data in `/srv/ycash-data/<key>/explorer/pg` on the data volume; the database and a non-superuser owner role made at its first start (explorer's `postgres-init/10-inzyght.sh`); Inzyght's tuning values; healthcheck over TCP |
+| `inzyght-<key>` | built on the host, or `explorer.image` by digest | uid 2005, read-only root, no capabilities, `mem_limit_mb` (768) | `backend` only | applies and checks its schema on every start; trusts `X-Forwarded-For` from the proxy's fixed address only; started once the prefix is imported |
+| `proxy-<key>` | `explorer.proxy_image` (Caddy, by digest) | uid 2006 (its data directories handed to it by seedctl), every capability dropped but binding low ports, read-only root, 128 MiB | `backend` (fixed .10), `edge` | the only published ports, TCP 80 and 443 (HTTP/3 off); Let's Encrypt certificate for `hostname` (HTTP-01), renewal, redirect to HTTPS, HSTS on HTTPS, JSON access log, header and idle timeouts, a 1 MB body limit (explorer/Caddyfile); certificate in `/srv/ycash-data/<key>/explorer/caddy` (kept across resets and new instances, so the certificate authority's rate limits are never met); a plain 503 page while Inzyght is not up |
 
-- **Networks.** `backend` (`172.31.250.0/24`) is internal: no route out, so Inzyght's hard-coded
+- **Networks.** `backend` (`172.31.250.0/24`; the proxy at .10 and the node at .11 fixed, every other container from `.128/25`) is internal: no route out, so Inzyght's hard-coded
   peer-location call (`http://ip-api.com/batch`) cannot leave the host and PostgreSQL has no
   egress. `edge` (`172.31.251.0/24`) carries the node's outbound P2P and the proxy's ports. Nothing
   listens on the host's own interfaces but the proxy. The containers are not in host networking,
   so the metadata service's hop limit of 1 already denies them an IMDSv2 token; seedctl also
   inserts a `DOCKER-USER` rule refusing both subnets the metadata address (on every apply, boot
-  and prefix check that renders the explorer).
+  and prefix check that renders the explorer). Every container's Docker log is capped (20 MB x 3).
 - **Secrets** are made on the host at the first render and never leave it: the node's RPC
   credential (`rpc.env`, as for every network), and in `/srv/ycash-data/<key>/explorer/` (mode
   0700) `pg.env` (the PostgreSQL superuser's and Inzyght's database passwords) and `inzyght.env`
@@ -321,9 +321,10 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
 **The Inzyght image.** Inzyght has no licence file, so its image is not published to any
 registry. Two modes, exactly one per explorer:
 
-- `build = { repo, commit, jobs }` (now): the host builds
+- `build = { repo, commit, jobs }` (now; needs BuildKit, which seedctl installs as `docker-buildx`): the host builds
   [`images/inzyght/Dockerfile`](../../images/inzyght/Dockerfile) itself, with `INZYGHT_REPO=repo`
-  and `INZYGHT_COMMIT=commit` (a full SHA, which the Dockerfile checks after the clone). The
+  and `INZYGHT_COMMIT=commit` (a full SHA, which the Dockerfile checks after the clone; its
+  dependencies are cloned at pinned commits and the compile runs with no network). The
   Dockerfile and `entrypoint.sh` come from this module's own revision: they reach the host in the
   `host_files` output with seedctl, and the network's config carries their sha256, which seedctl
   checks before it builds. The image is tagged `ycash-local/inzyght:<commit12>-<context12>`, never
@@ -336,7 +337,8 @@ registry. Two modes, exactly one per explorer:
 configure 30 s, compile 1 min 58 s with 2 jobs, the largest compiler process 0.95 GB resident, so
 about 2 GB with `jobs = 2`. A `t3a.medium` (2 vCPU, 4 GiB) builds it before the node starts on the
 first deploy (expect 5 to 15 minutes on its slower cores) and runs the four services with room to
-spare (E1, steady: node 0.4-0.9 GB, PostgreSQL 0.2-0.3 GB, Inzyght under 50 MB, Caddy 20 MB).
+spare (E1, steady: node 0.4-0.9 GB, PostgreSQL 0.2-0.3 GB, Inzyght under 50 MB, Caddy 20 MB; the
+limits add up to 3.2 GiB).
 Keep the module's 4 GiB swap for a rebuild while the node runs, and `cpu_credits = "unlimited"` for
 the first deploy (build, prefix import, first index). A `t3a.small` (2 GiB) would need `jobs = 1`
 and the swap for the build and leaves the node and PostgreSQL little page cache; it is not
