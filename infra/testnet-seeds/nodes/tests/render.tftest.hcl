@@ -254,7 +254,7 @@ run "explorer_host" {
     error_message = "an explorer's node: the indexes, ZMQ on 28332 by default, no wallet"
   }
   assert {
-    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).explorer) == jsonencode({ acme_email = "ops@example.org", build = { commit = "17f505f273c053247b59d20270e4d6a7b74994fb", context_sha256 = sha256(local.explorer_build_json), jobs = 2, repo = "https://github.com/example/inzyght" }, hostname = "explorer.example.org", image = null, log_level = "INFO", mem_limit_mb = 768, pg_shared_buffers_mb = 256, postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444", threads = 4, tls = true })
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).explorer) == jsonencode({ acme_email = "ops@example.org", build = { commit = "17f505f273c053247b59d20270e4d6a7b74994fb", context_sha256 = sha256(local.explorer_build_json), jobs = 2, repo = "https://github.com/example/inzyght" }, hostname = "explorer.example.org", image = null, log_level = "INFO", mem_limit_mb = 768, node_mem_limit_mb = 2304, pg_shared_buffers_mb = 256, postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444", threads = 4, tls = true })
     error_message = "the explorer's config: name, contact, build (with the build context's sha256), images, defaults"
   }
   assert {
@@ -324,6 +324,25 @@ run "refuses_a_debug_log_tag_or_short_commit" {
   command = plan
   variables {
     networks = { yb-fast = { profile = "fast", insight = true, explorer = { hostname = "explorer.example.org", log_level = "DEBUG", build = { repo = "https://github.com/example/inzyght", commit = "17f505f" }, postgres_image = "postgres:17-alpine", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "explorer_node_memory" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, explorer = { hostname = "explorer.example.org", node_mem_limit_mb = 3072, image = "ghcr.io/example/inzyght@sha256:5555555555555555555555555555555555555555555555555555555555555555", postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  assert {
+    condition     = local.network_config["yb-fast"].explorer.node_mem_limit_mb == 3072
+    error_message = "node_mem_limit_mb reaches the network's config"
+  }
+}
+
+run "refuses_a_small_or_fractional_node_memory" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, explorer = { hostname = "explorer.example.org", node_mem_limit_mb = 256.5, image = "ghcr.io/example/inzyght@sha256:5555555555555555555555555555555555555555555555555555555555555555", postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
   }
   expect_failures = [var.networks]
 }

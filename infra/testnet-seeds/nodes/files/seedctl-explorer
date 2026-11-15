@@ -32,6 +32,7 @@ explorer_check() { # file name
     and (.explorer.postgres_image | test($digest)) and (.explorer.proxy_image | test($digest))
     and (.explorer.log_level | test("^(INFO|WARN|ERROR)$"))
     and ([.explorer.threads, .explorer.mem_limit_mb, .explorer.pg_shared_buffers_mb] | all(type == "number" and . >= 1 and . == floor))
+    and ((.explorer.node_mem_limit_mb // 2304) | type == "number" and . >= 512 and . <= 65536 and . == floor)
   ' "$1" >/dev/null || die "the explorer in the config for $2 is not valid"
 }
 
@@ -52,8 +53,16 @@ explorer_up() { # net
 
 # The node on the explorer's networks instead of host networking, hardened as in
 # explorer/compose.yaml; then the explorer's own services (render_explorer).
+# Its memory: explorer.node_mem_limit_mb of RAM (default 2304; a config applied before the option
+# existed has none and gets the default), and swap up to NODE_SWAP_MB beyond it, set explicitly. With
+# mem_limit alone Docker allows the same amount again in swap (memswap_limit = 2 x mem_limit), so the
+# allowance would move with the RAM figure; a fixed 2 GiB keeps it the same. It permits swapping where
+# the kernel accounts swap for the cgroup; the RAM limit is what the node relies on (README.md,
+# "Host size": the first run's node was killed by its cgroup at 1536 MiB, not saved by swap).
+NODE_SWAP_MB=2048
 render_explorer_node() { # net file loadblock-flags
-  local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1"
+  local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1" mem
+  mem=$(cfg "$f" '.explorer.node_mem_limit_mb // 2304')
   cat > "$R/compose.yaml" <<YAML
 name: ycash-$net
 services:
@@ -71,7 +80,8 @@ services:
       edge: {}
     env_file: [$D/$net/rpc.env, $R/node.env]
     volumes: ["$N:/var/lib/ycash"]
-    mem_limit: 1536m
+    mem_limit: ${mem}m
+    memswap_limit: $((mem + NODE_SWAP_MB))m
     stop_grace_period: 180s
     logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
 YAML
@@ -400,20 +410,78 @@ wait_explorer() { # net seconds: Inzyght healthy (or, while the prefix is import
   return 1
 }
 
+# The kernel log's OOM kills of a ycashd process, the source that records them (Docker's
+# State.OOMKilled read false for the first explorer run's cgroup kill): one JSON object,
+# {"sinceStart": {"cgroup": N, "host": N}, "sinceBoot": {...}}. `cgroup` counts "Memory cgroup out of
+# memory: Killed process ... (ycashd)" (the container's own limit), `host` "Out of memory: Killed
+# process ... (ycashd)" (the whole host out of memory). `sinceStart` counts the kills from a minute
+# before the container's current StartedAt on, so the kill that caused this start is in it and one
+# from an earlier start is not; null when the start time or the kernel log's times are not known;
+# both null when no kernel log is readable. journalctl first; dmesg only when journalctl fails, and
+# then alone (what a failing journalctl printed is dropped, so no kill is counted twice).
+node_oom_kills() { # started-at (Docker's StartedAt, UTC)
+  local log src bt="" start
+  if log=$(journalctl -k -b -q --no-pager -o short-unix 2>/dev/null); then src=journal
+  elif log=$(dmesg 2>/dev/null); then src=dmesg; bt=$(awk '$1 == "btime" { print $2 }' /proc/stat 2>/dev/null || true)
+  else echo '{"sinceStart":null,"sinceBoot":null}'; return 0; fi
+  start=$(jq -rn --arg s "$1" '$s | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch empty' 2>/dev/null || true)
+  [[ "$start" =~ ^[0-9]+$ ]] || start=""
+  [[ "$bt" =~ ^[0-9]+$ ]] || bt=""
+  awk -v src="$src" -v bt="$bt" -v start="$start" '
+    BEGIN { known = start != "" && (src == "journal" || bt != "") }
+    /Killed process [0-9]+ \(ycashd\)/ {
+      if ($0 ~ /Memory cgroup out of memory/) k = "cgroup"; else if ($0 ~ /Out of memory/) k = "host"; else next
+      boot[k]++
+      if (!known) next
+      if (src == "journal") t = $1 + 0
+      else if (match($0, /^\[ *[0-9.]+\]/)) t = bt + substr($0, RSTART + 1, RLENGTH - 2)
+      else next
+      if (t >= start - 60) since[k]++
+    }
+    END {
+      s = known ? sprintf("{\"cgroup\":%d,\"host\":%d}", since["cgroup"], since["host"]) : "null"
+      printf "{\"sinceStart\":%s,\"sinceBoot\":{\"cgroup\":%d,\"host\":%d}}\n", s, boot["cgroup"], boot["host"]
+    }' <<<"$log"
+}
+
 # status's `explorer` field: the three containers, Inzyght's image (and, when a built one is
 # missing, why), the height Inzyght has indexed (from its database), whether the explorer answers
 # HTTPS on this host (through the proxy, for its name) and through its public name (DNS, the Elastic
 # IP, the security group), and `phase`: one line saying where a first start is (a detached deploy's
-# step, the prefix import in percent, the image missing, indexing to a height, serving).
+# step, the prefix import in percent, the image missing, indexing to a height, serving). For the
+# four containers (the node too) `restarts` (Docker's RestartCount: restarts by the restart policy
+# since the container was created, so 0 again after an apply recreates it) and `oomKilled` (Docker's
+# State.OOMKilled: whether its last exit was a kill by the OOM killer), null for one that is absent;
+# the node's `nodeStartedAt`, `nodeOomKills` and `nodeOomKillsSinceBoot` (node_oom_kills). A node
+# that restarted during the prefix import says so in the phase, with `OOM: yes` only when the kernel
+# log has a cgroup kill of ycashd at most a minute before its current start (or after it), or Docker's
+# flag is set: a kill from an earlier start does not make every later restart read as one.
 explorer_status() { # net
   local f="$D/$1/applied.json" N="$D/$1/node" host tls c st ih here pub img ready=true reason="" blocks last phase job
+  local rs='{}' oom='{}' x r o started kills noom restarted=""
   [ "$(cfg "$f" '.explorer != null' 2>/dev/null)" = true ] || { echo null; return 0; }
   host=$(cfg "$f" .explorer.hostname); tls=$(cfg "$f" .explorer.tls)
   st='{}'
-  for c in postgres inzyght proxy; do
-    st=$(jq -c --arg k "$c" --arg v "$(docker inspect -f '{{.State.Status}}{{if .State.Health}} {{.State.Health.Status}}{{end}}' "$c-$1" 2>/dev/null || echo absent)" '. + {($k): $v}' <<<"$st")
+  for c in ycashd postgres inzyght proxy; do
+    if [ "$c" != ycashd ]; then   # the node's state is status's own `container` field
+      st=$(jq -c --arg k "$c" --arg v "$(dinspect '{{.State.Status}}{{if .State.Health}} {{.State.Health.Status}}{{end}}' "$c-$1" absent)" '. + {($k): $v}' <<<"$st")
+    fi
+    x=$(dinspect '{{.RestartCount}} {{.State.OOMKilled}}' "$c-$1" "")
+    r=${x%% *}; o=${x#* }
+    [[ "$r" =~ ^[0-9]+$ ]] || r=null
+    [[ "$o" =~ ^(true|false)$ ]] || o=null
+    rs=$(jq -c --arg k "$c" --argjson v "$r" '. + {($k): $v}' <<<"$rs")
+    oom=$(jq -c --arg k "$c" --argjson v "$o" '. + {($k): $v}' <<<"$oom")
   done
-  img=$(docker inspect -f '{{.Config.Image}}' "inzyght-$1" 2>/dev/null || echo -)
+  started=$(dinspect '{{.State.StartedAt}}' "ycashd-$1" "")
+  kills=$(node_oom_kills "$started")
+  noom=$(jq -r --argjson docker "$(jq .ycashd <<<"$oom")" '.sinceStart as $s
+    | if $docker == true or ($s != null and $s.cgroup > 0) then "yes"
+      elif $s != null and $s.host > 0 then "yes, the host ran out of memory"
+      elif $s == null then "unknown" else "no" end' <<<"$kills")
+  r=$(jq -r '.ycashd // 0' <<<"$rs")
+  if [ "$r" -gt 0 ]; then restarted=", node restarted $r time$([ "$r" = 1 ] || echo s) (OOM: $noom)"; fi
+  img=$(dinspect '{{.Config.Image}}' "inzyght-$1" -)
   explorer_image_ready "$f" || { ready=false; reason=$(explorer_build_reason "$1"); }
   ih=$(docker exec "postgres-$1" psql -U postgres -d inzyght -tAc 'select coalesce(max(height), -1) from blocks' 2>/dev/null | tr -d '[:space:]' || true)
   [[ "$ih" =~ ^-?[0-9]+$ ]] || ih=null
@@ -430,12 +498,12 @@ explorer_status() { # net
     phase="deploying: $(jq -r '.phase // "starting"' <<<"$job") (since $(jq -r '.phaseSince // .started' <<<"$job"))"
   elif [ -e "$N/prefix/FRAMED" ] && [ ! -e "$N/prefix/IMPORTED" ]; then
     last=$(cat "$N/prefix/LAST_HEIGHT" 2>/dev/null || echo 0)
-    if [ -z "$blocks" ] || [ "$last" -le 0 ]; then phase="prefix import: the node is starting"
-    elif [ "$blocks" -ge "$last" ]; then phase="prefix imported (height $blocks): Inzyght starts at the next prefix check (every 10 minutes)"
-    else phase="prefix import: $blocks of $last ($((blocks * 100 / last)) %)"; fi
+    if [ -z "$blocks" ] || [ "$last" -le 0 ]; then phase="prefix import: the node is starting$restarted"
+    elif [ "$blocks" -ge "$last" ]; then phase="prefix imported (height $blocks): Inzyght starts at the next prefix check (every 10 minutes)$restarted"
+    else phase="prefix import: $blocks of $last ($((blocks * 100 / last)) %)$restarted"; fi
   elif [ "$ready" = false ]; then
     phase="explorer image missing: $reason"
-  elif [ "$(docker inspect -f '{{.State.Status}}' "inzyght-$1" 2>/dev/null || true)" != running ]; then
+  elif [ "$(dinspect '{{.State.Status}}' "inzyght-$1" absent)" != running ]; then
     phase="Inzyght is not running (docker logs inzyght-$1)"
   elif [ "$ih" = null ] || { [ -n "$blocks" ] && [ "$ih" -lt $((blocks - 1)) ]; }; then
     phase="indexing: $([ "$ih" = null ] && echo 0 || echo "$ih") of ${blocks:-?}"
@@ -446,7 +514,9 @@ explorer_status() { # net
   fi
   jq -cn --argjson c "$st" --arg url "$([ "$tls" = true ] && echo https || echo http)://$host/" --arg img "$img" \
     --argjson ih "$ih" --arg here "${here:-000}" --arg pub "${pub:-000}" --arg phase "$phase" \
-    --argjson ready "$ready" --arg reason "$reason" \
+    --argjson ready "$ready" --arg reason "$reason" --argjson rs "$rs" --argjson oom "$oom" \
+    --arg started "$started" --argjson kills "$kills" \
     '{phase: $phase, url: $url, image: $img} + $c + {indexedHeight: $ih, httpOnHost: $here, httpPublic: $pub}
+     + {restarts: $rs, oomKilled: $oom, nodeStartedAt: (if $started == "" then null else $started end), nodeOomKills: $kills.sinceStart, nodeOomKillsSinceBoot: $kills.sinceBoot}
      + (if $ready then {} else {imageMissing: $reason} end)'
 }

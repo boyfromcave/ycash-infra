@@ -299,6 +299,7 @@ module "explorer" {   # e.g. the operator's testnet-explorer/nodes root, one hos
         build          = { repo = "https://github.com/miodragpop/inzyght", commit = "<40-hex sha>" }
         postgres_image = "postgres:17-alpine@sha256:..."
         proxy_image    = "caddy:2.10-alpine@sha256:..."
+        # node_mem_limit_mb = 2304                 # the node container's limit (default), "Host size"
       }
     }
   }
@@ -311,7 +312,7 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
 
 | Container | Image | Runs as | Networks | Notes |
 |---|---|---|---|---|
-| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend`, `edge` | `YCASHD_INSIGHT=1`; RPC bound inside the container, allowed for Inzyght's fixed address only (`172.31.250.12`; and loopback, for `seedctl`'s `docker exec`); no published port; ZMQ `hashblock`/`hashtx` on its fixed `backend` address (.11) once the prefix is imported; `-listen=0 -disablewallet`, P2P out through `edge`; 1536 MiB (with `-dbcache=512`) |
+| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend`, `edge` | `YCASHD_INSIGHT=1`; RPC bound inside the container, allowed for Inzyght's fixed address only (`172.31.250.12`; and loopback, for `seedctl`'s `docker exec`); no published port; ZMQ `hashblock`/`hashtx` on its fixed `backend` address (.11) once the prefix is imported; `-listen=0 -disablewallet`, P2P out through `edge`; `node_mem_limit_mb` (2304 MiB) plus 2 GiB of swap ("Host size") |
 | `postgres-<key>` | `explorer.postgres_image` (by digest) | the image drops to `postgres`; every capability dropped but the five its entrypoint needs; 768 MiB | `backend` | data in `/srv/ycash-data/<key>/explorer/pg` on the data volume; the database and a non-superuser owner role made at its first start (explorer's `postgres-init/10-inzyght.sh`); Inzyght's tuning values; healthcheck over TCP |
 | `inzyght-<key>` | built on the host, or `explorer.image` by digest | uid 2005, read-only root, no capabilities, `mem_limit_mb` (768) | `backend` only (fixed .12) | applies and checks its schema on every start; trusts `X-Forwarded-For` from the proxy's fixed address only; started once the prefix is imported and only when its image is on the host |
 | `proxy-<key>` | `explorer.proxy_image` (Caddy, by digest) | uid 2006 (its data directories handed to it by seedctl), every capability dropped but binding low ports, read-only root, 128 MiB | `backend` (fixed .10), `edge` | the only published ports, TCP 80 and 443 (HTTP/3 off); Let's Encrypt certificate for `hostname` (HTTP-01), renewal, redirect to HTTPS, HSTS on HTTPS, JSON access log, header and idle timeouts, a 1 MB body limit (explorer/Caddyfile); certificate in `/srv/ycash-data/<key>/explorer/caddy` (kept across resets and new instances, so the certificate authority's rate limits are never met); a plain 503 page while Inzyght is not up |
@@ -357,9 +358,27 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
   height Inzyght has indexed (from its database), `httpOnHost` (the HTTP status of
   `/api/v1/version` through the proxy on the host, for `hostname`, which checks the certificate)
   and `httpPublic` (the same through the public name: DNS, the address, the security group). A
-  config without `explorer` renders exactly as before. The explorer field's `phase` is one line
-  for a first start: a detached run's current step, `prefix import: H of L (N %)`, `explorer
-  image missing: <why>`, `indexing: H of B`, or `serving`.
+  config without `explorer` renders exactly as before. For all four containers (the node too)
+  `restarts` (Docker's `RestartCount`: restarts by the restart policy since the container was
+  created; an apply that recreates it starts again at 0) and `oomKilled` (Docker's
+  `State.OOMKilled`, about the container's last exit), each `null` for a container that is absent;
+  the node's `nodeStartedAt` (when its current process started), `nodeOomKills` and
+  `nodeOomKillsSinceBoot`: the kernel log's OOM kills of a `ycashd` process, as
+  `{"cgroup": N, "host": N}` (`cgroup`: "Memory cgroup out of memory", the container's own limit;
+  `host`: "Out of memory", the whole host), `nodeOomKills` from a minute before the current start
+  on (so the kill that caused this start counts and one from an earlier start does not),
+  `nodeOomKillsSinceBoot` since the host booted; `null` when the kernel log cannot be read (or, for
+  `nodeOomKills`, its times or the start time are unknown). The kernel log is the source to trust:
+  for the first explorer run's cgroup kill Docker's `OOMKilled` read `false` (and the exit code 0).
+  The explorer field's `phase` is one line for a first start: a detached run's current step,
+  `prefix import: H of L (N %)`, `explorer image missing: <why>`, `indexing: H of B`, or `serving`;
+  a node that restarted during the import adds `, node restarted K times (OOM: …)`: `yes` for a
+  cgroup kill in `nodeOomKills` (or Docker's flag set), `yes, the host ran out of memory` for a
+  host-wide one, `no`, or `unknown` without a readable kernel log; so a crash loop or a memory kill
+  shows from `status` alone. A node restart during the import resumes from its last chainstate
+  flush, not from the height it had reached (the network's `-dbcache` sets how often it flushes).
+  Example, during the import:
+  `{"phase":"prefix import: 305248 of 510247 (59 %), node restarted 1 time (OOM: yes)", …, "inzyght":"absent", …, "restarts":{"ycashd":1,"postgres":0,"inzyght":null,"proxy":0}, "oomKilled":{"ycashd":false,"postgres":false,"inzyght":null,"proxy":false}, "nodeStartedAt":"2026-11-14T10:23:41.5Z", "nodeOomKills":{"cgroup":1,"host":0}, "nodeOomKillsSinceBoot":{"cgroup":1,"host":0}}`.
 - **The certificate contact** (`explorer_acme_email`, optional) is not a secret but is kept out of
   sight: a sensitive variable, so no plan line and no output prints it; it is in the Terraform state
   (`network_configs`, as every output value is), in the SSM Run Command parameters of each
@@ -391,9 +410,47 @@ registry. Two modes, exactly one per explorer:
 **Host size.** Built natively in a container limited to 2 CPUs and 3 GB (arm64, 2026-11-14):
 configure 30 s, compile 1 min 58 s with 2 jobs, the largest compiler process 0.95 GB resident, so
 about 2 GB with `jobs = 2`. A `t3a.medium` (2 vCPU, 4 GiB) builds it before the node starts on the
-first deploy (expect 5 to 15 minutes on its slower cores) and runs the four services with room to
-spare (E1, steady: node 0.4-0.9 GB, PostgreSQL 0.2-0.3 GB, Inzyght under 50 MB, Caddy 20 MB; the
-limits add up to 3.2 GiB).
+first deploy (expect 5 to 15 minutes on its slower cores) and runs the four services (E1, steady:
+node 0.4-0.9 GB, PostgreSQL 0.2-0.3 GB, Inzyght under 50 MB, Caddy 20 MB).
+
+The memory budget on a 4 GiB host with the 4 GiB swap file (MiB; the kernel and the OS keep about
+300 of the 4096), with the module's defaults:
+
+| Container | `mem_limit` | swap allowed beyond it | RAM + swap at most |
+|---|---|---|---|
+| node | `node_mem_limit_mb` 2304 | 2048 (`memswap_limit` set explicitly) | 4352 |
+| PostgreSQL | 768 | 768 (Docker's default) | 1536 |
+| Inzyght | `mem_limit_mb` 768 | 768 (Docker's default) | 1536 |
+| proxy | 128 | 128 (Docker's default) | 256 |
+| together | 3968 (3200 during the prefix import, when Inzyght does not run) | 3712 | 7680 of the host's 8192 |
+
+Inzyght uses under 50 MB, so a host may set `mem_limit_mb = 256` (the lowest the module accepts):
+then the limits add up to 3456 (3200 during the import), the swap allowances to 3200, RAM plus swap
+at most to 6656.
+
+**Why the node's limit is 2304 MiB.** The first explorer run gave the node 1536 MiB (with
+`-dbcache=512`), and 36 minutes into the prefix import (`-loadblock` with `-txindex
+-insightexplorer`) the kernel killed it: the kernel log shows a cgroup OOM kill
+(`constraint=CONSTRAINT_MEMCG`, "Memory cgroup out of memory: Killed process … (ycashd)") with
+about 1.5 GiB resident (`anon-rss` 1,549,184 kB), invoked from the import thread. Docker restarted
+it; afterwards `docker inspect` showed `RestartCount` 1, `OOMKilled` false and exit code 0, so
+Docker's own flag did not record the kill (hence `status` reads the kernel log). The node resumed
+from its last chainstate flush, well below the height it had reached. The fix relies on the higher
+limit: 2304 MiB of RAM, and `-dbcache=256` in the explorer root, which keeps the coins cache smaller
+and makes it flush more often, so a restart loses less.
+
+How the limits act (Docker, cgroup v2): a compose `mem_limit` without `memswap_limit` gets Docker's
+`--memory-swap` default of twice `--memory`, and the node's `memswap_limit` is set explicitly (the
+limit + 2048), so its swap allowance does not move with `node_mem_limit_mb`. A swap allowance only
+permits the kernel to swap the container's pages out before it kills a process in it, where swap is
+on and the kernel accounts swap for the cgroup; it does not guarantee it. The first run's kill came
+at the RAM limit with the node's resident memory at the limit, so swap did not save it there: the
+module creates the swap file (`setup.sh`, `swap_mb`) but sets no `vm.swappiness` and does not check
+that swap is on or what the container's `memory.swap.max` is, and that host's swap state at the time
+was not recorded. Read `swapon --show` and the container's `memory.swap.max` and `memory.swap.current`
+on the host before counting on the swap allowance. The limits together (3968 with the defaults)
+exceed the RAM the OS leaves (about 3.8 GiB), deliberately: the steady use is far below them; RAM
+plus every swap allowance (7680) stays under the host's 8192.
 Keep the module's 4 GiB swap for a rebuild while the node runs, and `cpu_credits = "unlimited"` for
 the first deploy (build, prefix import, first index). A `t3a.small` (2 GiB) would need `jobs = 1`
 and the swap for the build and leaves the node and PostgreSQL little page cache; it is not

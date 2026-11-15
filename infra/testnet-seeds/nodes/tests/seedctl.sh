@@ -59,7 +59,13 @@ case "$1" in
       getblockchaininfo) echo '{"chain":"test","blocks":1,"headers":1,"verificationprogress":1}' ;;
       getpeerinfo) echo '[{"inbound":true},{"inbound":false}]' ;;
     esac ;;
-  inspect) case "$3" in *Health*) echo healthy ;; *Status*) echo running ;; *) echo img ;; esac ;;
+  # a container named in FAKE_ABSENT is missing: an empty line on stdout, then the error (as docker does)
+  inspect) case " ${FAKE_ABSENT:-} " in *" $4 "*) echo; echo "Error: No such object: $4" >&2; exit 1 ;; esac
+    case "$3" in
+      *RestartCount*) case "$4" in ycashd-*) echo "${FAKE_RESTARTS:-0} ${FAKE_OOM:-false}" ;; *) echo "0 false" ;; esac ;;
+      *StartedAt*) echo 2026-11-14T10:00:00.123456789Z ;;
+      *Health*) echo healthy ;; *Status*) echo running ;; *) echo img ;;
+    esac ;;
 esac
 exit 0
 EOF
@@ -83,6 +89,17 @@ cat > "$T/bin/apt-get" <<'EOF'
 echo "apt-get $*" >> "$LOG"
 case "$*" in *" install "*docker-buildx*) touch "$FAKE_IMAGES.buildx" ;; esac
 EOF
+# the kernel log (status counts its OOM kills of ycashd): journalctl prints FAKE_KLOG (short-unix
+# times) and, with FAKE_JOURNAL_FAIL, fails after printing it; dmesg prints FAKE_DMESG
+cat > "$T/bin/journalctl" <<'EOF'
+#!/bin/bash
+printf '%s' "${FAKE_KLOG:-}"
+[ -z "${FAKE_JOURNAL_FAIL:-}" ] || exit 1
+EOF
+cat > "$T/bin/dmesg" <<'EOF'
+#!/bin/bash
+printf '%s' "${FAKE_DMESG:-}"
+EOF
 # systemd-run: runs the unit's command at once, in the foreground; systemctl: no unit is active
 cat > "$T/bin/systemd-run" <<'EOF'
 #!/bin/bash
@@ -96,7 +113,7 @@ cat > "$T/bin/systemctl" <<'EOF'
 [ -n "${FAKE_ACTIVE:-}" ] && [ -e "$FAKE_ACTIVE" ] && exit 0
 exit 3
 EOF
-chmod +x "$T/bin/docker" "$T/bin/curl" "$T/bin/iptables" "$T/bin/ip6tables" "$T/bin/apt-get" "$T/bin/systemd-run" "$T/bin/systemctl"
+chmod +x "$T/bin/journalctl" "$T/bin/dmesg" "$T/bin/docker" "$T/bin/curl" "$T/bin/iptables" "$T/bin/ip6tables" "$T/bin/apt-get" "$T/bin/systemd-run" "$T/bin/systemctl"
 export PATH="$T/bin:$PATH"
 
 # A config as the module's network_configs output carries it (locals.tf network_config).
@@ -254,9 +271,26 @@ pgpw=$(sed -n 's/^INZYGHT_DB_PASSWORD=//p' "$D/yb-fast/explorer/pg.env"); pw=$(s
 grep -qx "INZYGHT_PG_PASSWORD=$pgpw" "$D/yb-fast/explorer/inzyght.env" && grep -qx "INZYGHT_RPC_PASSWORD=$pw" "$D/yb-fast/explorer/inzyght.env" && ! grep -rqF -e "$pgpw" -e "$pw" "$O/net/yb-fast" || fail "Inzyght's credentials only in its env file, never in a rendered file"
 grep -qx 'explorer.example.org {' "$O/net/yb-fast/Caddyfile" && grep -qx '	email ops@example.org' "$O/net/yb-fast/Caddyfile" && grep -q 'reverse_proxy inzyght:8080' "$O/net/yb-fast/Caddyfile" && grep -q 'user: "2006:2006"' "$c" && [ "$(grep -c 'mem_limit:' "$c")" = 3 ] || fail "the Caddyfile: the name, the contact, Inzyght"
 grep -qx 'iptables -I DOCKER-USER 1 -s 172.31.250.0/23 -d 169.254.169.254/32 -j REJECT' "$LOG" || fail "the explorer's networks are refused the metadata service"
-s=$(FAKE_HEIGHT=255123 "$SEEDCTL" status yb-fast)
+grep -qx '    mem_limit: 2304m' "$c" && grep -qx '    memswap_limit: 4352m' "$c" && [ "$(grep -c 'memswap_limit:' "$c")" = 1 ] || fail "the node: 2304 MiB by default (a config without node_mem_limit_mb), 2 GiB of swap beyond it: $(grep mem "$c")"
+s=$(FAKE_HEIGHT=255123 FAKE_ABSENT=inzyght-yb-fast "$SEEDCTL" status yb-fast)
 [ "$(echo "$s" | jq -r .explorer.phase)" = "prefix import: 255123 of 510247 (49 %)" ] || fail "status during the import: $s"
-ok "an explorer while the prefix imports: node on its networks, PostgreSQL and proxy, Inzyght built, secrets private; status in percent"
+[ "$(echo "$s" | jq -c '[.explorer.inzyght, .explorer.image, .explorer.restarts, .explorer.oomKilled, .explorer.nodeStartedAt, .explorer.nodeOomKills, .explorer.nodeOomKillsSinceBoot]')" = '["absent","-",{"ycashd":0,"postgres":0,"inzyght":null,"proxy":0},{"ycashd":false,"postgres":false,"inzyght":null,"proxy":false},"2026-11-14T10:00:00.123456789Z",{"cgroup":0,"host":0},{"cgroup":0,"host":0}]' ] || fail "status: restarts, OOM flags, a missing container without docker's empty line: $s"
+s=$(FAKE_HEIGHT=255123 FAKE_ABSENT=inzyght-yb-fast FAKE_RESTARTS=2 "$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -r .explorer.phase)" = "prefix import: 255123 of 510247 (49 %), node restarted 2 times (OOM: no)" ] || fail "a restart during the import: $s"
+# the fake node started at 2026-11-14T10:00:00Z = 1794650400; kernel lines as journalctl -o short-unix prints them
+cg() { echo "$1.250000 host kernel: Memory cgroup out of memory: Killed process 4242 (ycashd) total-vm:3000000kB, anon-rss:1549184kB"; }
+hw() { echo "$1.250000 host kernel: Out of memory: Killed process 4243 (ycashd) total-vm:3000000kB"; }
+s=$(FAKE_HEIGHT=255123 FAKE_RESTARTS=1 FAKE_KLOG="$(cg 1794650370)"$'\n' "$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -r .explorer.phase)" = "prefix import: 255123 of 510247 (49 %), node restarted 1 time (OOM: yes)" ] && [ "$(echo "$s" | jq -c '[.explorer.nodeOomKills, .explorer.nodeOomKillsSinceBoot]')" = '[{"cgroup":1,"host":0},{"cgroup":1,"host":0}]' ] || fail "a cgroup OOM kill 30 s before the node's start: $s"
+s=$(FAKE_HEIGHT=255123 FAKE_RESTARTS=2 FAKE_KLOG="$(cg 1794646800)"$'\n' "$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -r .explorer.phase)" = "prefix import: 255123 of 510247 (49 %), node restarted 2 times (OOM: no)" ] && [ "$(echo "$s" | jq -c '[.explorer.nodeOomKills, .explorer.nodeOomKillsSinceBoot]')" = '[{"cgroup":0,"host":0},{"cgroup":1,"host":0}]' ] || fail "a kill an hour before the current start is not this restart's: $s"
+s=$(FAKE_HEIGHT=255123 FAKE_RESTARTS=1 FAKE_KLOG="$(cg 1794646800)"$'\n'"$(hw 1794650395)"$'\n' "$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -r .explorer.phase)" = "prefix import: 255123 of 510247 (49 %), node restarted 1 time (OOM: yes, the host ran out of memory)" ] && [ "$(echo "$s" | jq -c '[.explorer.nodeOomKills, .explorer.nodeOomKillsSinceBoot]')" = '[{"cgroup":0,"host":1},{"cgroup":1,"host":1}]' ] || fail "a host-wide OOM kill, counted apart from the cgroup ones: $s"
+s=$(FAKE_HEIGHT=255123 FAKE_RESTARTS=1 FAKE_JOURNAL_FAIL=1 FAKE_KLOG="$(cg 1794650370)"$'\n' FAKE_DMESG=$'[  812.1] Memory cgroup out of memory: Killed process 4242 (ycashd) total-vm:3000000kB\n' "$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -c .explorer.nodeOomKillsSinceBoot)" = '{"cgroup":1,"host":0}' ] || fail "a failing journalctl, then dmesg: each kill counted once: $s"
+[ "$(FAKE_HEIGHT=255123 FAKE_RESTARTS=1 FAKE_OOM=true "$SEEDCTL" status yb-fast | jq -r .explorer.phase)" = "prefix import: 255123 of 510247 (49 %), node restarted 1 time (OOM: yes)" ] || fail "Docker's OOMKilled flag"
+[ "$(FAKE_ABSENT=ycashd-yb-fast "$SEEDCTL" status yb-fast | jq -c '[.container, .image, .explorer.restarts.ycashd, .explorer.nodeStartedAt]')" = '["absent","-",null,null]' ] || fail "status with the node's container missing"
+ok "an explorer while the prefix imports: node on its networks, PostgreSQL and proxy, Inzyght built, secrets private; status in percent, restarts and OOM kills"
 "$SEEDCTL" prefix-check 2>/dev/null
 grep -q -- '-zmqpubhashblock=tcp://172.31.250.11:28332 -zmqpubhashtx=tcp://172.31.250.11:28332' "$e" && ! grep -q loadblock "$e" || fail "ZMQ on the node's backend address after the import: $(grep EXTRA "$e")"
 grep -q 'container_name: inzyght-yb-fast' "$c" && grep -q "image: $IMG" "$c" && grep -q 'pull_policy: never' "$c" && grep -q 'INZYGHT_ZMQ_ENDPOINT: "tcp://172.31.250.11:28332"' "$c" && grep -q 'INZYGHT_TRUSTED_PROXIES: "172.31.250.10"' "$c" && grep -q 'user: "2005:2005"' "$c" && grep -q 'ipv4_address: "172.31.250.12"' "$c" || fail "Inzyght after the import: $(cat "$c")"
@@ -286,13 +320,18 @@ touch "$D/yb-fast/explorer/pg/PG_VERSION" "$D/yb-fast/explorer/caddy/data/cert"
 "$SEEDCTL" reset yb-fast "$EXPL" 2>/dev/null
 [ ! -e "$D/yb-fast/explorer/pg/PG_VERSION" ] && [ -e "$D/yb-fast/explorer/caddy/data/cert" ] && grep -qx "INZYGHT_DB_PASSWORD=$pgpw" "$D/yb-fast/explorer/pg.env" || fail "reset: the index goes with the chain; the certificate and the secrets stay"
 ok "reset: the index is wiped with the chain, the certificate kept"
+BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.node_mem_limit_mb = 100' | b64)
+if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "accepted a node memory limit of 100 MiB"; fi
+MEMX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.node_mem_limit_mb = 3072' | b64)
+"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null || fail "apply with node_mem_limit_mb"
+grep -qx '    mem_limit: 3072m' "$c" && grep -qx '    memswap_limit: 5120m' "$c" || fail "node_mem_limit_mb 3072: $(grep mem "$c")"
 BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.log_level = "DEBUG"' | b64)
 if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "accepted DEBUG (it logs the database password)"; fi
 BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.hostname = "x\nemail evil"' | b64)
 if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "accepted a newline in the host name"; fi
 BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.build.context_sha256 = "abababababababababababababababababababababababababababababababab"' | b64)
 if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "built from a context that does not match its sha256"; fi
-ok "refuses DEBUG, an injected host name, a build context that does not match"
+ok "node_mem_limit_mb renders the node's limit; refuses a small one, DEBUG, an injected host name, a build context that does not match"
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null
 grep -q 'network_mode: host' "$c" && ! grep -q postgres "$c" && grep -q 'docker rm -f postgres-yb-fast inzyght-yb-fast proxy-yb-fast' "$LOG" && grep -qx 'YCASHD_INSIGHT=0' "$e" || fail "an explorer removed from the config"

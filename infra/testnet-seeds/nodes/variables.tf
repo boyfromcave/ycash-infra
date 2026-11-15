@@ -93,7 +93,9 @@ variable "networks" {
     delivered by the deploy workflow) against that repository at that full commit, and runs the
     locally built tag; this is the mode while Inzyght has no licence (no published image).
     `postgres_image` and `proxy_image` by digest. `threads`, `mem_limit_mb` and `log_level` (INFO, WARN
-    or ERROR; DEBUG would log the database password) tune Inzyght; `pg_shared_buffers_mb` PostgreSQL.
+    or ERROR; DEBUG would log the database password) tune Inzyght; `pg_shared_buffers_mb` PostgreSQL;
+    `node_mem_limit_mb` (default 2304, 512-65536) is the explorer's node container's memory limit, with
+    2 GiB of swap allowed beyond it (README.md, "Host size").
     One explorer per host (it owns ports 80 and 443), never beside a pool.
   EOT
   type = map(object({
@@ -123,6 +125,8 @@ variable "networks" {
       log_level      = optional(string, "INFO")
       # PostgreSQL's shared_buffers, MiB (Inzyght's pg_tune.sh value for a small host)
       pg_shared_buffers_mb = optional(number, 256)
+      # the node container's memory limit, MiB (its swap allowance is 2048 MiB beyond it)
+      node_mem_limit_mb = optional(number, 2304)
     }))
   }))
   default = {
@@ -178,9 +182,10 @@ variable "networks" {
       contains(["INFO", "WARN", "ERROR"], n.explorer.log_level) &&
       n.explorer.threads >= 1 && n.explorer.threads <= 64 && floor(n.explorer.threads) == n.explorer.threads &&
       n.explorer.mem_limit_mb >= 256 && n.explorer.mem_limit_mb <= 65536 && floor(n.explorer.mem_limit_mb) == n.explorer.mem_limit_mb &&
-      n.explorer.pg_shared_buffers_mb >= 32 && n.explorer.pg_shared_buffers_mb <= 16384 && floor(n.explorer.pg_shared_buffers_mb) == n.explorer.pg_shared_buffers_mb
+      n.explorer.pg_shared_buffers_mb >= 32 && n.explorer.pg_shared_buffers_mb <= 16384 && floor(n.explorer.pg_shared_buffers_mb) == n.explorer.pg_shared_buffers_mb &&
+      n.explorer.node_mem_limit_mb >= 512 && n.explorer.node_mem_limit_mb <= 65536 && floor(n.explorer.node_mem_limit_mb) == n.explorer.node_mem_limit_mb
     )])
-    error_message = "networks: an explorer needs insight = true and no pool; hostname a lowercase DNS name; exactly one of image (by digest) and build; postgres_image and proxy_image by digest; log_level INFO, WARN or ERROR; threads 1-64, mem_limit_mb 256-65536, pg_shared_buffers_mb 32-16384, whole numbers."
+    error_message = "networks: an explorer needs insight = true and no pool; hostname a lowercase DNS name; exactly one of image (by digest) and build; postgres_image and proxy_image by digest; log_level INFO, WARN or ERROR; threads 1-64, mem_limit_mb 256-65536, pg_shared_buffers_mb 32-16384, node_mem_limit_mb 512-65536, whole numbers."
   }
   validation {
     condition = alltrue([for k, n in var.networks : try(n.explorer.build, null) == null ? true : (
