@@ -362,16 +362,23 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
   `restarts` (Docker's `RestartCount`: restarts by the restart policy since the container was
   created; an apply that recreates it starts again at 0) and `oomKilled` (Docker's
   `State.OOMKilled`, about the container's last exit), each `null` for a container that is absent;
-  the node's `nodeStartedAt` (when its current process started) and `nodeKernelOomKills` (the
-  kernel log's OOM kills of a `ycashd` process since the host booted, independent of Docker's
-  flag). The explorer field's `phase` is one line for a first start: a detached run's current step,
+  the node's `nodeStartedAt` (when its current process started), `nodeOomKills` and
+  `nodeOomKillsSinceBoot`: the kernel log's OOM kills of a `ycashd` process, as
+  `{"cgroup": N, "host": N}` (`cgroup`: "Memory cgroup out of memory", the container's own limit;
+  `host`: "Out of memory", the whole host), `nodeOomKills` from a minute before the current start
+  on (so the kill that caused this start counts and one from an earlier start does not),
+  `nodeOomKillsSinceBoot` since the host booted; `null` when the kernel log cannot be read (or, for
+  `nodeOomKills`, its times or the start time are unknown). The kernel log is the source to trust:
+  for the first explorer run's cgroup kill Docker's `OOMKilled` read `false` (and the exit code 0).
+  The explorer field's `phase` is one line for a first start: a detached run's current step,
   `prefix import: H of L (N %)`, `explorer image missing: <why>`, `indexing: H of B`, or `serving`;
-  a node that restarted during the import adds `, node restarted K times (OOM: yes|no)` (yes when
-  Docker's flag or the kernel log shows an OOM kill), so a crash loop or a memory kill shows from
-  `status` alone. A node restart during the import resumes from its last chainstate flush, not from
-  the height it had reached (the network's `-dbcache` sets how often it flushes).
+  a node that restarted during the import adds `, node restarted K times (OOM: …)`: `yes` for a
+  cgroup kill in `nodeOomKills` (or Docker's flag set), `yes, the host ran out of memory` for a
+  host-wide one, `no`, or `unknown` without a readable kernel log; so a crash loop or a memory kill
+  shows from `status` alone. A node restart during the import resumes from its last chainstate
+  flush, not from the height it had reached (the network's `-dbcache` sets how often it flushes).
   Example, during the import:
-  `{"phase":"prefix import: 305248 of 510247 (59 %), node restarted 1 time (OOM: yes)", …, "inzyght":"absent", …, "restarts":{"ycashd":1,"postgres":0,"inzyght":null,"proxy":0}, "oomKilled":{"ycashd":true,"postgres":false,"inzyght":null,"proxy":false}, "nodeStartedAt":"2026-11-14T10:23:41.5Z", "nodeKernelOomKills":1}`.
+  `{"phase":"prefix import: 305248 of 510247 (59 %), node restarted 1 time (OOM: yes)", …, "inzyght":"absent", …, "restarts":{"ycashd":1,"postgres":0,"inzyght":null,"proxy":0}, "oomKilled":{"ycashd":false,"postgres":false,"inzyght":null,"proxy":false}, "nodeStartedAt":"2026-11-14T10:23:41.5Z", "nodeOomKills":{"cgroup":1,"host":0}, "nodeOomKillsSinceBoot":{"cgroup":1,"host":0}}`.
 - **The certificate contact** (`explorer_acme_email`, optional) is not a secret but is kept out of
   sight: a sensitive variable, so no plan line and no output prints it; it is in the Terraform state
   (`network_configs`, as every output value is), in the SSM Run Command parameters of each
@@ -407,7 +414,7 @@ first deploy (expect 5 to 15 minutes on its slower cores) and runs the four serv
 node 0.4-0.9 GB, PostgreSQL 0.2-0.3 GB, Inzyght under 50 MB, Caddy 20 MB).
 
 The memory budget on a 4 GiB host with the 4 GiB swap file (MiB; the kernel and the OS keep about
-300 of the 4096):
+300 of the 4096), with the module's defaults:
 
 | Container | `mem_limit` | swap allowed beyond it | RAM + swap at most |
 |---|---|---|---|
@@ -417,22 +424,33 @@ The memory budget on a 4 GiB host with the 4 GiB swap file (MiB; the kernel and 
 | proxy | 128 | 128 (Docker's default) | 256 |
 | together | 3968 (3200 during the prefix import, when Inzyght does not run) | 3712 | 7680 of the host's 8192 |
 
-How the limits act (Docker on Ubuntu 24.04, cgroup v2, swap accounting on): a compose `mem_limit`
-without `memswap_limit` lets the container use the same amount again in swap (Docker's
-`--memory-swap` defaults to twice `--memory`), so it is not a RAM-only cap; at the limit the kernel
-first reclaims, swapping the container's cold pages out, and the OOM killer kills a process in it
-only when RAM and the swap allowance are both used up. The node's swap allowance is set explicitly
-(`memswap_limit` = the limit + 2048), so it does not move with `node_mem_limit_mb`, and it is the
-largest one on purpose: during the prefix import (`-loadblock` with `-txindex -insightexplorer`) the
-node's memory grows with the coins cache (`-dbcache`) and the index writes, and under pressure it
-should slow down in swap rather than be killed (a killed node resumes from its last chainstate
-flush, losing what it had imported since). The limits together (3968) exceed the RAM the OS leaves
-(about 3.8 GiB), deliberately: the steady use is far below them, and the swap file covers a peak; RAM
-plus swap at most (7680) stays under the host's 8192, so the limits, not a host-wide OOM kill, are
-what acts first. The first explorer run on 1536 MiB (with `-dbcache=512`) restarted near height
-497,000 of the import; the memory limit is the suspected cause (not confirmed: that host's logs were
-not reachable), so the default was raised, and `status` now shows such a restart and whether it
-was an OOM kill.
+Inzyght uses under 50 MB, so a host may set `mem_limit_mb = 256` (the lowest the module accepts):
+then the limits add up to 3456 (3200 during the import), the swap allowances to 3200, RAM plus swap
+at most to 6656.
+
+**Why the node's limit is 2304 MiB.** The first explorer run gave the node 1536 MiB (with
+`-dbcache=512`), and 36 minutes into the prefix import (`-loadblock` with `-txindex
+-insightexplorer`) the kernel killed it: the kernel log shows a cgroup OOM kill
+(`constraint=CONSTRAINT_MEMCG`, "Memory cgroup out of memory: Killed process … (ycashd)") with
+about 1.5 GiB resident (`anon-rss` 1,549,184 kB), invoked from the import thread. Docker restarted
+it; afterwards `docker inspect` showed `RestartCount` 1, `OOMKilled` false and exit code 0, so
+Docker's own flag did not record the kill (hence `status` reads the kernel log). The node resumed
+from its last chainstate flush, well below the height it had reached. The fix relies on the higher
+limit: 2304 MiB of RAM, and `-dbcache=256` in the explorer root, which keeps the coins cache smaller
+and makes it flush more often, so a restart loses less.
+
+How the limits act (Docker, cgroup v2): a compose `mem_limit` without `memswap_limit` gets Docker's
+`--memory-swap` default of twice `--memory`, and the node's `memswap_limit` is set explicitly (the
+limit + 2048), so its swap allowance does not move with `node_mem_limit_mb`. A swap allowance only
+permits the kernel to swap the container's pages out before it kills a process in it, where swap is
+on and the kernel accounts swap for the cgroup; it does not guarantee it. The first run's kill came
+at the RAM limit with the node's resident memory at the limit, so swap did not save it there: the
+module creates the swap file (`setup.sh`, `swap_mb`) but sets no `vm.swappiness` and does not check
+that swap is on or what the container's `memory.swap.max` is, and that host's swap state at the time
+was not recorded. Read `swapon --show` and the container's `memory.swap.max` and `memory.swap.current`
+on the host before counting on the swap allowance. The limits together (3968 with the defaults)
+exceed the RAM the OS leaves (about 3.8 GiB), deliberately: the steady use is far below them; RAM
+plus every swap allowance (7680) stays under the host's 8192.
 Keep the module's 4 GiB swap for a rebuild while the node runs, and `cpu_credits = "unlimited"` for
 the first deploy (build, prefix import, first index). A `t3a.small` (2 GiB) would need `jobs = 1`
 and the swap for the build and leaves the node and PostgreSQL little page cache; it is not
