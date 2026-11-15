@@ -17,9 +17,13 @@
 # Environment:
 #   POOL_URL    required. The stratum pool, host:port or stratum+tcp://host:port (no user:password@).
 #   WORKER      the worker name (letters, digits, . _ -; default ycash-miner).
-#   PAYOUT      optional, a transparent address. yolo pays the stratum username unless the pool runs
-#               with --payout, so: PAYOUT set -> the username is PAYOUT (WORKER is only logged);
-#               PAYOUT unset -> the username is WORKER (the pool must run with --payout).
+#   PAYOUT      optional, the address this miner is paid at, of one of three kinds: transparent (35
+#               characters, Base58: s1/s3 mainnet, sm/s2 testnet), Sapling (Bech32, lower case: ys1...
+#               78 characters, ytestsapling1... 88) or post-quantum (53, Base58: sqf/sqs, tqf/tqs).
+#               The fleet (scripts/vast-fleet.py) checks it in full, checksum included; this script
+#               checks its form. yolo pays the stratum username unless the pool runs with --payout, so:
+#               PAYOUT set -> the username is PAYOUT, unchanged and with no worker suffix (WORKER is
+#               only logged); PAYOUT unset -> the username is WORKER (the pool must run with --payout).
 #   MINER       lolminer (default) or miniz. miniz is refused unless MINIZ_URL and MINIZ_SHA256 are
 #               set (in the manifest or the environment).
 #   MINIZ_URL, MINIZ_SHA256  miniZ's official download (https; miniz.cc serves it from a query URL,
@@ -101,9 +105,17 @@ worker=${WORKER:-ycash-miner}
 [[ $worker =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "WORKER: 1 to 64 letters, digits, '.', '_' or '-'"
 
 payout=${PAYOUT:-}
+kind=
 if [ -n "$payout" ]; then
-  # base58 (no 0, O, I, l); Ycash transparent addresses are 35 characters
-  [[ $payout =~ ^[1-9A-HJ-NP-Za-km-z]{26,40}$ ]] || die "PAYOUT is not a transparent address"
+  # Base58 has no 0, O, I or l; Bech32 data is lower-case letters and digits without 1, b, i or o.
+  # None of the three contains a "." or an "@", so it is safe as the user part of miniZ's --url.
+  b58='[1-9A-HJ-NP-Za-km-z]'
+  if [[ $payout =~ ^s[1-3m]$b58{33}$ ]]; then kind=transparent
+  elif [[ $payout =~ ^(ys|ytestsapling)1[02-9ac-hj-np-z]{75}$ ]]; then kind=sapling
+  elif [[ $payout =~ ^[st]q[fs]$b58{50}$ ]]; then kind=post-quantum
+  else
+    die "PAYOUT is not a payout address: transparent (s1/s3/sm/s2..., 35 characters), Sapling (ys1... 78 or ytestsapling1... 88, lower case) or post-quantum (sqf/sqs/tqf/tqs..., 53)"
+  fi
   user=$payout
 else
   user=$worker
@@ -115,7 +127,7 @@ until=${MINER_UNTIL:-}
 extra=()
 if [ -n "${MINER_ARGS:-}" ]; then
   read -r -a extra <<< "$MINER_ARGS"
-  for a in "${extra[@]}"; do
+  for a in ${extra[@]+"${extra[@]}"}; do
     [[ $a =~ ^[A-Za-z0-9=,._:/*-]+$ ]] || die "MINER_ARGS: unexpected characters in '$a'"
     case "${a%%=*}" in
       -p|--pool|-u|--user|--pass|--dualpool|--dualuser|--dualpass|-a|--algo|--pers|-c|--coin|--config|--json|--profile|--watchdogscript|--apihost|--apiport|--tls|--socks5|--dns-over-https|--url|--par|--smart-pers|--run|--telemetry|--url2|--server|--port|--worker|--socks|--read-config|--write-config|--donate)
@@ -129,16 +141,16 @@ bin=$CACHE/$miner-$sha/$exe
 case "$miner" in
   lolminer)
     cmd=("$bin" --algo EQUI192_7 --pers "$PERS" --pool "$pool" --user "$user" --tls off
-         --dns-over-https 0 --apiport 0 --watchdog exit --nocolor --timeprint on "${extra[@]}") ;;
+         --dns-over-https 0 --apiport 0 --watchdog exit --nocolor --timeprint on ${extra[@]+"${extra[@]}"}) ;;
   miniz)
     # miniZ's own documentation (miniz.cc/usage, and its FAQ "How to mine Ycash (YEC)?"):
     # --url=<user>@<host>:<port>, --par=192,7 --pers=ZcashPoW; --telemetry=0 turns its local API
     # (default port 20000) off, as --apiport 0 does for lolMiner; --nocolour as its --help spells it
-    cmd=("$bin" "--url=$user@$pool" "--par=192,7" "--pers=$PERS" "--telemetry=0" "--nocolour" "${extra[@]}") ;;
+    cmd=("$bin" "--url=$user@$pool" "--par=192,7" "--pers=$PERS" "--telemetry=0" "--nocolour" ${extra[@]+"${extra[@]}"}) ;;
 esac
 
 paid="the pool's own address (the pool runs with --payout)"
-[ -z "$payout" ] || paid=$payout
+[ -z "$payout" ] || paid="$payout ($kind, the stratum username)"
 echo "ycash-miner: $miner $version from $url (SHA-256 $sha), Equihash 192,7 (personalization $PERS), pool $pool, worker $worker, paid to $paid"
 echo "ycash-miner: the miner is downloaded from its official release and checked, never shipped in this image; it keeps its developer fee"
 [ -z "$until" ] || echo "ycash-miner: a burst miner: it stops and ends its rental at $(date -u -d "@$until" '+%Y-%m-%d %H:%M UTC')"
@@ -309,7 +321,7 @@ gpu_check() { # prints the listings; true when a GPU the miner can use is there
       echo "ycash-miner: lolMiner sees no OpenCL GPU (nvidia-smi: $smi GPU(s), lolMiner OpenCL: $ocl); miniZ (MINER=miniz) mines 192,7 with CUDA" >&2
       return 1 ;;
     miniz)
-      out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "${runenv[@]}" "$bin" --cuda-info --nocolour 2>&1) || true
+      out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID ${runenv[@]+"${runenv[@]}"} "$bin" --cuda-info --nocolour 2>&1) || true
       printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^ *$' | say "miniZ --cuda-info: "
       if printf '%s\n' "$out" | grep -q 'dlopen "libcuda.so.1" failed'; then
         echo "ycash-miner: miniZ cannot load the CUDA driver (libcuda.so.1)" >&2
@@ -380,10 +392,10 @@ while :; do
   if [ -n "$until" ]; then
     left=$(( until - $(date +%s) ))
     [ "$left" -gt 0 ] || burst_over
-    timeout --signal=TERM --kill-after=30 "$left" env -u CONTAINER_API_KEY -u CONTAINER_ID "${runenv[@]}" "${cmd[@]}" || rc=$?
+    timeout --signal=TERM --kill-after=30 "$left" env -u CONTAINER_API_KEY -u CONTAINER_ID ${runenv[@]+"${runenv[@]}"} "${cmd[@]}" || rc=$?
     if past_until; then burst_over; fi
   else
-    env -u CONTAINER_API_KEY -u CONTAINER_ID "${runenv[@]}" "${cmd[@]}" || rc=$?
+    env -u CONTAINER_API_KEY -u CONTAINER_ID ${runenv[@]+"${runenv[@]}"} "${cmd[@]}" || rc=$?
   fi
   if { [ "$miner" = lolminer ] && [ "$rc" = 42 ]; } || { [ "$miner" = miniz ] && [ "$rc" != 0 ]; }; then
     [ "$restarts" -lt 20 ] || { echo "ycash-miner: $miner exited with $rc after 20 restarts" >&2; exit "$rc"; }

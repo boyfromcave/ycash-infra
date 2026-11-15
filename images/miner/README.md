@@ -183,7 +183,7 @@ stop the network), and it mines 192,7 with CUDA where lolMiner needs OpenCL.
 |---|---|---|
 | `POOL_URL` | yes | the stratum pool, `host:port` or `stratum+tcp://host:port`. Refused with a `user:password@` part |
 | `WORKER` | no (`ycash-miner`) | this miner's name: letters, digits, `.`, `_`, `-` |
-| `PAYOUT` | no | a transparent address to be paid. See below |
+| `PAYOUT` | no | the address to be paid: transparent (35), Sapling (78 or 88) or post-quantum (53). See below |
 | `MINER` | no (`lolminer`) | `lolminer` or `miniz` (miniz only once pinned) |
 | `MINIZ_URL`, `MINIZ_SHA256` | for miniz | miniZ's https download (a query URL is allowed: miniz.cc's link) and the archive's SHA-256 |
 | `MINER_ARGS` | no | extra miner options, e.g. `--devices 0`; pool, user, password, algorithm, personalization, API and TLS options are refused |
@@ -200,13 +200,28 @@ download failed (no network or the release moved; nothing run), 70 no usable GPU
 **Who gets paid (yolo).** Without `--payout`, a yolo pool pays each block to the miner's **stratum
 username**, which must then be a transparent address; with `--payout <address>`, the pool pays that
 address for every block and the username is just a name. So:
-- `PAYOUT` set: the username is `PAYOUT` (`WORKER` only appears in this container's log);
+- `PAYOUT` set: the username is `PAYOUT`, whole and unchanged (`WORKER` only appears in this
+  container's log). It may be a transparent address (`s1…`/`s3…`, testnet `sm…`/`s2…`, 35 characters,
+  Base58), a Sapling address (`ys1…` 78, testnet `ytestsapling1…` 88, Bech32 lower case) or a
+  post-quantum one (`sqf…`/`sqs…`, testnet `tqf…`/`tqs…`, 53, Base58); the entrypoint checks the
+  form and refuses anything else (exit 64), the fleet checks the checksum too;
 - `PAYOUT` unset: the username is `WORKER`, and the pool must run with `--payout`.
 
 The rented fleet assumes its pools run with `--payout` (the pool operator's address) and leaves
-`PAYOUT` empty; a fleet whose pools pay usernames sets `payout` to a testnet transparent address. No
+`PAYOUT` empty; a fleet whose pools pay usernames sets `payouts`, one address per miner. No
 password is ever sent: a yolo pool for these miners runs without `--password` (a stratum password
 crosses the network in clear and would sit on every rented machine).
+
+**Long usernames and miniZ.** miniZ takes the username in `--url=<user>@<host>:<port>`
+(https://miniz.cc/usage/: `--url= [[ssl://]user.worker@server:port]`; `--user` is marked
+deprecated there). None of the three address kinds contains a `.`, `@` or `:`, so the user part
+cannot be mistaken for a worker suffix, a password or the host. The image passes the bare address
+and adds no `.worker` (a yolo pool without `--payout` refuses a suffix until it accepts
+`<address>.<label>`). What miniZ's documentation does **not** settle: whether it limits a
+username's length (no limit is documented, none is mentioned) and whether it appends a worker
+name of its own when none is given (its examples always write `Wallet.Worker` themselves, and
+nothing says it adds one). Both are checked on one short paid burst before the demonstration
+(`infra/vast-miners/README.md`, "The long-username check").
 
 ## Run it yourself (testnet only)
 

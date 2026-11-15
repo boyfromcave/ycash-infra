@@ -70,7 +70,9 @@ of ours.
 | `rental` | `on-demand` (keeps running) or `interruptible` (cheaper, can be outbid and stopped; bids 10 % over the offer's minimum, never over `max_dph`) |
 | `pools` | the stratum pools, `host:port` |
 | `worker_prefix` | miner `n` is worker `<prefix>-<n>` |
-| `payout` | empty (the pool runs with `--payout`) or a transparent address (the pool pays usernames) |
+| `payouts` | a list of payout addresses, **one per miner**: miner `n` is paid at entry `n mod length` (four addresses and four miners: each its own; more miners than addresses: they cycle). Empty (`[]`): the username is the worker name and the pool pays its own address (`--payout`). See "Payout addresses" |
+| `payout` | the old form, still accepted: one address for every miner, or `""`. Not together with a non-empty `payouts` |
+| `chain` | `testnet` (default) or `mainnet`: which network's address forms `payouts` must be |
 | `extra_args` | extra miner options (no pool, user, password or algorithm options) |
 | `miner` | `lolminer` (default) or `miniz`, or a list of them spread over the slots; passed as `MINER` |
 
@@ -79,6 +81,45 @@ The script **refuses** a file with a field named like a secret (`key`, `token`, 
 `user:password@` in a URL): a miner may carry only a pool address, a worker name and a payout
 address. It **will not start** a network whose pool address is a placeholder (a host under
 `.example` or `.invalid`) or whose image digest is the all-zero placeholder.
+
+### Payout addresses
+
+The miner image passes the address, unchanged and with no worker suffix, as its stratum username; a
+yolo pool without `--payout` pays each block to the username. Three kinds are accepted, each checked
+in full (version bytes or HRP, length, character set, checksum: a typo is refused before anything
+is rented):
+
+| Kind | testnet | mainnet | Characters |
+|---|---|---|---|
+| transparent (P2PKH, P2SH) | `sm…`, `s2…`, 35 | `s1…`, `s3…`, 35 | Base58 (no `0`, `O`, `I`, `l`) |
+| Sapling | `ytestsapling1…`, 88 | `ys1…`, 78 | Bech32: lower-case letters and digits (no `1`, `b`, `i`, `o` after the separator) |
+| post-quantum (FN-DSA-512, SLH-DSA-SHA2-128s) | `tqf…`, `tqs…`, 53 | `sqf…`, `sqs…`, 53 | Base58 |
+
+Anything else is refused with the forms above: another network's address, a YED address, a
+Zcash prefix, a regtest Sapling address, a worker suffix (`<address>.rig1`). `status`, `logs`,
+`validate` and the burst's own lines show a payout as its kind and a shortened address
+(`sapling ytestsap…996r`), never in full, the dry run's `would run:` lines included (each miner's
+environment, with the payout shown so). A Sapling payout is visible only to the wallet that owns it: check it there
+(`z_listunspent`), not on an explorer.
+
+### The long-username check (one paid burst, before the demonstration)
+
+miniZ's documentation names no username length limit and does not say whether it appends a worker
+name of its own (images/miner/README.md, "Long usernames and miniZ"). One card for a few minutes
+settles both, on the fast pool as it runs today (with `--payout`, so the username is only a name
+and nothing is paid to it; any valid 88-character testnet Sapling address will do):
+
+```bash
+gh workflow run miners.yml -R <owner>/<ops repository> --ref main -f action=burst -f network=fast \
+  -f count=1 -f hours=1 -f payouts=<an 88-character ytestsapling1… address>
+```
+
+What to look for in the pool's log (yolo logs each authorisation, strings up to 128 bytes in
+full): `miner <n>: authorized as ytestsapling1…` with **exactly** the 88 characters given and
+nothing after them (no `.` suffix), then accepted shares from that miner in `/status`. A shorter
+string means miniZ truncates (fall back to another Equihash 192,7 miner for Sapling payouts); a
+`.<something>` tail means miniZ appends a worker name (the pool must accept `<address>.<label>`
+first, beta3 N-1 D-5). End it with `down fast` once the shares are seen.
 
 ## Actions
 
@@ -89,6 +130,7 @@ python3 -I scripts/vast-fleet.py --fleet fleet.json status
 python3 -I scripts/vast-fleet.py --fleet fleet.json --dry-run reconcile
 python3 -I scripts/vast-fleet.py --fleet fleet.json reconcile [--network slow]
 python3 -I scripts/vast-fleet.py --fleet fleet.json burst legacy 1 --hours 48
+python3 -I scripts/vast-fleet.py --fleet fleet.json --dry-run burst fast 4 --hours 2 --payouts <a>,<b>,<c>,<d>
 python3 -I scripts/vast-fleet.py --fleet fleet.json expire            # only ends bursts whose time is up
 python3 -I scripts/vast-fleet.py --fleet fleet.json logs [--network fast] [--tail 200]
 python3 -I scripts/vast-fleet.py --fleet fleet.json down [--network legacy]
@@ -104,6 +146,16 @@ python3 -I scripts/vast-fleet.py --fleet fleet.json down [--network legacy]
   fleet then rents a permanent miner in its place), and `expire` does only the destroying (it never
   rents). A later burst on the same network sets a new end time and gives back slots above its `N`;
   a miner whose end time moved gets a new container, because the old one ends itself at the old time.
+  `--payouts A,B,…` (comma or space separated) pays the burst's miners at those addresses instead
+  of the file's `payouts`, by index as above (an input with no address in it, such as `,,`, is
+  refused rather than falling back to the file's). A burst miner keeps the address it was started
+  with: a later scheduled `reconcile`, which does not know the burst's list, leaves it alone, and if
+  it dies (or its end time moves) its replacement is started at the address its last instance had,
+  read back from that instance's environment; if that cannot be read, or is not a valid address of
+  the network, the slot is **not** recreated and the run says so (start the burst again with its
+  payouts). A permanent miner whose address changed in the file is replaced. A slot that is
+  already a running fleet miner (within `count`, no end time) stays as it is during a burst, so it
+  keeps the file's payout, not the burst's: the burst's list applies to the slots the burst rents.
 - **A burst ends three ways, whichever comes first:** the miner's container stops mining at
   `MINER_UNTIL` and destroys its own Vast instance with the per-instance key Vast gives every
   container (`CONTAINER_API_KEY`, scoped to that instance; stop if destroy is refused;
@@ -121,8 +173,13 @@ python3 -I scripts/vast-fleet.py --fleet fleet.json down [--network legacy]
   terminal codes removed; in GitHub Actions each log is printed between `::stop-commands::<random>`
   and `::<random>::`, so nothing the machine printed acts as a workflow command. A redirect of the
   log link is followed only to https.
-- `status` shows each miner's state, how long ago Vast started it, and Vast's own status message
-  (addresses masked).
+- `status` shows each miner's state, how long ago Vast started it, its payout (kind and a shortened
+  address, from the environment it was started with), the accepted shares its log shows, and
+  Vast's own status message (addresses masked). The share count is read from each running miner's
+  last 400 log lines: miniZ's running total (`S: <accepted>/<rejected>`), else the share-accepted
+  lines in that tail; `?` when the log has neither or cannot be read (`--no-shares` skips the log
+  reads). The pool's own `/status` is the authoritative count. `logs` ends each miner's log with
+  the same payout and share count.
 - `--dry-run` reads the account and the offers and prints what it would do, changing nothing.
 - In GitHub Actions the key, every instance id and every host address are masked (`::add-mask::`)
   before anything is printed; instances are shown by label only. API errors are cut short and the

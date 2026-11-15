@@ -23,7 +23,7 @@
         "pool-a.example:3333"
       ],
       "worker_prefix": "vast-fast",
-      "payout": "",
+      "payouts": [],
       "miner": "lolminer"
     },
     "slow": {
@@ -43,7 +43,7 @@
         "pool-b.example:3333"
       ],
       "worker_prefix": "vast-slow",
-      "payout": "",
+      "payouts": [],
       "miner": "lolminer"
     },
     "legacy": {
@@ -62,7 +62,7 @@
         "pool-c.example:3333"
       ],
       "worker_prefix": "vast-legacy",
-      "payout": "",
+      "payouts": [],
       "miner": "lolminer"
     }
   }

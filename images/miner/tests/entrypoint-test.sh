@@ -125,6 +125,15 @@ run POOL_URL=pool.example:3333 WORKER='a b'
 [ "$rc" = 64 ] || fail "a worker name with a space"
 run POOL_URL=pool.example:3333 PAYOUT='not-an-address!'
 [ "$rc" = 64 ] || fail "a malformed payout address"
+# a worker suffix, Zcash's prefixes, an upper-case Bech32, a regtest Sapling, a short post-quantum, a "0"
+for bad in smDjxPnw7p3e7TQaQchJPDENxCnQif2d4CG.rig1 tmAbCdEfGhJkLmNpQrStUvWxYz123456789 \
+           YTESTSAPLING1ZJDL8R4NL00QN430D60A00GRUD0QQXM39ZKC24FNVUUD26YRH0D059DZ6S2HS5VUHUPZ79W996R \
+           yregtestsapling1zjdl8r4nl00qn430d60a00grud0qqxm39zkc24fnvuud26yrh0d059dz6s2hs5vuhupz79w996r \
+           ztestsapling1zjdl8r4nl00qn430d60a00grud0qqxm39zkc24fnvuud26yrh0d059dz6s2hs5vuhupz79w996r \
+           tqf4Mb9Bvi1zFJxcQxi7iveCQyWsa9SoSk4KW18TaZJZMiv6mUqj tqf4Mb9Bvi1zFJxcQxi7iveCQyWsa9SoSk4KW18TaZJZMiv6mUqj0; do
+  run POOL_URL=pool.example:3333 PAYOUT=$bad
+  if ! { [ "$rc" = 64 ] && grep -q 'PAYOUT is not a payout address' "$T/out" && [ ! -s "$T/calls" ]; }; then fail "PAYOUT $bad refused"; fi
+done
 for bad in '--pass x' '--user=someone' '-p other.example:1' '--watchdogscript /tmp/x' '--apiport 4444' '--pers ZERO_PoW' '--url=x@y:1' '--par=200,9'; do
   run POOL_URL=pool.example:3333 MINER_ARGS="$bad"
   if ! { [ "$rc" = 64 ] && [ ! -s "$T/calls" ]; }; then fail "MINER_ARGS '$bad' refused"; fi
@@ -171,9 +180,19 @@ if ! { [ "$rc" = 69 ] && grep -q 'could not download' "$T/out" && grep -q 'nothi
 echo "ok - refuses on a SHA-256 mismatch (65) and when the download fails (69); nothing runs"
 
 fresh
-addr=tmAbCdEfGhJkLmNpQrStUvWxYz123456789
+addr=smDjxPnw7p3e7TQaQchJPDENxCnQif2d4CG
 run POOL_URL=pool.example:3333 WORKER=vast-slow-1 PAYOUT=$addr MINER_ARGS='--devices 0 --keepfree=64'
 if ! { [ "$rc" = 0 ] && grep -q -- "--user $addr --tls off .* --devices 0 --keepfree=64\$" "$T/calls"; }; then fail "payout as username, extra args appended"; fi
+# miniZ: each of the three kinds is the user part of --url, whole (the test vectors of
+# scripts/tests/test_vast_fleet.py: T_ADDR, T_SAP1, T_PQF, T_PQS; and a mainnet Sapling, 78)
+for pay in smDjxPnw7p3e7TQaQchJPDENxCnQif2d4CG s2M2NcupGY2CimXMbxo8nUnRCJch7AS7cRf \
+           ytestsapling1zjdl8r4nl00qn430d60a00grud0qqxm39zkc24fnvuud26yrh0d059dz6s2hs5vuhupz79w996r \
+           tqf4Mb9Bvi1zFJxcQxi7iveCQyWsa9SoSk4KW18TaZJZMiv6mUqjc tqs4DuKApgcFxhkxjhrpJSiEETF369bXPFM9HDaL9KN68MXg77sFa \
+           ys1z7rejlpsa98s2rrrfkwmaxu53e4ue0ulcrw0h4x5g8jl04tak0d3mm47vdtahatqrlknghgfflq; do
+  run POOL_URL=pool.example:3333 MINER=miniz MINIZ_URL=https://releases.example/miniz.tar.gz MINIZ_SHA256="$MZSHA" WORKER=vast-fast-2 PAYOUT=$pay
+  if ! { [ "$rc" = 0 ] && grep -qx -- "miniZ --url=$pay@pool.example:3333 --par=192,7 --pers=ZcashPoW --telemetry=0 --nocolour" "$T/calls"; }; then fail "miniZ paid at $pay: --url=<address>@<pool>, the address whole, no suffix"; fi
+  grep -q "paid to $pay (" "$T/out" || fail "the payout and its kind are logged"
+done
 run POOL_URL=pool.example:3333 MINER=miniz MINIZ_URL=https://releases.example/miniz.tar.gz MINIZ_SHA256="$MZSHA" WORKER=vast-slow-1
 if ! { [ "$rc" = 0 ] && grep -qx -- 'miniZ --url=vast-slow-1@pool.example:3333 --par=192,7 --pers=ZcashPoW --telemetry=0 --nocolour' "$T/calls"; }; then fail "miniZ, pinned: --url=<worker>@<pool> --par=192,7 --pers=ZcashPoW --telemetry=0"; fi
 grep -q 'miniZ --cuda-info: GPU 0' "$T/out" || fail "miniZ lists its CUDA devices before mining"

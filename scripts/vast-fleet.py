@@ -14,12 +14,16 @@ no longer wanted. It only ever touches machines it labelled itself (``ycash-<net
 Actions (python3 -I scripts/vast-fleet.py --fleet FILE ACTION ...):
   validate              check the fleet file, offline (no key needed)
   total                 print the number of miners the file asks for, offline
-  status                what is rented: per network, each miner's slot, state, card and price
+  status [--no-shares]  what is rented: per network, each miner's slot, state, card, price, payout kind
+                        (kind and a shortened address) and the accepted shares its log shows (read
+                        from each running miner's last 400 log lines; --no-shares skips that)
   reconcile             make it so: start missing miners (cheapest offer under the cap, spread over
                         the pools round-robin), replace dead ones, destroy extras and anything
                         labelled ours that the file no longer has. --network NET: that one only
   down [--network NET]  destroy every miner of ours (or one network's)
-  burst NET N --hours H run N miners on NET for H hours, then reconcile it. Every slot the burst
+  burst NET N --hours H [--payouts A,B,...]
+                        run N miners on NET for H hours, then reconcile it. --payouts: the burst
+                        miners' addresses (else the file's), miner n paid at entry n mod length. Every slot the burst
                         rents is labelled ycash-NET-I.until-YYYYMMDDTHHMMZ, whatever the file's count,
                         and its container gets MINER_UNTIL (the same time, epoch seconds), so it ends
                         itself then; only a fleet slot already running (within count, no until) stays
@@ -31,7 +35,16 @@ Actions (python3 -I scripts/vast-fleet.py --fleet FILE ACTION ...):
                         running a fleet image under another label; never starts one
   logs [--network NET] [--tail N]
                         each of our miners' container log (the last N lines, default 200), with the
-                        key, host addresses and long tokens masked
+                        key, host addresses and long tokens masked, then its payout kind and its
+                        accepted-share count
+
+Payouts: a network's "payouts" is a list of addresses, one per miner: miner n is paid at entry
+n mod length (so four addresses and four miners pay each its own; two addresses and four miners
+alternate). Each must be a valid address of the network's "chain" (testnet, the default, or
+mainnet) of one of three kinds: transparent, Sapling or post-quantum (payout_kind below); anything
+else is refused. The image passes it unchanged as the stratum username, which a yolo pool without
+--payout pays. Empty: the username is the worker name and the pool pays its own address. The old
+single "payout" (one address for every miner, or "") still works.
 
 --dry-run prints what would change and changes nothing (it still reads the account and searches
 offers). The API key comes only from the environment, VAST_API_KEY; it is never printed, and in
@@ -46,7 +59,8 @@ The REST API used (as the vastai CLI 1.10.0 calls it, https://console.vast.ai):
   PUT    /api/v0/asks/<offer>/   rent an offer (label, image, env, disk, runtype args, price for bid)
 Each miner's environment: POOL_URL, WORKER, MINER (lolminer | miniz; miniz only with the fleet's
 pinned miniz_url / miniz_sha256, passed as MINIZ_URL / MINIZ_SHA256), PAYOUT and MINER_ARGS if set,
-MINER_UNTIL on a burst miner, NVIDIA_DRIVER_CAPABILITIES=compute,utility.
+MINER_UNTIL on a burst miner, NVIDIA_DRIVER_CAPABILITIES=compute,utility. A dry run prints, per miner it
+would start, that environment ("would run: ...", the payout as its kind and a shortened address).
   PUT    /api/v0/instances/<id>/ relabel (a burst's end time)
   DELETE /api/v0/instances/<id>/ destroy
   PUT    /api/v0/instances/request_logs/<id>/  {"tail": "N"}: Vast uploads the container log and returns
@@ -55,6 +69,7 @@ Standard library only.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -72,7 +87,6 @@ NET_RE = re.compile(r"^[a-z][a-z0-9]{0,15}$")
 LABEL_RE = re.compile(r"^ycash-([a-z][a-z0-9]{0,15})-([0-9]{1,3})(?:\.until-([0-9]{8}T[0-9]{4}Z))?$")
 UNTIL_FMT = "%Y%m%dT%H%MZ"
 WORKER_RE = re.compile(r"^[A-Za-z0-9._-]{1,48}$")
-PAYOUT_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{26,40}$")
 # An image by digest: <name>@sha256:<64 hex>. The name is checked on its own, with no nested
 # repetition (a registry host with a port, then a path), so matching is linear.
 IMAGE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,254}(?::[0-9]{1,5}/[a-z0-9][a-z0-9._/-]{0,254})?$")
@@ -93,6 +107,7 @@ MAX_PER_NET = 8
 MAX_DPH = 1.0
 MAX_BURST_HOURS = 168
 MAX_LOG_TAIL = 5000
+STATUS_LOG_TAIL = 400      # status reads this much of each running miner's log for its share count
 DEAD_BURST_MINUTES = 15     # a dead burst miner is kept this long after its start, so `logs` can read it
 STARTING = {"", "created", "loading", "scheduling", "starting"}
 SECRET_KEY_RE = re.compile(r"(key|secret|token|pass|auth|cred|private|mnemonic|seed|cookie|bearer)", re.I)
@@ -104,7 +119,7 @@ SECRET_VALUE_RES = [
     re.compile(r"://[^/@\s]*:[^/@\s]*@"),       # user:password@ in a URL
 ]
 NET_KEYS = {"count", "gpu_names", "max_dph", "min_reliability", "rental", "pools", "worker_prefix",
-            "payout", "extra_args", "image", "disk_gb", "miner", "comment"}
+            "payout", "payouts", "chain", "extra_args", "image", "disk_gb", "miner", "comment"}
 TOP_KEYS = {"format", "image", "disk_gb", "max_start_minutes", "miniz_url", "miniz_sha256", "comment", "networks"}
 MINERS = ("lolminer", "miniz")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -162,6 +177,123 @@ def output(key, value):
 
 
 # ---------------------------------------------------------------------------------------------
+# payout addresses: the stratum username a miner is paid at (yolo pays the username unless the
+# pool runs with --payout). Three kinds, each checked in full (version bytes or HRP, length,
+# character set and checksum), so a typo is refused here, not found on a rented machine:
+#   transparent   Base58Check, 2-byte version + 20-byte hash: 35 characters (ycash6 src/chainparams.cpp
+#                 PUBKEY_ADDRESS / SCRIPT_ADDRESS): mainnet s1… (P2PKH) and s3… (P2SH), testnet sm… / s2…
+#   sapling       Bech32, HRP ys (mainnet, 78 characters) or ytestsapling (testnet, 88), 43 bytes of data
+#                 (diversifier + pk_d); lower-case letters and digits only
+#   post-quantum  Base58Check, 3-byte version + 32-byte key hash: 53 characters (ycash6 src/key_io.cpp
+#                 PlainPQAddressVersions, D-9): mainnet sqf… / sqs…, testnet tqf… / tqs… (FN-DSA-512 /
+#                 SLH-DSA-SHA2-128s)
+# None of them contains a ".", so the pool can later accept "<address>.<label>" (beta3 N-1, D-5); the
+# fleet passes the bare address.
+
+B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+CHAINS = ("testnet", "mainnet")
+ADDRESS_FORMS = {
+    "testnet": {"transparent": {bytes([0x1C, 0x95]): "P2PKH", bytes([0x1C, 0x2A]): "P2SH"},
+                "sapling": "ytestsapling",
+                "post-quantum": {bytes([0x4F, 0x65, 0x19]): "FN-DSA-512", bytes([0x4F, 0x66, 0x7F]): "SLH-DSA"}},
+    "mainnet": {"transparent": {bytes([0x1C, 0x28]): "P2PKH", bytes([0x1C, 0x2C]): "P2SH"},
+                "sapling": "ys",
+                "post-quantum": {bytes([0x4D, 0xDD, 0x04]): "FN-DSA-512", bytes([0x4D, 0xDE, 0x6A]): "SLH-DSA"}},
+}
+ADDRESS_HELP = {
+    "testnet": "a testnet address: transparent sm…/s2… (35 characters, Base58), Sapling ytestsapling1… "
+               "(88, lower-case letters and digits) or post-quantum tqf…/tqs… (53, Base58)",
+    "mainnet": "a mainnet address: transparent s1…/s3… (35 characters, Base58), Sapling ys1… "
+               "(78, lower-case letters and digits) or post-quantum sqf…/sqs… (53, Base58)",
+}
+MAX_PAYOUTS = 16
+
+
+def b58check_decode(s):
+    """The payload of a Base58Check string (version bytes included), or None."""
+    if not 1 <= len(s) <= 128 or any(c not in B58 for c in s):
+        return None
+    n = 0
+    for c in s:
+        n = n * 58 + B58.index(c)
+    raw = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+    raw = b"\0" * (len(s) - len(s.lstrip("1"))) + raw
+    if len(raw) < 5:
+        return None
+    body, check = raw[:-4], raw[-4:]
+    return body if hashlib.sha256(hashlib.sha256(body).digest()).digest()[:4] == check else None
+
+
+def bech32_decode(s):
+    """(hrp, 5-bit data without the checksum) of a Bech32 string (BIP 173, constant 1), or None."""
+    if len(s) > 120 or s != s.lower() or "1" not in s:
+        return None
+    hrp, _, data = s.rpartition("1")
+    if not hrp or len(data) < 6 or any(c not in BECH32 for c in data) or any(not 33 <= ord(c) <= 126 for c in hrp):
+        return None
+    values = [BECH32.index(c) for c in data]
+    chk = 1
+    for v in [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp] + values:
+        top = chk >> 25
+        chk = (chk & 0x1FFFFFF) << 5 ^ v
+        for i, g in enumerate((0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)):
+            chk ^= g if (top >> i) & 1 else 0
+    return (hrp, values[:-6]) if chk == 1 else None
+
+
+def payout_kind(addr, chain):
+    """'transparent', 'sapling' or 'post-quantum' for a valid address of that chain, else None."""
+    if not isinstance(addr, str) or chain not in ADDRESS_FORMS:
+        return None
+    forms = ADDRESS_FORMS[chain]
+    if len(addr) == 35:
+        body = b58check_decode(addr)
+        if body and len(body) == 22 and body[:2] in forms["transparent"]:
+            return "transparent"
+    elif len(addr) == 53:
+        body = b58check_decode(addr)
+        if body and len(body) == 35 and body[:3] in forms["post-quantum"]:
+            return "post-quantum"
+    elif len(addr) == len(forms["sapling"]) + 1 + 75:
+        d = bech32_decode(addr)
+        if d and d[0] == forms["sapling"] and len(d[1]) == 69 and d[1][-1] & 1 == 0:   # 69 x 5 bits = 43 bytes + 1 zero pad bit
+            return "sapling"
+    return None
+
+
+def short_address(addr):
+    """An address shown, not given: its first 8 and last 4 characters."""
+    return f"{addr[:8]}…{addr[-4:]}" if isinstance(addr, str) and len(addr) > 14 else (addr or "")
+
+
+def payout_shown(addr, chain):
+    """'sapling ytestsap…3jy7' for status and logs; 'pool' when the pool pays its own address."""
+    if not addr:
+        return "pool"
+    return f"{payout_kind(addr, chain) or 'unknown'} {short_address(addr)}"
+
+
+def parse_payouts(value, chain, where):
+    """A list of payout addresses, each checked for the chain; a clear refusal for anything else."""
+    if not isinstance(value, list) or len(value) > MAX_PAYOUTS:
+        raise FleetError(f"{where}: a list of at most {MAX_PAYOUTS} payout addresses, one per miner "
+                         "(miner n is paid at entry n mod length; empty: the pool pays its own address)")
+    for i, a in enumerate(value):
+        if not isinstance(a, str) or payout_kind(a, chain) is None:
+            shown = short_address(a) if isinstance(a, str) else repr(a)
+            raise FleetError(f"{where}[{i}]: {shown!s} is not {ADDRESS_HELP[chain]}; nothing else is accepted "
+                             "(no Sapling of another network, no YED address, no worker suffix)")
+    return list(value)
+
+
+def want_payout(cfg, idx):
+    """The address miner idx is paid at: the list's entry idx mod its length; "" for the pool's own."""
+    p = cfg["payouts"]
+    return p[idx % len(p)] if p else ""
+
+
+# ---------------------------------------------------------------------------------------------
 # the fleet file
 
 def is_placeholder_pool(hostport):
@@ -193,6 +325,12 @@ def scan_secrets(node, path="$"):
                                  "passwords or tokens (the API key comes from VAST_API_KEY)")
             if str(k).endswith("_sha256") and isinstance(v, str) and SHA256_RE.match(v):
                 continue  # a pinned download checksum: public, and 64 hex by design
+            if k in ("payout", "payouts"):
+                # a payout address is public, and a Sapling (88) or post-quantum (53) one is long:
+                # a string that is a valid address of either chain is not taken for a token
+                vals = v if isinstance(v, list) else [v]
+                scan_secrets([x for x in vals if not any(payout_kind(x, c) for c in CHAINS)], f"{path}.{k}")
+                continue
             scan_secrets(v, f"{path}.{k}")
     elif isinstance(node, list):
         for i, v in enumerate(node):
@@ -270,9 +408,18 @@ def parse_fleet(raw):
         prefix = n.get("worker_prefix", f"vast-{name}")
         if not isinstance(prefix, str) or not WORKER_RE.match(prefix):
             raise FleetError(f"{where}.worker_prefix: letters, digits, . _ -, at most 48")
-        payout = n.get("payout", "")
-        if not isinstance(payout, str) or (payout and not PAYOUT_RE.match(payout)):
-            raise FleetError(f"{where}.payout: empty (the pool pays its own address) or a transparent address")
+        chain = n.get("chain", "testnet")
+        if chain not in CHAINS:
+            raise FleetError(f"{where}.chain: testnet (the default) or mainnet: which addresses its payouts are")
+        if n.get("payout") not in (None, "") and "payouts" in n:
+            raise FleetError(f"{where}: payout (one address, the old form) or payouts (a list), not both")
+        if "payouts" in n:
+            payouts = parse_payouts(n["payouts"], chain, f"{where}.payouts")
+        else:   # the old single payout: "" (the pool pays its own address) or one address for every miner
+            payout = n.get("payout", "")
+            if not isinstance(payout, str):
+                raise FleetError(f"{where}.payout: empty (the pool pays its own address) or {ADDRESS_HELP[chain]}")
+            payouts = parse_payouts([payout] if payout else [], chain, f"{where}.payout")
         args = n.get("extra_args", [])
         if not isinstance(args, list) or not all(isinstance(a, str) and ARG_RE.match(a) for a in args):
             raise FleetError(f"{where}.extra_args: a list of plain miner options")
@@ -294,7 +441,7 @@ def parse_fleet(raw):
                              "(set them only after reading miniZ's Terms and confirming its 192,7 flags)")
         fleet["networks"][name] = {
             "count": count, "gpu_names": gpus, "max_dph": float(max_dph), "min_reliability": float(rel),
-            "rental": rental, "pools": pools, "worker_prefix": prefix, "payout": payout,
+            "rental": rental, "pools": pools, "worker_prefix": prefix, "payouts": payouts, "chain": chain,
             "extra_args": args, "image": image, "disk_gb": disk, "miners": miners, "miniz": miniz,
         }
     if total > MAX_TOTAL:
@@ -495,7 +642,40 @@ def drifted(inst, cfg, idx, until=None):
         return "its pool changed in the file"
     if env.get("MINER_UNTIL", "") != until_env(until):
         return "its end time changed"
+    # a fleet miner follows the file's payouts; a burst miner keeps the address it was started with
+    # (a burst may be given its own list, which a later scheduled reconcile does not know)
+    if until is None and env.get("PAYOUT", "") != want_payout(cfg, idx):
+        return "its payout changed in the file"
     return None
+
+
+def launch_command(env, chain="testnet"):
+    """A dry run's view of the rent request: the container's environment, in the order the image reads it
+    (the payout as its kind and a shortened address, as everywhere in the output)."""
+    order = ["POOL_URL", "WORKER", "PAYOUT", "MINER", "MINER_ARGS", "MINER_UNTIL", "MINIZ_URL", "MINIZ_SHA256",
+             "NVIDIA_DRIVER_CAPABILITIES"]
+    shown = dict(env)
+    if "PAYOUT" in shown:
+        shown["PAYOUT"] = f"<{payout_shown(env['PAYOUT'], chain)}>"
+    return " ".join(f"{k}={shown[k]}" for k in order if k in shown)
+
+
+SHARES_RES = [
+    re.compile(r"\bS:\s*(\d+)\s*/\s*\d+"),                         # miniZ's summary line: "S: <accepted>/<rejected>"
+    re.compile(r"\bAccepted shares?\b\D{0,20}?(\d+)", re.I),       # a running total ("Accepted shares: 12")
+]
+SHARE_LINE_RE = re.compile(r"\bshare\b.*\baccepted\b|\baccepted\b.*\bshare\b", re.I)
+
+
+def accepted_shares(text):
+    """The accepted-share count a miner's log shows: the last running total it printed (miniZ's "S: a/r"),
+    else the number of share-accepted lines in it (a lower bound: the log is a tail), else None."""
+    for r in SHARES_RES:
+        found = r.findall(text or "")
+        if found:
+            return int(found[-1])
+    n = sum(1 for line in (text or "").splitlines() if SHARE_LINE_RE.search(line))
+    return n or None
 
 
 def age(inst, now):
@@ -609,9 +789,37 @@ class Fleet:
             except ApiError as e:
                 self.errors.append(f"relabel {inst.get('label')}: {e}")
 
-    def create(self, net, idx, until=None):
+    def burst_payout(self, cfg, idx, prior):
+        """(payout, None) for a burst slot, or (None, why) when it cannot be known. A burst run's own
+        --payouts list wins; otherwise a burst slot being replaced (dead, or its end time moved) keeps
+        the address its last instance was started with, so a later plain reconcile, which never saw
+        the burst's list, cannot pay a replacement elsewhere. A slot with no instance before (new in
+        this burst run) takes the file's payouts."""
+        if cfg.get("burst_payouts"):
+            bp = cfg["burst_payouts"]
+            return bp[idx % len(bp)], None
+        if not prior:
+            return want_payout(cfg, idx), None
+        for inst in sorted(prior, key=lambda i: -(i.get("start_date") or 0)):   # the newest first
+            env = inst.get("extra_env") or {}
+            if isinstance(env, dict) and "POOL_URL" in env:
+                old = env.get("PAYOUT", "")
+                if old and payout_kind(old, cfg["chain"]) is None:
+                    return None, f"its last instance's payout ({short_address(old)}) is not a valid {cfg['chain']} address"
+                return old, None
+        return None, "its last instance's payout cannot be read (Vast returned no environment)"
+
+    def create(self, net, idx, until=None, prior=()):
         cfg = self.fleet["networks"][net]
         label = make_label(net, idx, until)
+        if until:
+            payout, why = self.burst_payout(cfg, idx, prior)
+            if why:
+                self.errors.append(f"{label}: not recreated: {why}; start the burst again with its payouts")
+                say(f"  NOT RECREATED {label}: {why}")
+                return
+        else:
+            payout = want_payout(cfg, idx)
         why = startable(cfg)
         if why:
             self.errors.append(f"{label}: not started: {why}")
@@ -628,8 +836,8 @@ class Fleet:
                 self.errors.append(f"{label}: offer search: {e}")
                 return
         env = {"POOL_URL": cfg["pools"][idx % len(cfg["pools"])], "WORKER": f"{cfg['worker_prefix']}-{idx}"}
-        if cfg["payout"]:
-            env["PAYOUT"] = cfg["payout"]
+        if payout:
+            env["PAYOUT"] = payout    # the image passes it as the stratum username, unchanged
         if cfg["extra_args"]:
             env["MINER_ARGS"] = " ".join(cfg["extra_args"])
         env["MINER"] = want_miner(cfg, idx)
@@ -651,8 +859,10 @@ class Fleet:
             price, bid = offer_price(offer, cfg)
             pool_no = idx % len(cfg["pools"]) + 1
             say(f"  start {label}: {offer.get('gpu_name')} at ${price:.4f}/h ({cfg['rental']}), "
-                f"pool {pool_no} of {len(cfg['pools'])}, worker {env['WORKER']}")
+                f"pool {pool_no} of {len(cfg['pools'])}, worker {env['WORKER']}, "
+                f"paid {payout_shown(payout, cfg['chain'])}")
             if self.dry:
+                say(f"    would run: {launch_command(env, cfg['chain'])}")
                 return
             payload = {"client_id": "me", "image": cfg["image"], "env": env, "disk": cfg["disk_gb"],
                        "label": label, "runtype": "args", "cancel_unavail": True, "price": bid}
@@ -733,7 +943,7 @@ class Fleet:
                 self.destroy(alive[0], drift)
                 alive = []
             if not alive:
-                self.create(net, idx, until)
+                self.create(net, idx, until, prior=insts)
                 continue
             want_label = make_label(net, idx, until)
             if alive[0].get("label") != want_label:
@@ -784,11 +994,31 @@ class Fleet:
                     left += 1
         output("burst_active", left)
 
-    def status(self):
+    def payout_of(self, inst):
+        """What a miner of ours is paid at, from the environment it was started with: kind + short form."""
+        env = inst.get("extra_env") or {}
+        cfg = self.fleet["networks"].get(inst.get("_net"))
+        if not isinstance(env, dict) or "POOL_URL" not in env:
+            return "?"
+        return payout_shown(env.get("PAYOUT", ""), cfg["chain"] if cfg else "testnet")
+
+    def shares_of(self, inst, text=None):
+        """The accepted shares its container log shows ("?" when the log cannot be read or shows none)."""
+        if text is None:
+            if not inst["_health"] == "running":
+                return "-"
+            try:
+                text = self.api.logs(inst["id"], STATUS_LOG_TAIL)
+            except ApiError:
+                return "?"
+        n = accepted_shares(text)
+        return "?" if n is None else str(n)
+
+    def status(self, shares=True):
         ours, foreign, odd = self.read()
         nets = self.fleet["networks"]
-        lines = ["| miner | state | age | card | $/h | pool | until | Vast says |",
-                 "|---|---|---|---|---|---|---|---|"]
+        lines = ["| miner | state | age | card | $/h | pool | paid | shares | until | Vast says |",
+                 "|---|---|---|---|---|---|---|---|---|---|"]
         total, bursts = 0.0, 0
         for (net, idx), insts in sorted(ours.items()):
             cfg = nets.get(net)
@@ -799,7 +1029,8 @@ class Fleet:
                 pool = f"{idx % len(cfg['pools']) + 1}/{len(cfg['pools'])}" if cfg else "-"
                 msg = scrub(str(i.get("status_msg") or ""), self.api.key).replace("\n", " ").replace("|", "/")
                 lines.append(f"| {i.get('label')} | {i['_health']} | {age(i, self.now)} | {i.get('gpu_name') or '?'} | "
-                             f"{price if price is not None else '?'} | {pool} | "
+                             f"{price if price is not None else '?'} | {pool} | {self.payout_of(i)} | "
+                             f"{self.shares_of(i) if shares else '-'} | "
                              f"{i['_until'].strftime(UNTIL_FMT) if i['_until'] else '-'} | "
                              f"{(msg[:77] + '...') if len(msg) > 80 else (msg or '-')} |")
         for net, cfg in sorted(nets.items()):
@@ -826,12 +1057,13 @@ class Fleet:
             for i in insts:
                 shown += 1
                 say(f"===== {i.get('label')}: {i['_health']}, up {age(i, self.now)}, "
-                    f"{i.get('gpu_name') or '?'}; the last {tail} lines of its container log =====")
+                    f"{i.get('gpu_name') or '?'}, paid {self.payout_of(i)}; the last {tail} lines of its container log =====")
                 try:
                     text = self.api.logs(i["id"], tail)
                 except ApiError as e:
                     self.errors.append(f"logs {i.get('label')}: {e}")
                     continue
+                count = self.shares_of(i, text)
                 text = scrub(text, self.api.key) or "(the log is empty)"
                 if in_actions():
                     # nothing the machine printed may act as a workflow command: switch them off around it
@@ -841,6 +1073,7 @@ class Fleet:
                     say(f"::{token}::")
                 else:
                     say(text)
+                say(f"===== {i.get('label')}: paid {self.payout_of(i)}, accepted shares in its log: {count} =====")
         if not shown:
             say("no miner of ours" + (f" on {only}" if only else "") + ": no log to show")
 
@@ -854,7 +1087,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="action", required=True)
     sub.add_parser("validate")
     sub.add_parser("total")
-    sub.add_parser("status")
+    p = sub.add_parser("status")
+    p.add_argument("--no-shares", action="store_true", help="do not read each running miner's log for its share count")
     p = sub.add_parser("reconcile")
     p.add_argument("--network")
     p = sub.add_parser("down")
@@ -863,6 +1097,9 @@ def main(argv=None):
     p.add_argument("network")
     p.add_argument("count", type=int)
     p.add_argument("--hours", type=int, required=True)
+    p.add_argument("--payouts", default=None,
+                   help="the burst miners' payout addresses, comma or space separated, miner n paid at entry "
+                        "n mod length (default: the network's payouts in the fleet file)")
     sub.add_parser("expire")
     p = sub.add_parser("logs")
     p.add_argument("--network")
@@ -878,8 +1115,10 @@ def main(argv=None):
         if a.action == "validate":
             for net, cfg in sorted(nets.items()):
                 note = startable(cfg)
+                paid = (", ".join(payout_shown(x, cfg["chain"]) for x in cfg["payouts"])
+                        if cfg["payouts"] else "the pool's own address")
                 say(f"{net}: count {cfg['count']}, {', '.join(cfg['gpu_names'])}, at most ${cfg['max_dph']:.3f}/h "
-                    f"{cfg['rental']}, {len(cfg['pools'])} pool(s), miner {'/'.join(cfg['miners'])}"
+                    f"{cfg['rental']}, {len(cfg['pools'])} pool(s), miner {'/'.join(cfg['miners'])}, paid {paid}"
                     + (f"; cannot start yet: {note}" if note else ""))
             say(f"fleet file OK: {fleet['total']} miner(s)")
             return 0
@@ -905,12 +1144,23 @@ def main(argv=None):
                 raise FleetError(f"burst: the fleet would exceed {MAX_TOTAL} miners")
             until = (utcnow() + timedelta(hours=a.hours)).replace(second=0, microsecond=0)
             burst = (a.network, a.count, until)
+            cfg = nets[a.network]
+            if a.payouts is not None and a.payouts.strip():
+                given = a.payouts.replace(",", " ").split()
+                if not given:
+                    raise FleetError("burst --payouts: no address in it (leave it out to use the fleet file's payouts)")
+                cfg["burst_payouts"] = parse_payouts(given, cfg["chain"], "burst --payouts")
+            plist = cfg.get("burst_payouts") or cfg["payouts"]
+            for i in range(a.count):
+                say(f"burst: miner {i} is paid {payout_shown(plist[i % len(plist)] if plist else '', cfg['chain'])}")
+            if plist and a.count < len(plist):
+                say(f"burst: note: {len(plist)} payout(s) for {a.count} miner(s); the last {len(plist) - a.count} are not used")
         api = Vast(key, os.environ.get("VAST_URL"))
         f = Fleet(fleet, api, dry_run=a.dry_run)
         if a.dry_run:
             say("dry run: nothing is rented, relabelled or destroyed")
         if a.action == "status":
-            f.status()
+            f.status(shares=not a.no_shares)
         elif a.action == "reconcile":
             f.reconcile(only=a.network)
         elif a.action == "burst":
