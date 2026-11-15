@@ -17,9 +17,13 @@
 # Environment:
 #   POOL_URL    required. The stratum pool, host:port or stratum+tcp://host:port (no user:password@).
 #   WORKER      the worker name (letters, digits, . _ -; default ycash-miner).
-#   PAYOUT      optional, a transparent address. yolo pays the stratum username unless the pool runs
-#               with --payout, so: PAYOUT set -> the username is PAYOUT (WORKER is only logged);
-#               PAYOUT unset -> the username is WORKER (the pool must run with --payout).
+#   PAYOUT      optional, the address this miner is paid at, of one of three kinds: transparent (35
+#               characters, Base58: s1/s3 mainnet, sm/s2 testnet), Sapling (Bech32, lower case: ys1...
+#               78 characters, ytestsapling1... 88) or post-quantum (53, Base58: sqf/sqs, tqf/tqs).
+#               The fleet (scripts/vast-fleet.py) checks it in full, checksum included; this script
+#               checks its form. yolo pays the stratum username unless the pool runs with --payout, so:
+#               PAYOUT set -> the username is PAYOUT, unchanged and with no worker suffix (WORKER is
+#               only logged); PAYOUT unset -> the username is WORKER (the pool must run with --payout).
 #   MINER       lolminer (default) or miniz. miniz is refused unless MINIZ_URL and MINIZ_SHA256 are
 #               set (in the manifest or the environment).
 #   MINIZ_URL, MINIZ_SHA256  miniZ's official download (https; miniz.cc serves it from a query URL,
@@ -101,9 +105,17 @@ worker=${WORKER:-ycash-miner}
 [[ $worker =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "WORKER: 1 to 64 letters, digits, '.', '_' or '-'"
 
 payout=${PAYOUT:-}
+kind=
 if [ -n "$payout" ]; then
-  # base58 (no 0, O, I, l); Ycash transparent addresses are 35 characters
-  [[ $payout =~ ^[1-9A-HJ-NP-Za-km-z]{26,40}$ ]] || die "PAYOUT is not a transparent address"
+  # Base58 has no 0, O, I or l; Bech32 data is lower-case letters and digits without 1, b, i or o.
+  # None of the three contains a "." or an "@", so it is safe as the user part of miniZ's --url.
+  b58='[1-9A-HJ-NP-Za-km-z]'
+  if [[ $payout =~ ^s[1-3m]$b58{33}$ ]]; then kind=transparent
+  elif [[ $payout =~ ^(ys|ytestsapling)1[02-9ac-hj-np-z]{75}$ ]]; then kind=sapling
+  elif [[ $payout =~ ^[st]q[fs]$b58{50}$ ]]; then kind=post-quantum
+  else
+    die "PAYOUT is not a payout address: transparent (s1/s3/sm/s2..., 35 characters), Sapling (ys1... 78 or ytestsapling1... 88, lower case) or post-quantum (sqf/sqs/tqf/tqs..., 53)"
+  fi
   user=$payout
 else
   user=$worker
@@ -138,7 +150,7 @@ case "$miner" in
 esac
 
 paid="the pool's own address (the pool runs with --payout)"
-[ -z "$payout" ] || paid=$payout
+[ -z "$payout" ] || paid="$payout ($kind, the stratum username)"
 echo "ycash-miner: $miner $version from $url (SHA-256 $sha), Equihash 192,7 (personalization $PERS), pool $pool, worker $worker, paid to $paid"
 echo "ycash-miner: the miner is downloaded from its official release and checked, never shipped in this image; it keeps its developer fee"
 [ -z "$until" ] || echo "ycash-miner: a burst miner: it stops and ends its rental at $(date -u -d "@$until" '+%Y-%m-%d %H:%M UTC')"

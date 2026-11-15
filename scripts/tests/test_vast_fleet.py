@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import hashlib
 import tempfile
 import time
 import unittest
@@ -40,8 +41,69 @@ def fleet_file(**changes):
         raw["networks"][net]["pools"] = [p.replace(".example", f".test{i}") for p in raw["networks"][net]["pools"]]
     for k, v in changes.items():
         net, field = k.split("__")
+        if field == "payout":
+            raw["networks"][net].pop("payouts", None)     # an old fleet file: the single payout only
         raw["networks"][net][field] = v
     return raw
+
+
+# Address test vectors, encoded here independently of the script (syntactically valid: right version
+# bytes or HRP, length, character set and checksum; the keys behind them do not exist).
+B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def b58check(payload):
+    raw = payload + hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+    n, out = int.from_bytes(raw, "big"), ""
+    while n:
+        n, r = divmod(n, 58)
+        out = B58[r] + out
+    return "1" * (len(raw) - len(raw.lstrip(b"\0"))) + out
+
+
+def bech32(hrp, data8):
+    acc, bits, data = 0, 0, []
+    for b in data8:
+        acc, bits = (acc << 8) | b, bits + 8
+        while bits >= 5:
+            bits -= 5
+            data.append((acc >> bits) & 31)
+    if bits:
+        data.append((acc << (5 - bits)) & 31)
+
+    def polymod(values):
+        chk = 1
+        for v in values:
+            top = chk >> 25
+            chk = (chk & 0x1FFFFFF) << 5 ^ v
+            for i, g in enumerate((0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)):
+                chk ^= g if (top >> i) & 1 else 0
+        return chk
+    exp = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+    pm = polymod(exp + data + [0] * 6) ^ 1
+    return hrp + "1" + "".join(B32[d] for d in data + [(pm >> 5 * (5 - i)) & 31 for i in range(6)])
+
+
+def seed(n, size):
+    return hashlib.sha256(f"vector-{n}".encode()).digest()[:size] if size <= 32 else (
+        hashlib.sha256(f"vector-{n}".encode()).digest() + hashlib.sha256(f"vector-{n}b".encode()).digest())[:size]
+
+
+T_ADDR = b58check(bytes([0x1C, 0x95]) + seed(1, 20))           # testnet P2PKH, sm…
+T_P2SH = b58check(bytes([0x1C, 0x2A]) + seed(2, 20))           # testnet P2SH, s2…
+T_SAP1 = bech32("ytestsapling", seed(3, 43))                    # testnet Sapling, 88
+T_SAP2 = bech32("ytestsapling", seed(4, 43))
+T_PQF = b58check(bytes([0x4F, 0x65, 0x19]) + seed(5, 32))      # testnet FN-DSA-512, tqf…
+T_PQS = b58check(bytes([0x4F, 0x66, 0x7F]) + seed(6, 32))      # testnet SLH-DSA, tqs…
+M_ADDR = b58check(bytes([0x1C, 0x28]) + seed(7, 20))           # mainnet P2PKH, s1…
+M_P2SH = b58check(bytes([0x1C, 0x2C]) + seed(8, 20))           # mainnet P2SH, s3…
+M_SAP = bech32("ys", seed(9, 43))                               # mainnet Sapling, 78
+M_PQF = b58check(bytes([0x4D, 0xDD, 0x04]) + seed(10, 32))     # mainnet sqf…
+M_PQS = b58check(bytes([0x4D, 0xDE, 0x6A]) + seed(11, 32))     # mainnet sqs…
+R_SAP = bech32("yregtestsapling", seed(12, 43))                 # regtest Sapling, 91: no fleet network
+T_YED = b58check(bytes([0x57, 0x1E]) + seed(13, 32))           # a testnet YED address (old form): never a payout
+T_ZEC_SAP = bech32("ztestsapling", seed(14, 43))                # Zcash's testnet Sapling HRP
 
 
 def offer(oid, gpu, price, machine=None, rel=0.99, **kw):
@@ -269,7 +331,7 @@ class TestReconcile(Base):
         self.assertEqual(self.fake.calls("PUT") + self.fake.calls("DELETE"), [])
 
     def test_payout_and_extra_args_reach_the_env(self):
-        addr = "s1" + "a" * 33
+        addr = T_ADDR                                   # the old single payout: still accepted
         self.set_fleet(fleet_file(fast__payout=addr, fast__extra_args=["--devices", "0"]))
         self.assertEqual(self.run_fleet("reconcile", "--network", "fast"), 0, self.out)
         env = self.creates()[0]["body"]["env"]
@@ -407,7 +469,7 @@ class TestReconcile(Base):
                          "instances": [inst(500 + i, f"job-{i}") for i in range(60)] + [inst(600, "ycash-oldnet-0")]})
         self.assertEqual(self.run_fleet("--dry-run", "status"), 0, self.out)
         self.assertIn("60 other instance(s)", self.out)
-        self.assertEqual(len(self.fake.calls("GET")), 3)
+        self.assertEqual(len([c for c in self.fake.calls("GET") if c["path"].startswith("/api/v1/instances/")]), 3)
 
 
 class TestBurst(Base):
@@ -619,6 +681,173 @@ class TestLogs(Base):
         self.assertIn("| ycash-fast-0.until-20270115T0900Z | running | 1h00m |", self.out)
         self.assertIn("Error response from daemon: pull from <ip> / denied", self.out)
         self.assertNotIn("198.51.100.9", self.out)
+
+
+class TestPayouts(unittest.TestCase):
+    def test_vectors_have_the_documented_forms(self):
+        self.assertEqual((T_ADDR[:2], len(T_ADDR)), ("sm", 35))
+        self.assertEqual((T_P2SH[:2], len(T_P2SH)), ("s2", 35))
+        self.assertEqual((T_SAP1[:13], len(T_SAP1)), ("ytestsapling1", 88))
+        self.assertEqual((T_PQF[:3], T_PQS[:3], len(T_PQF), len(T_PQS)), ("tqf", "tqs", 53, 53))
+        self.assertEqual((M_ADDR[:2], M_P2SH[:2], M_SAP[:3], len(M_SAP)), ("s1", "s3", "ys1", 78))
+        self.assertEqual((M_PQF[:3], M_PQS[:3], len(M_PQF)), ("sqf", "sqs", 53))
+
+    def test_kinds(self):
+        for a, kind in ((T_ADDR, "transparent"), (T_P2SH, "transparent"), (T_SAP1, "sapling"),
+                        (T_SAP2, "sapling"), (T_PQF, "post-quantum"), (T_PQS, "post-quantum")):
+            self.assertEqual(vf.payout_kind(a, "testnet"), kind, a)
+            self.assertIsNone(vf.payout_kind(a, "mainnet"), a)         # a testnet address is not a mainnet one
+        for a, kind in ((M_ADDR, "transparent"), (M_P2SH, "transparent"), (M_SAP, "sapling"),
+                        (M_PQF, "post-quantum"), (M_PQS, "post-quantum")):
+            self.assertEqual(vf.payout_kind(a, "mainnet"), kind, a)
+            self.assertIsNone(vf.payout_kind(a, "testnet"), a)
+
+    def test_real_addresses(self):
+        # the node's own vectors: ycash6 src/gtest/test_miner.cpp (a valid Sapling address and its typo),
+        # src/chainparams.cpp (a fund address), src/test/data/pq_address_vectors.json; and the fast
+        # testnet pool's payout (ycash-ops testnet-pools)
+        self.assertEqual(vf.payout_kind("ys1z7rejlpsa98s2rrrfkwmaxu53e4ue0ulcrw0h4x5g8jl04tak0d3mm47vdtahatqrlknghgfflq",
+                                        "mainnet"), "sapling")
+        self.assertIsNone(vf.payout_kind("ys1s7rejlpsa98s2rrrfkwmaxu53e4ue0ulcrw0h4x5g8jl04tak0d3mm47vdtahatqrlkngh9slya",
+                                         "mainnet"))
+        self.assertEqual(vf.payout_kind("s1hfWJ4ej1H3s8XCUb7YnrU68K64AsGVUHE", "mainnet"), "transparent")
+        self.assertEqual(vf.payout_kind("sqf2UdbXvgebJQGGyNy2Nk42kqX3ExvjZP3ZJ4Xars99N57Xz9DYD", "mainnet"), "post-quantum")
+        self.assertEqual(vf.payout_kind("tqf2UPZeyyofQ8whHyhvUoJrGf5BtHcpDakAsfiYRAbLWbEbLKUcX", "testnet"), "post-quantum")
+        self.assertEqual(vf.payout_kind("smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", "testnet"), "transparent")
+
+    def test_refusals(self):
+        flip = T_SAP1[:-1] + ("q" if T_SAP1[-1] != "q" else "p")       # a typo: the checksum fails
+        bad = [
+            "", "not an address", T_ADDR[:-1], T_ADDR + "1", T_ADDR[:-1] + ("2" if T_ADDR[-1] != "2" else "3"),
+            T_ADDR + ".rig1",                     # a worker suffix: the fleet passes the bare address
+            T_SAP1.upper(), flip, T_SAP1[:-1], R_SAP, T_ZEC_SAP, T_YED,
+            T_PQF[:-1], "tqx" + T_PQF[3:], T_PQF.replace(T_PQF[10], "0"),   # "0" is not Base58
+            " " + T_ADDR, T_ADDR + "\n", "t1" + T_ADDR[2:], 7, None,
+        ]
+        for a in bad:
+            self.assertIsNone(vf.payout_kind(a, "testnet"), repr(a))
+            with self.assertRaisesRegex(vf.FleetError, "is not a testnet address: transparent sm"):
+                vf.parse_payouts([T_ADDR, a], "testnet", "networks.fast.payouts")
+        with self.assertRaisesRegex(vf.FleetError, r"payouts\[1\]"):
+            vf.parse_payouts([T_ADDR, T_YED], "testnet", "networks.fast.payouts")
+        for not_a_list in (T_ADDR, {"a": T_ADDR}, [T_ADDR] * (vf.MAX_PAYOUTS + 1)):
+            with self.assertRaisesRegex(vf.FleetError, "a list of at most"):
+                vf.parse_payouts(not_a_list, "testnet", "networks.fast.payouts")
+
+    def test_assignment_by_index_cycles(self):
+        four = [T_ADDR, T_SAP1, T_SAP2, T_PQF]
+        cfg = {"payouts": four}
+        self.assertEqual([vf.want_payout(cfg, i) for i in range(4)], four)
+        self.assertEqual([vf.want_payout(cfg, i) for i in range(4, 9)], four + [T_ADDR])    # cycles
+        self.assertEqual([vf.want_payout({"payouts": [T_PQS]}, i) for i in range(3)], [T_PQS] * 3)
+        self.assertEqual(vf.want_payout({"payouts": []}, 2), "")              # the pool's own address
+
+    def test_fleet_file_forms(self):
+        four = [T_ADDR, T_SAP1, T_SAP2, T_PQF]
+        fl = vf.parse_fleet(fleet_file(fast__payouts=four))
+        self.assertEqual(fl["networks"]["fast"]["payouts"], four)       # long addresses are not taken for secrets
+        self.assertEqual(fl["networks"]["fast"]["chain"], "testnet")
+        old = vf.parse_fleet(fleet_file(fast__payout=T_ADDR))           # the old single payout
+        self.assertEqual(old["networks"]["fast"]["payouts"], [T_ADDR])
+        self.assertEqual(vf.parse_fleet(fleet_file(fast__payout=T_SAP1))["networks"]["fast"]["payouts"], [T_SAP1])
+        self.assertEqual(vf.parse_fleet(fleet_file())["networks"]["fast"]["payouts"], [])   # "": the pool's
+        main = vf.parse_fleet(fleet_file(fast__chain="mainnet", fast__payouts=[M_ADDR, M_SAP, M_PQS]))
+        self.assertEqual(main["networks"]["fast"]["payouts"], [M_ADDR, M_SAP, M_PQS])
+        for raw in (fleet_file(fast__payouts=[T_ADDR, M_SAP]), fleet_file(fast__chain="mainnet", fast__payouts=[T_ADDR]),
+                    fleet_file(fast__payout=T_ADDR, fast__payouts=[T_ADDR]), fleet_file(fast__chain="regtest"),
+                    fleet_file(fast__payouts=T_ADDR), fleet_file(fast__payout=[T_ADDR])):
+            with self.assertRaises(vf.FleetError):
+                vf.parse_fleet(raw)
+        # a secret-looking value in the list is still refused as a secret, not passed as an address
+        with self.assertRaisesRegex(vf.FleetError, "secret"):
+            vf.parse_fleet(fleet_file(fast__payouts=[KEY]))
+
+    def test_shown_short(self):
+        self.assertEqual(vf.payout_shown(T_SAP1, "testnet"), f"sapling {T_SAP1[:8]}…{T_SAP1[-4:]}")
+        self.assertEqual(vf.payout_shown("", "testnet"), "pool")
+        self.assertNotIn(T_SAP1, vf.payout_shown(T_SAP1, "testnet"))
+
+    def test_share_counts(self):
+        self.assertEqual(vf.accepted_shares("[ 0d 0h 1m]  S: 3/0 30.1 Sol/s\n[ 0d 0h 2m]  S: 17/1 30.2 Sol/s\n"), 17)
+        self.assertEqual(vf.accepted_shares("Accepted shares: 12\n"), 12)
+        self.assertEqual(vf.accepted_shares("share accepted\nnew job\nShare #2 accepted\n"), 2)
+        self.assertIsNone(vf.accepted_shares("connecting to the pool\n"))
+        self.assertIsNone(vf.accepted_shares(""))
+
+
+class TestPayoutMiners(Base):
+    def setUp(self):
+        super().setUp()
+        self.four = [T_ADDR, T_SAP1, T_SAP2, T_PQF]
+
+    def envs(self):
+        return {c["body"]["label"]: c["body"]["env"] for c in self.creates()}
+
+    def test_one_payout_per_miner_by_index(self):
+        self.set_fleet(fleet_file(legacy__payouts=self.four))
+        self.assertEqual(self.run_fleet("burst", "legacy", "4", "--hours", "2"), 0, self.out)
+        envs = self.envs()
+        got = [envs[f"ycash-legacy-{i}.until-20270115T1000Z"]["PAYOUT"] for i in range(4)]
+        self.assertEqual(got, self.four)
+        for kind in ("transparent", "sapling", "post-quantum"):
+            self.assertIn(f"paid {kind} ", self.out)
+        for a in self.four[1:]:
+            self.assertNotIn(a, self.out)      # long addresses only ever shown shortened
+
+    def test_burst_payouts_override_and_cycle(self):
+        self.assertEqual(self.run_fleet("burst", "legacy", "3", "--hours", "1", "--payouts", f"{T_PQS},{T_SAP2}"), 0,
+                         self.out)
+        envs = self.envs()
+        self.assertEqual([envs[f"ycash-legacy-{i}.until-20270115T0900Z"]["PAYOUT"] for i in range(3)],
+                         [T_PQS, T_SAP2, T_PQS])
+        # a later scheduled reconcile, without the burst's list, keeps the burst miners as they are
+        self.fake.clear()
+        self.assertEqual(self.run_fleet("reconcile", "--network", "legacy"), 0, self.out)
+        self.assertEqual(self.fake.calls("DELETE") + self.creates(), [], self.out)
+
+    def test_burst_payouts_refused(self):
+        for bad in (T_ADDR + ".rig1", "s1" + "a" * 33, R_SAP, f"{T_ADDR},{M_SAP}"):
+            self.fake.clear()
+            self.assertEqual(self.run_fleet("burst", "legacy", "2", "--hours", "1", "--payouts", bad), 1, bad)
+            self.assertIn("is not a testnet address", self.out)
+            self.assertEqual(self.creates(), [])
+
+    def test_payout_change_replaces_a_fleet_miner(self):
+        self.set_fleet(fleet_file(fast__payouts=[T_ADDR]))
+        self.assertEqual(self.run_fleet("reconcile", "--network", "fast"), 0, self.out)
+        self.set_fleet(fleet_file(fast__payouts=[T_PQF]))
+        self.fake.clear()
+        self.assertEqual(self.run_fleet("reconcile", "--network", "fast"), 0, self.out)
+        self.assertIn("its payout changed in the file", self.out)
+        self.assertEqual([e["PAYOUT"] for e in self.envs().values()], [T_PQF])
+
+    def test_dry_run_shows_each_launch(self):
+        self.set_fleet(fleet_file(legacy__payouts=self.four))
+        self.assertEqual(self.run_fleet("--dry-run", "burst", "legacy", "4", "--hours", "2"), 0, self.out)
+        runs = [line for line in self.out.splitlines() if "would run:" in line]
+        self.assertEqual(len(runs), 4)
+        for line, a in zip(runs, self.four):
+            self.assertIn(f"PAYOUT={a} ", line)
+        self.assertEqual(self.creates(), [])
+
+    def test_status_and_logs_show_kind_and_shares(self):
+        self.fake.write({"offers": copy.deepcopy(OFFERS), "logs": {
+            "901": "miniZ\n[ 0d 0h 5m] S: 41/2 0.5 Sol/s\n", "902": "connecting\n"},
+            "instances": [inst(901, "ycash-fast-0.until-20270115T0900Z",
+                               extra_env=[["POOL_URL", "pool.test0:3333"], ["PAYOUT", T_SAP1], ["MINER", "miniz"]]),
+                          inst(902, "ycash-fast-1.until-20270115T0900Z",
+                               extra_env=[["POOL_URL", "pool.test0:3333"], ["PAYOUT", T_PQS], ["MINER", "miniz"]])]})
+        self.assertEqual(self.run_fleet("status"), 0, self.out)
+        self.assertRegex(self.out, r"\| ycash-fast-0\.until-\S+ \|.*\| sapling ytestsap…\w{4} \| 41 \|")
+        self.assertRegex(self.out, r"\| ycash-fast-1\.until-\S+ \|.*\| post-quantum tqs\w{5}…\w{4} \| \? \|")
+        self.assertNotIn(T_SAP1, self.out)
+        self.assertEqual(self.run_fleet("status", "--no-shares"), 0, self.out)
+        self.assertIn("| sapling ytestsap…", self.out)
+        self.assertEqual(self.run_fleet("logs", "--network", "fast"), 0, self.out)
+        self.assertIn("ycash-fast-0.until-20270115T0900Z: paid sapling ytestsap", self.out)
+        self.assertIn("accepted shares in its log: 41", self.out)
+        self.assertIn("accepted shares in its log: ?", self.out)
+        self.assertNotIn(T_SAP1, self.out)
 
 
 class TestImage(unittest.TestCase):
