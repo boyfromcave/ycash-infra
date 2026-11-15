@@ -117,6 +117,16 @@ cli() { # net args...: ycash-cli in the network's container, against its own RPC
   docker exec "ycashd-$net" ycash-cli -datadir=/var/lib/ycash -conf=/var/lib/ycash/ycash.conf $a "$@"
 }
 
+# One `docker inspect -f` value of a container, or DEFAULT when it has none: for a missing container
+# docker prints an empty line on stdout before it fails, which `|| echo DEFAULT` would keep in front
+# of the default ("\nabsent"); every newline is dropped (the formats used are one line).
+dinspect() { # format container default
+  local v
+  v=$(docker inspect -f "$1" "$2" 2>/dev/null) || v=""
+  v=${v//$'\n'/}
+  echo "${v:-$3}"
+}
+
 # Write /opt/ycash-seed/net/NET/{node.env,compose.yaml} from a config file. The -loadblock flags
 # are added while a framed prefix waits to be imported; ZMQ (zmq_port) only after that. An
 # explorer's node: RPC for its backend network, ZMQ on its backend address (seedctl-explorer).
@@ -404,14 +414,14 @@ status() { # [net]
   fi
   for net in $nets; do
     valid_name "$net"
-    st=$(docker inspect -f '{{.State.Status}}' "ycashd-$net" 2>/dev/null || echo absent)
-    img=$(docker inspect -f '{{.Config.Image}}' "ycashd-$net" 2>/dev/null || echo -)
+    st=$(dinspect '{{.State.Status}}' "ycashd-$net" absent)
+    img=$(dinspect '{{.Config.Image}}' "ycashd-$net" -)
     info=$(cli "$net" getblockchaininfo 2>/dev/null | jq -c '{chain, blocks, headers, progress: .verificationprogress}' || echo '{}')
     peers=$(cli "$net" getpeerinfo 2>/dev/null | jq -c '{peers: length, inbound: (map(select(.inbound)) | length)}' || echo '{}')
     pool=$(pool_status "$net")
     if [ "$pool" != null ]; then
-      pool=$(jq -c --arg st "$(docker inspect -f '{{.State.Status}}' "yolo-$net" 2>/dev/null || echo absent)" \
-        --arg img "$(docker inspect -f '{{.Config.Image}}' "yolo-$net" 2>/dev/null || echo -)" \
+      pool=$(jq -c --arg st "$(dinspect '{{.State.Status}}' "yolo-$net" absent)" \
+        --arg img "$(dinspect '{{.Config.Image}}' "yolo-$net" -)" \
         '{container: $st, image: $img} + .' <<<"$pool")
     fi
     ex=null

@@ -112,6 +112,7 @@ locals {
       mem_limit_mb         = n.explorer.mem_limit_mb
       log_level            = n.explorer.log_level
       pg_shared_buffers_mb = n.explorer.pg_shared_buffers_mb
+      node_mem_limit_mb    = n.explorer.node_mem_limit_mb
     } }
   ) }
 }
