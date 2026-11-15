@@ -95,7 +95,13 @@ variable "networks" {
     `postgres_image` and `proxy_image` by digest. `threads`, `mem_limit_mb` and `log_level` (INFO, WARN
     or ERROR; DEBUG would log the database password) tune Inzyght; `pg_shared_buffers_mb` PostgreSQL;
     `node_mem_limit_mb` (default 2304, 512-65536) is the explorer's node container's memory limit, with
-    2 GiB of swap allowed beyond it (README.md, "Host size").
+    2 GiB of swap allowed beyond it (README.md, "Host size"). `p2p_inbound` (default false) lets the
+    explorer's node accept inbound P2P: its container publishes the network's P2P port (that port
+    only, IPv4, on every host interface; RPC and ZMQ stay on the internal network), it advertises the
+    host's address (-externalip, as every node here), and the security group opens that port to
+    var.p2p_ingress_cidrs; the module refuses it with no p2p_ingress_cidrs or with a -listen in either
+    extra_args. Without it the explorer's node publishes no port and the security group opens none
+    for that network (README.md, "The explorer": "Inbound P2P").
     One explorer per host (it owns ports 80 and 443), never beside a pool.
   EOT
   type = map(object({
@@ -127,6 +133,8 @@ variable "networks" {
       pg_shared_buffers_mb = optional(number, 256)
       # the node container's memory limit, MiB (its swap allowance is 2048 MiB beyond it)
       node_mem_limit_mb = optional(number, 2304)
+      # accept inbound P2P: publish the network's P2P port, open it to var.p2p_ingress_cidrs
+      p2p_inbound = optional(bool, false)
     }))
   }))
   default = {
@@ -270,7 +278,7 @@ variable "swap_mb" {
 }
 
 variable "p2p_ingress_cidrs" {
-  description = "Who may open a P2P connection, on each enabled network's port. Seeds serve everyone: 0.0.0.0/0. Nothing else is ever opened inbound (no SSH, no RPC; management is SSM)."
+  description = "Who may open a P2P connection, on each enabled network's port (a network with an explorer: only with explorer.p2p_inbound, which needs this non-empty). Seeds serve everyone: 0.0.0.0/0. Nothing else is ever opened inbound (no SSH, no RPC; management is SSM)."
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }

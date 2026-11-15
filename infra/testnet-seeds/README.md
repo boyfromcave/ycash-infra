@@ -288,11 +288,11 @@ module "explorer" {   # e.g. the operator's testnet-explorer/nodes root, one hos
   vpc_cidr          = "10.79.0.0/16"
   instance_type     = "t3a.medium"
   data_volume_size  = 40
-  p2p_ingress_cidrs = []                       # the explorer's node only connects out
+  p2p_ingress_cidrs = []                       # the explorer's node only connects out ("Inbound P2P": ["0.0.0.0/0"])
   networks = {
     yb-fast = {
       profile    = "fast"
-      extra_args = "-listen=0 -addnode=<the network's seed name>:18833"
+      extra_args = "-listen=0 -addnode=<the network's seed name>:18833"   # with p2p_inbound: no -listen
       insight    = true                        # -txindex -insightexplorer, before the first import
       explorer = {
         hostname       = "<the explorer's name>"   # its A record points at the host's address
@@ -300,6 +300,7 @@ module "explorer" {   # e.g. the operator's testnet-explorer/nodes root, one hos
         postgres_image = "postgres:17-alpine@sha256:..."
         proxy_image    = "caddy:2.10-alpine@sha256:..."
         # node_mem_limit_mb = 2304                 # the node container's limit (default), "Host size"
+        # p2p_inbound = true                       # accept inbound P2P (default false), "Inbound P2P"
       }
     }
   }
@@ -312,7 +313,7 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
 
 | Container | Image | Runs as | Networks | Notes |
 |---|---|---|---|---|
-| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend`, `edge` | `YCASHD_INSIGHT=1`; RPC bound inside the container, allowed for Inzyght's fixed address only (`172.31.250.12`; and loopback, for `seedctl`'s `docker exec`); no published port; ZMQ `hashblock`/`hashtx` on its fixed `backend` address (.11) once the prefix is imported; `-listen=0 -disablewallet`, P2P out through `edge`; `node_mem_limit_mb` (2304 MiB) plus 2 GiB of swap ("Host size") |
+| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend`, `edge` | `YCASHD_INSIGHT=1`; RPC bound inside the container, allowed for Inzyght's fixed address only (`172.31.250.12`; and loopback, for `seedctl`'s `docker exec`); no published port (with `p2p_inbound`: the network's P2P port only, "Inbound P2P"); ZMQ `hashblock`/`hashtx` on its fixed `backend` address (.11) once the prefix is imported; `-disablewallet` (and the root's `-listen=0` without `p2p_inbound`), P2P out through `edge`; `node_mem_limit_mb` (2304 MiB) plus 2 GiB of swap ("Host size") |
 | `postgres-<key>` | `explorer.postgres_image` (by digest) | the image drops to `postgres`; every capability dropped but the five its entrypoint needs; 768 MiB | `backend` | data in `/srv/ycash-data/<key>/explorer/pg` on the data volume; the database and a non-superuser owner role made at its first start (explorer's `postgres-init/10-inzyght.sh`); Inzyght's tuning values; healthcheck over TCP |
 | `inzyght-<key>` | built on the host, or `explorer.image` by digest | uid 2005, read-only root, no capabilities, `mem_limit_mb` (768) | `backend` only (fixed .12) | applies and checks its schema on every start; trusts `X-Forwarded-For` from the proxy's fixed address only; started once the prefix is imported and only when its image is on the host |
 | `proxy-<key>` | `explorer.proxy_image` (Caddy, by digest) | uid 2006 (its data directories handed to it by seedctl), every capability dropped but binding low ports, read-only root, 128 MiB | `backend` (fixed .10), `edge` | the only published ports, TCP 80 and 443 (HTTP/3 off); Let's Encrypt certificate for `hostname` (HTTP-01), renewal, redirect to HTTPS, HSTS on HTTPS, JSON access log, header and idle timeouts, a 1 MB body limit (explorer/Caddyfile); certificate in `/srv/ycash-data/<key>/explorer/caddy` (kept across resets and new instances, so the certificate authority's rate limits are never met); a plain 503 page while Inzyght is not up |
@@ -320,7 +321,7 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
 - **Networks.** `backend` (`172.31.250.0/24`; the proxy at .10, the node at .11 and Inzyght at .12 fixed, every other container from `.128/25`) is internal: no route out, so Inzyght's hard-coded
   peer-location call (`http://ip-api.com/batch`) cannot leave the host and PostgreSQL has no
   egress. `edge` (`172.31.251.0/24`) carries the node's outbound P2P and the proxy's ports. Nothing
-  listens on the host's own interfaces but the proxy. The containers are not in host networking,
+  listens on the host's own interfaces but the proxy (and, with `p2p_inbound`, the node's P2P port). The containers are not in host networking,
   so the metadata service's hop limit of 1 already denies them an IMDSv2 token; seedctl also
   inserts a `DOCKER-USER` rule refusing both subnets the metadata address (on every apply, boot
   and prefix check that renders the explorer). Every container's Docker log is capped (20 MB x 3).
@@ -350,8 +351,46 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
   started with `-txindex -insightexplorer` before its import builds both indexes as it imports (E1).
   ZMQ is published and Inzyght started only after the import (`prefix-check`), so Inzyght never
   indexes a chain that is still being loaded.
-- **Inbound:** 443 and 80 to `explorer_ingress_cidrs` (default everyone). Nothing else new; with
-  `p2p_ingress_cidrs = []` the host has no other open port.
+- **Inbound:** 443 and 80 to `explorer_ingress_cidrs` (default everyone). Nothing else, unless
+  `p2p_inbound` is set: then the network's P2P port to `p2p_ingress_cidrs` too ("Inbound P2P").
+  Without `p2p_inbound` no P2P rule is made for the explorer's network whatever
+  `p2p_ingress_cidrs` holds (its node publishes no port to open).
+- **Inbound P2P (`explorer.p2p_inbound`, default false).** The explorer's node accepts inbound
+  peers, so nodes of that network can peer with it and show on the explorer's network page (which
+  lists the node's own peers). Three things together, never one without the others:
+  - **listen:** the node listens (the image's `listen=1`); the module refuses `p2p_inbound` with a
+    `-listen` or `-nolisten` in the network's or the module's `extra_args` (seedctl refuses it
+    too), since `-listen=0` would leave the opened port without a listener and also stops the node
+    advertising itself (`GetLocal` returns nothing when not listening, ycash6 `src/net.cpp`);
+  - **the published port:** compose publishes the network's P2P port, and only it, as
+    `0.0.0.0:<port>:<port>/tcp` (IPv4 only; RPC and ZMQ stay on the internal network). Docker
+    carries an inbound connection from outside with a DNAT rule on the host (the `nat` table's
+    `DOCKER` chain), so the node sees each peer's own address, which its peer list, the network page
+    and its ban logic (`setban`, misbehaviour scores) depend on. Docker's userland proxy, which would
+    show every peer as the bridge gateway (`172.31.251.1`), only carries connections made from the
+    host itself to the published port; no `[::]` binding is made, so no IPv6 connection can come in
+    through it either (the VPC has no IPv6 anyway). The port is published on the node's `edge`
+    endpoint, as the proxy's 80 and 443 are (`backend` is internal);
+  - **the ingress rule:** the security group opens the port to `p2p_ingress_cidrs`; the module
+    refuses `p2p_inbound` with an empty list.
+
+  The node advertises the host's Elastic IP: seedctl gives every node, the explorer's too,
+  `-externalip=<the host's address>` (`seed.env` `EXTERNAL_IP`) with `-port`, and an explicit
+  `-externalip` turns `-discover` off (ycash6 `src/init.cpp`), so the node never advertises its
+  container address; peers learn `<Elastic IP>:<port>` through address gossip. A node can also name
+  the explorer directly (`addnode=<explorer hostname>:<port>`).
+
+  **What it exposes.** A third public port on an internet-facing host: a full P2P listener, open to
+  anyone in `p2p_ingress_cidrs`, beside 80 and 443. The node holds no wallet (`-disablewallet`), so
+  no keys or funds are behind it; its memory is capped by `node_mem_limit_mb` (2304 MiB by default,
+  "Host size"), so a peer flood can at worst get the node killed and restarted by its cgroup, not
+  starve PostgreSQL or the proxy of RAM beyond the budget; `-maxconnections` (the root's
+  `extra_args`) caps its sockets: 8 of them are its own outbound connections, the rest inbound, and
+  each peer may hold up to its receive (5 MB) and send (1 MB) buffers, so allow about 6 MB per
+  connection in the node's limit. It is a node like the seeds, on the same code, with the same
+  exposure as theirs. **Peers' addresses become public:** Inzyght's peers API and the network page
+  show the node's peers, so every node that connects to the explorer has its IP address and port
+  listed on a public web page; say so to whoever is asked to peer with it.
 - **seedctl:** `apply`, `reset`, `stop`, `sync` and `boot` act on all four containers; `reset` also
   deletes the index (it belongs to the old chain) and keeps the secrets and the certificate;
   `status` adds an `explorer` field: the three containers' state and health, Inzyght's image, the
