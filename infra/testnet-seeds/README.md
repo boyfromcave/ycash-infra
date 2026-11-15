@@ -383,8 +383,12 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
   **What it exposes.** A third public port on an internet-facing host: a full P2P listener, open to
   anyone in `p2p_ingress_cidrs`, beside 80 and 443. The node holds no wallet (`-disablewallet`), so
   no keys or funds are behind it; its memory is capped by `node_mem_limit_mb` (2304 MiB by default,
-  "Host size"), so a peer flood can at worst get the node killed and restarted by its cgroup, not
-  starve PostgreSQL or the proxy of RAM beyond the budget; `-maxconnections` (the root's
+  "Host size"), so a peer flood cannot take RAM from PostgreSQL or the proxy beyond the budget. It can
+  still hurt: the node may swap (its swap allowance) on the volume PostgreSQL shares before its
+  cgroup kills it, and a flood that gets it killed can repeat after the restart, leaving the
+  explorer stale for as long as it lasts. Inbound peers can also fill the inbound slots and the
+  address book with their own nodes; the outbound connections to the seeds keep the node on the
+  chain, but the public peers page then lists what they chose to show; `-maxconnections` (the root's
   `extra_args`) caps its sockets: 8 of them are its own outbound connections, the rest inbound, and
   each peer may hold up to its receive (5 MB) and send (1 MB) buffers, so allow about 6 MB per
   connection in the node's limit. It is a node like the seeds, on the same code, with the same

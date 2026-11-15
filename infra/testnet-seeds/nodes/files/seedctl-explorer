@@ -34,7 +34,7 @@ explorer_check() { # file name
     and ([.explorer.threads, .explorer.mem_limit_mb, .explorer.pg_shared_buffers_mb] | all(type == "number" and . >= 1 and . == floor))
     and ((.explorer.node_mem_limit_mb // 2304) | type == "number" and . >= 512 and . <= 65536 and . == floor)
     and ((.explorer.p2p_inbound // false) | type == "boolean")
-    and (.explorer.p2p_inbound != true or (.extra_args | test("(^| )-(no)?listen(=[^ ]*)?( |$)") | not))
+    and (.explorer.p2p_inbound != true or (.extra_args | test("(^| )--?(no)?listen(=[^ ]*)?( |$)") | not))
   ' "$1" >/dev/null || die "the explorer in the config for $2 is not valid"
 }
 

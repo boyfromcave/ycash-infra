@@ -73,7 +73,7 @@ resource "aws_security_group" "seed" {
       error_message = "networks: explorer.p2p_inbound publishes the node's P2P port; it needs p2p_ingress_cidrs (empty, the security group would not open it)."
     }
     precondition {
-      condition     = alltrue([for k, n in local.enabled : !try(n.explorer.p2p_inbound, false) || !can(regex("(^| )-(no)?listen(=[^ ]*)?( |$)", "${var.extra_args} ${n.extra_args}"))])
+      condition     = alltrue([for k, n in local.enabled : !try(n.explorer.p2p_inbound, false) || !can(regex("(^| )--?(no)?listen(=[^ ]*)?( |$)", "${var.extra_args} ${n.extra_args}"))])
       error_message = "networks: explorer.p2p_inbound with a -listen (or -nolisten) in extra_args: the node listens by default; drop it, or the port would be opened to a node that does not listen."
     }
   }
