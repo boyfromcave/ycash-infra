@@ -127,7 +127,7 @@ until=${MINER_UNTIL:-}
 extra=()
 if [ -n "${MINER_ARGS:-}" ]; then
   read -r -a extra <<< "$MINER_ARGS"
-  for a in "${extra[@]}"; do
+  for a in ${extra[@]+"${extra[@]}"}; do
     [[ $a =~ ^[A-Za-z0-9=,._:/*-]+$ ]] || die "MINER_ARGS: unexpected characters in '$a'"
     case "${a%%=*}" in
       -p|--pool|-u|--user|--pass|--dualpool|--dualuser|--dualpass|-a|--algo|--pers|-c|--coin|--config|--json|--profile|--watchdogscript|--apihost|--apiport|--tls|--socks5|--dns-over-https|--url|--par|--smart-pers|--run|--telemetry|--url2|--server|--port|--worker|--socks|--read-config|--write-config|--donate)
@@ -141,12 +141,12 @@ bin=$CACHE/$miner-$sha/$exe
 case "$miner" in
   lolminer)
     cmd=("$bin" --algo EQUI192_7 --pers "$PERS" --pool "$pool" --user "$user" --tls off
-         --dns-over-https 0 --apiport 0 --watchdog exit --nocolor --timeprint on "${extra[@]}") ;;
+         --dns-over-https 0 --apiport 0 --watchdog exit --nocolor --timeprint on ${extra[@]+"${extra[@]}"}) ;;
   miniz)
     # miniZ's own documentation (miniz.cc/usage, and its FAQ "How to mine Ycash (YEC)?"):
     # --url=<user>@<host>:<port>, --par=192,7 --pers=ZcashPoW; --telemetry=0 turns its local API
     # (default port 20000) off, as --apiport 0 does for lolMiner; --nocolour as its --help spells it
-    cmd=("$bin" "--url=$user@$pool" "--par=192,7" "--pers=$PERS" "--telemetry=0" "--nocolour" "${extra[@]}") ;;
+    cmd=("$bin" "--url=$user@$pool" "--par=192,7" "--pers=$PERS" "--telemetry=0" "--nocolour" ${extra[@]+"${extra[@]}"}) ;;
 esac
 
 paid="the pool's own address (the pool runs with --payout)"
@@ -321,7 +321,7 @@ gpu_check() { # prints the listings; true when a GPU the miner can use is there
       echo "ycash-miner: lolMiner sees no OpenCL GPU (nvidia-smi: $smi GPU(s), lolMiner OpenCL: $ocl); miniZ (MINER=miniz) mines 192,7 with CUDA" >&2
       return 1 ;;
     miniz)
-      out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "${runenv[@]}" "$bin" --cuda-info --nocolour 2>&1) || true
+      out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID ${runenv[@]+"${runenv[@]}"} "$bin" --cuda-info --nocolour 2>&1) || true
       printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -v '^ *$' | say "miniZ --cuda-info: "
       if printf '%s\n' "$out" | grep -q 'dlopen "libcuda.so.1" failed'; then
         echo "ycash-miner: miniZ cannot load the CUDA driver (libcuda.so.1)" >&2
@@ -392,10 +392,10 @@ while :; do
   if [ -n "$until" ]; then
     left=$(( until - $(date +%s) ))
     [ "$left" -gt 0 ] || burst_over
-    timeout --signal=TERM --kill-after=30 "$left" env -u CONTAINER_API_KEY -u CONTAINER_ID "${runenv[@]}" "${cmd[@]}" || rc=$?
+    timeout --signal=TERM --kill-after=30 "$left" env -u CONTAINER_API_KEY -u CONTAINER_ID ${runenv[@]+"${runenv[@]}"} "${cmd[@]}" || rc=$?
     if past_until; then burst_over; fi
   else
-    env -u CONTAINER_API_KEY -u CONTAINER_ID "${runenv[@]}" "${cmd[@]}" || rc=$?
+    env -u CONTAINER_API_KEY -u CONTAINER_ID ${runenv[@]+"${runenv[@]}"} "${cmd[@]}" || rc=$?
   fi
   if { [ "$miner" = lolminer ] && [ "$rc" = 42 ]; } || { [ "$miner" = miniz ] && [ "$rc" != 0 ]; }; then
     [ "$restarts" -lt 20 ] || { echo "ycash-miner: $miner exited with $rc after 20 restarts" >&2; exit "$rc"; }

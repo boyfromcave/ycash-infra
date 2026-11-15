@@ -98,8 +98,8 @@ is rented):
 Anything else is refused with the forms above: another network's address, a YED address, a
 Zcash prefix, a regtest Sapling address, a worker suffix (`<address>.rig1`). `status`, `logs`,
 `validate` and the burst's own lines show a payout as its kind and a shortened address
-(`sapling ytestsap…996r`), never in full; a dry run prints the full environment each miner would
-get. A Sapling payout is visible only to the wallet that owns it: check it there
+(`sapling ytestsap…996r`), never in full, the dry run's `would run:` lines included (each miner's
+environment, with the payout shown so). A Sapling payout is visible only to the wallet that owns it: check it there
 (`z_listunspent`), not on an explorer.
 
 ### The long-username check (one paid burst, before the demonstration)
@@ -147,9 +147,15 @@ python3 -I scripts/vast-fleet.py --fleet fleet.json down [--network legacy]
   rents). A later burst on the same network sets a new end time and gives back slots above its `N`;
   a miner whose end time moved gets a new container, because the old one ends itself at the old time.
   `--payouts A,B,…` (comma or space separated) pays the burst's miners at those addresses instead
-  of the file's `payouts`, by index as above; a burst miner keeps the address it was started with
-  (a later scheduled `reconcile`, which does not know the burst's list, leaves it alone), while a
-  permanent miner whose address changed in the file is replaced.
+  of the file's `payouts`, by index as above (an input with no address in it, such as `,,`, is
+  refused rather than falling back to the file's). A burst miner keeps the address it was started
+  with: a later scheduled `reconcile`, which does not know the burst's list, leaves it alone, and if
+  it dies (or its end time moves) its replacement is started at the address its last instance had,
+  read back from that instance's environment; if that cannot be read, or is not a valid address of
+  the network, the slot is **not** recreated and the run says so (start the burst again with its
+  payouts). A permanent miner whose address changed in the file is replaced. A slot that is
+  already a running fleet miner (within `count`, no end time) stays as it is during a burst, so it
+  keeps the file's payout, not the burst's: the burst's list applies to the slots the burst rents.
 - **A burst ends three ways, whichever comes first:** the miner's container stops mining at
   `MINER_UNTIL` and destroys its own Vast instance with the per-instance key Vast gives every
   container (`CONTAINER_API_KEY`, scoped to that instance; stop if destroy is refused;

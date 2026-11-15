@@ -827,8 +827,48 @@ class TestPayoutMiners(Base):
         runs = [line for line in self.out.splitlines() if "would run:" in line]
         self.assertEqual(len(runs), 4)
         for line, a in zip(runs, self.four):
-            self.assertIn(f"PAYOUT={a} ", line)
+            self.assertIn(f"PAYOUT=<{vf.payout_shown(a, 'testnet')}> ", line)    # shown, never whole
+            self.assertNotIn(a, line)
         self.assertEqual(self.creates(), [])
+
+    def test_empty_payouts_input_refused(self):
+        for empty in (",,", " , "):
+            self.fake.clear()
+            self.assertEqual(self.run_fleet("burst", "legacy", "2", "--hours", "1", "--payouts", empty), 1, empty)
+            self.assertIn("no address in it", self.out)
+            self.assertEqual(self.fake.calls(), [])
+
+    def kill(self, label, env=None):
+        st = self.fake.read()
+        for i in st["instances"]:
+            if i["label"] == label:
+                i["actual_status"] = "exited"
+                if env is not None:
+                    i["extra_env"] = env
+        self.fake.write(st)
+
+    def test_dead_burst_miner_replaced_at_its_own_address(self):
+        self.assertEqual(self.run_fleet("burst", "legacy", "2", "--hours", "1", "--payouts", f"{T_PQS},{T_SAP2}"), 0,
+                         self.out)
+        self.kill("ycash-legacy-1.until-20270115T0900Z")
+        self.fake.clear()
+        # a plain reconcile, which never saw the burst's list (the file's legacy payouts are empty)
+        self.assertEqual(self.run_fleet("reconcile", "--network", "legacy"), 0, self.out)
+        (c,) = self.creates()
+        self.assertEqual(c["body"]["label"], "ycash-legacy-1.until-20270115T0900Z")
+        self.assertEqual(c["body"]["env"]["PAYOUT"], T_SAP2)
+
+    def test_dead_burst_miner_with_unknown_payout_not_recreated(self):
+        for env, why in (([], "cannot be read"),
+                         ([["POOL_URL", "pool-c.test2:3333"], ["PAYOUT", M_SAP]], "not a valid testnet address")):
+            self.fake.write({"offers": copy.deepcopy(OFFERS),
+                             "instances": [inst(950, "ycash-legacy-1.until-20270115T0900Z", status="exited",
+                                                extra_env=env)]})
+            self.fake.clear()
+            self.assertEqual(self.run_fleet("reconcile", "--network", "legacy"), 1, self.out)
+            self.assertIn("NOT RECREATED ycash-legacy-1", self.out)
+            self.assertIn(why, self.out)
+            self.assertEqual(self.creates(), [])
 
     def test_status_and_logs_show_kind_and_shares(self):
         self.fake.write({"offers": copy.deepcopy(OFFERS), "logs": {

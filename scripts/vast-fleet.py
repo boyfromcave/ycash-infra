@@ -60,7 +60,7 @@ The REST API used (as the vastai CLI 1.10.0 calls it, https://console.vast.ai):
 Each miner's environment: POOL_URL, WORKER, MINER (lolminer | miniz; miniz only with the fleet's
 pinned miniz_url / miniz_sha256, passed as MINIZ_URL / MINIZ_SHA256), PAYOUT and MINER_ARGS if set,
 MINER_UNTIL on a burst miner, NVIDIA_DRIVER_CAPABILITIES=compute,utility. A dry run prints, per miner it
-would start, that environment ("would run: ...").
+would start, that environment ("would run: ...", the payout as its kind and a shortened address).
   PUT    /api/v0/instances/<id>/ relabel (a burst's end time)
   DELETE /api/v0/instances/<id>/ destroy
   PUT    /api/v0/instances/request_logs/<id>/  {"tail": "N"}: Vast uploads the container log and returns
@@ -649,11 +649,15 @@ def drifted(inst, cfg, idx, until=None):
     return None
 
 
-def launch_command(env):
-    """A dry run's view of the rent request: the container's environment, in the order the image reads it."""
+def launch_command(env, chain="testnet"):
+    """A dry run's view of the rent request: the container's environment, in the order the image reads it
+    (the payout as its kind and a shortened address, as everywhere in the output)."""
     order = ["POOL_URL", "WORKER", "PAYOUT", "MINER", "MINER_ARGS", "MINER_UNTIL", "MINIZ_URL", "MINIZ_SHA256",
              "NVIDIA_DRIVER_CAPABILITIES"]
-    return " ".join(f"{k}={env[k]}" for k in order if k in env)
+    shown = dict(env)
+    if "PAYOUT" in shown:
+        shown["PAYOUT"] = f"<{payout_shown(env['PAYOUT'], chain)}>"
+    return " ".join(f"{k}={shown[k]}" for k in order if k in shown)
 
 
 SHARES_RES = [
@@ -785,9 +789,37 @@ class Fleet:
             except ApiError as e:
                 self.errors.append(f"relabel {inst.get('label')}: {e}")
 
-    def create(self, net, idx, until=None):
+    def burst_payout(self, cfg, idx, prior):
+        """(payout, None) for a burst slot, or (None, why) when it cannot be known. A burst run's own
+        --payouts list wins; otherwise a burst slot being replaced (dead, or its end time moved) keeps
+        the address its last instance was started with, so a later plain reconcile, which never saw
+        the burst's list, cannot pay a replacement elsewhere. A slot with no instance before (new in
+        this burst run) takes the file's payouts."""
+        if cfg.get("burst_payouts"):
+            bp = cfg["burst_payouts"]
+            return bp[idx % len(bp)], None
+        if not prior:
+            return want_payout(cfg, idx), None
+        for inst in sorted(prior, key=lambda i: -(i.get("start_date") or 0)):   # the newest first
+            env = inst.get("extra_env") or {}
+            if isinstance(env, dict) and "POOL_URL" in env:
+                old = env.get("PAYOUT", "")
+                if old and payout_kind(old, cfg["chain"]) is None:
+                    return None, f"its last instance's payout ({short_address(old)}) is not a valid {cfg['chain']} address"
+                return old, None
+        return None, "its last instance's payout cannot be read (Vast returned no environment)"
+
+    def create(self, net, idx, until=None, prior=()):
         cfg = self.fleet["networks"][net]
         label = make_label(net, idx, until)
+        if until:
+            payout, why = self.burst_payout(cfg, idx, prior)
+            if why:
+                self.errors.append(f"{label}: not recreated: {why}; start the burst again with its payouts")
+                say(f"  NOT RECREATED {label}: {why}")
+                return
+        else:
+            payout = want_payout(cfg, idx)
         why = startable(cfg)
         if why:
             self.errors.append(f"{label}: not started: {why}")
@@ -804,8 +836,6 @@ class Fleet:
                 self.errors.append(f"{label}: offer search: {e}")
                 return
         env = {"POOL_URL": cfg["pools"][idx % len(cfg["pools"])], "WORKER": f"{cfg['worker_prefix']}-{idx}"}
-        payouts = cfg.get("burst_payouts") if until and cfg.get("burst_payouts") else cfg["payouts"]
-        payout = payouts[idx % len(payouts)] if payouts else ""
         if payout:
             env["PAYOUT"] = payout    # the image passes it as the stratum username, unchanged
         if cfg["extra_args"]:
@@ -832,7 +862,7 @@ class Fleet:
                 f"pool {pool_no} of {len(cfg['pools'])}, worker {env['WORKER']}, "
                 f"paid {payout_shown(payout, cfg['chain'])}")
             if self.dry:
-                say(f"    would run: {launch_command(env)}")
+                say(f"    would run: {launch_command(env, cfg['chain'])}")
                 return
             payload = {"client_id": "me", "image": cfg["image"], "env": env, "disk": cfg["disk_gb"],
                        "label": label, "runtype": "args", "cancel_unavail": True, "price": bid}
@@ -913,7 +943,7 @@ class Fleet:
                 self.destroy(alive[0], drift)
                 alive = []
             if not alive:
-                self.create(net, idx, until)
+                self.create(net, idx, until, prior=insts)
                 continue
             want_label = make_label(net, idx, until)
             if alive[0].get("label") != want_label:
@@ -1116,7 +1146,10 @@ def main(argv=None):
             burst = (a.network, a.count, until)
             cfg = nets[a.network]
             if a.payouts is not None and a.payouts.strip():
-                cfg["burst_payouts"] = parse_payouts(a.payouts.replace(",", " ").split(), cfg["chain"], "burst --payouts")
+                given = a.payouts.replace(",", " ").split()
+                if not given:
+                    raise FleetError("burst --payouts: no address in it (leave it out to use the fleet file's payouts)")
+                cfg["burst_payouts"] = parse_payouts(given, cfg["chain"], "burst --payouts")
             plist = cfg.get("burst_payouts") or cfg["payouts"]
             for i in range(a.count):
                 say(f"burst: miner {i} is paid {payout_shown(plist[i % len(plist)] if plist else '', cfg['chain'])}")
