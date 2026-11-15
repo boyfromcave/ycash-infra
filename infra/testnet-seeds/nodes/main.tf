@@ -35,9 +35,11 @@ locals {
   # The host files (the host_files output): what seedctl needs only for an apply or a reset, which
   # always come through the deploy workflow, so they travel with it (`seedctl install-files`) rather
   # than in user_data, which EC2 caps at 16 KB and which setup.sh and seedctl fill: the prefix tools,
-  # and for an explorer seedctl's explorer half and, in build mode, the Inzyght build context.
+  # and for an explorer seedctl's explorer half and, in build mode, the Inzyght build context; for a
+  # lightwallet seedctl's lightwallet half.
   any_explorer = anytrue([for k, n in local.enabled : n.explorer != null])
   any_build    = anytrue([for k, n in local.enabled : try(n.explorer.build, null) != null])
+  any_lw       = anytrue([for k, n in local.enabled : n.lightwallet != null])
   host_files = merge(
     var.prefix == null ? {} : {
       "prefix-restore.sh" = { mode = "0755", content = local.restore_sh }
@@ -45,6 +47,7 @@ locals {
     },
     local.any_explorer ? { "seedctl-explorer" = { mode = "0644", content = file("${path.module}/files/seedctl-explorer") } } : {},
     local.any_build ? { "inzyght-build.json" = { mode = "0644", content = local.explorer_build_json } } : {},
+    local.any_lw ? { "seedctl-lightwallet" = { mode = "0644", content = file("${path.module}/files/seedctl-lightwallet") } } : {},
   )
 
   # /opt/ycash-seed/seed.env: the host's own settings only (no network, no image). Every value is

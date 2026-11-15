@@ -1,0 +1,426 @@
+#!/bin/bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
+# seedctl-lightwallet: the light-wallet half of seedctl (sourced by seedctl, never run by itself). A
+# network whose config has a `lightwallet` runs a public light-wallet server beside its node
+# (README.md, "The lightwallet"): lightwalletd-dd (--yellowback), a gRPC-web proxy (Envoy) and a TLS
+# proxy (Caddy) on one public name, native gRPC for the apps and gRPC-web for the web wallet on the
+# same port. Installed beside seedctl by the deploy workflow (the module's host_files, `seedctl
+# install-files`), kept on the data volume for `boot`.
+# shellcheck disable=SC2034  # variables used by seedctl, which sources this file
+# shellcheck disable=SC2154  # D, O, UID_NODE, cfg, die, log, dinspect, cli, job_json, node_oom_kills: seedctl's
+
+LW_DIGEST_RE='^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$'
+UID_LWD=2002                 # lightwalletd-dd's image user (its Dockerfile: LWD_UID=2002)
+UID_LWPROXY=2006             # Caddy runs as this uid, not root (as the explorer's proxy)
+UID_GRPCWEB=2007             # Envoy runs as this uid, not root
+# The lightwallet's compose networks, fixed so the metadata rule, the node's RPC allow list and
+# lightwalletd's trusted proxy can name them. One lightwallet per host (the module refuses two, and
+# an explorer beside one).
+LW_BACKEND=172.31.252        # internal: .10 TLS proxy, .11 node, .12 lightwalletd, .13 gRPC-web proxy
+LW_EDGE=172.31.253           # the node's P2P out and the TLS proxy's published ports
+LW_LWD=$LW_BACKEND.12        # the only address the node's RPC admits (besides its own loopback)
+LW_GRPCWEB=$LW_BACKEND.13    # the only peer whose x-real-ip lightwalletd believes (--trusted-proxy-cidr)
+LW_NODE_SWAP_MB=2048
+
+# check_config's lightwallet half: every value lands in a compose file, an env file, a Caddyfile or
+# Envoy's configuration.
+lightwallet_check() { # file name
+  jq -e --arg digest "$LW_DIGEST_RE" '
+    (.insight == true) and (.pool == null) and (.explorer == null) and (.network == "testnet")
+    and (.lightwallet.hostname | test("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$"))
+    and ((.lightwallet.acme_email // "") | test("^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+)?$"))
+    and (.lightwallet.tls | type == "boolean")
+    and ([.lightwallet.image, .lightwallet.grpcweb_image, .lightwallet.proxy_image] | all(type == "string" and test($digest)))
+    and (.lightwallet.grpcweb_origins | type == "array" and length >= 1
+      and all(type == "string" and (. == "*" or test("^https?://[a-z0-9.-]+(:[0-9]{1,5})?$"))))
+    and (.lightwallet.mem_limit_mb | type == "number" and . >= 256 and . <= 65536 and . == floor)
+    and (.lightwallet.node_mem_limit_mb | type == "number" and . >= 512 and . <= 65536 and . == floor)
+    and (.lightwallet.log_level | type == "number" and . >= 1 and . <= 6 and . == floor)
+  ' "$1" >/dev/null || die "the lightwallet in the config for $2 is not valid"
+}
+
+# The containers sit on the lightwallet's two compose networks, not in host networking, so the
+# metadata service's hop limit of 1 already keeps them from an IMDSv2 token; a forward rule refuses
+# them the metadata address as well (as the explorer's, seedctl-explorer explorer_imds_guard).
+lightwallet_imds_guard() {
+  local c=DOCKER-USER
+  iptables -n -L DOCKER-USER >/dev/null 2>&1 || c=FORWARD
+  iptables -C "$c" -s "$LW_BACKEND.0/23" -d 169.254.169.254/32 -j REJECT 2>/dev/null \
+    || iptables -I "$c" 1 -s "$LW_BACKEND.0/23" -d 169.254.169.254/32 -j REJECT \
+    || die "could not install the metadata rule for the lightwallet's networks"
+}
+
+# lightwalletd's files on the data volume: its node configuration (the node's RPC credential, read
+# by lightwalletd's uid only, never on a command line or in an environment variable), its block
+# cache (rebuilt from the node; a reset deletes it with the chain) and Caddy's certificate and
+# configuration directories (kept across resets and new instances).
+lightwallet_files() { # net file
+  local L="$D/$1/lightwallet"
+  mkdir -p "$L/cache" "$L/caddy/data" "$L/caddy/config"
+  chmod 0711 "$L"
+  ( umask 077
+    # shellcheck source=/dev/null
+    . "$D/$1/rpc.env"
+    printf 'rpcuser=%s\nrpcpassword=%s\nrpcbind=%s\nrpcport=%s\n' \
+      "$YCASHD_RPC_USER" "$YCASHD_RPC_PASSWORD" "$LW_BACKEND.11" "$(cfg "$2" .rpc_port)" > "$L/lightwalletd.conf.new" )
+  if [ "$(id -u)" = 0 ]; then
+    chown "$UID_LWD:$UID_LWD" "$L/lightwalletd.conf.new"
+    chown -R "$UID_LWD:$UID_LWD" "$L/cache"
+    chown -R "$UID_LWPROXY:$UID_LWPROXY" "$L/caddy"
+  fi
+  chmod 0400 "$L/lightwalletd.conf.new"; mv -f "$L/lightwalletd.conf.new" "$L/lightwalletd.conf"
+}
+
+# The Caddyfile: TLS for the public name (Let's Encrypt, HTTP-01 on port 80, renewal, the redirect to
+# HTTPS), HTTP/1.1 and HTTP/2 (gRPC needs HTTP/2; gRPC-web runs over either), every request to the
+# gRPC-web proxy over h2c, streamed (no buffering: GetBlockRange and the mempool stream). The
+# client's address goes in x-real-ip, which Caddy sets itself (a client's own header is replaced),
+# so lightwalletd's per-peer limiter counts real clients. Plain HTTP (tls false): port 80, with h2c
+# for native gRPC.
+lightwallet_caddyfile() { # net file
+  local host tls email site protos
+  host=$(cfg "$2" .lightwallet.hostname); tls=$(cfg "$2" .lightwallet.tls); email=$(cfg "$2" '.lightwallet.acme_email // ""')
+  if [ "$tls" = true ]; then site=$host; protos="h1 h2"; else site=:80; protos="h1 h2c"; fi
+  printf '# rendered by seedctl for %s: the light-wallet server (ycash-infra infra/testnet-seeds/README.md, "The lightwallet")\n{\n\tadmin off\n' "$1"
+  [ -z "$email" ] || printf '\temail %s\n' "$email"
+  cat <<CADDY
+	servers {
+		# HTTP/3 would need UDP 443, which the security group does not open
+		protocols $protos
+		timeouts {
+			# 10 s for the request headers; a connection without a request open is closed after
+			# 5 minutes; no read/write timeout, which would cut a long stream
+			read_header 10s
+			idle 5m
+		}
+	}
+}
+
+$site {
+	log {
+		output stdout
+		format json
+	}
+	# lightwalletd's own limit for a request message is 4 MB (gRPC's default)
+	request_body {
+		max_size 4MB
+	}
+	header {
+		-Server
+	}
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000"
+	reverse_proxy h2c://$LW_GRPCWEB:8080 {
+		flush_interval -1
+		header_up X-Real-IP {remote_host}
+	}
+	handle_errors 502 503 504 {
+		respond "This light-wallet server is starting: the node is importing the chain or lightwalletd is filling its cache. Try again in a few minutes." 503
+	}
+}
+CADDY
+}
+
+# Envoy's configuration: one listener (h2c, from the TLS proxy only), the gRPC-web filter (it turns a
+# browser's application/grpc-web(-text) request into gRPC and its answer back, and passes native gRPC
+# through untouched), CORS for the web wallet's origins, and routes for lightwalletd's two services
+# only (CompactTxStreamer, YellowbackStreamer); any other path is a 404. No admin interface. No
+# request timeout (GetBlockRange, the mempool stream); a stream with no traffic for an hour is reset.
+lightwallet_envoy() { # file
+  local origins
+  origins=$(jq -c '.lightwallet.grpcweb_origins | if index("*") then [{safe_regex: {regex: ".*"}}] else map({exact: .}) end' "$1")
+  cat <<ENVOY
+# rendered by seedctl: the light-wallet server's gRPC-web proxy (ycash-infra infra/testnet-seeds/README.md, "The lightwallet")
+static_resources:
+  listeners:
+    - name: grpcweb
+      address: { socket_address: { address: 0.0.0.0, port_value: 8080 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: grpcweb
+                codec_type: AUTO
+                stream_idle_timeout: 3600s
+                route_config:
+                  name: lightwalletd
+                  virtual_hosts:
+                    - name: lightwalletd
+                      domains: ["*"]
+                      typed_per_filter_config:
+                        envoy.filters.http.cors:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+                          allow_origin_string_match: $origins
+                          allow_methods: "POST, OPTIONS"
+                          allow_headers: "*"
+                          expose_headers: "grpc-status, grpc-message, grpc-status-details-bin"
+                          max_age: "86400"
+                      routes:
+                        - match: { prefix: "/cash.z.wallet.sdk.rpc.CompactTxStreamer/" }
+                          route: { cluster: lightwalletd, timeout: 0s, max_stream_duration: { grpc_timeout_header_max: 0s } }
+                        - match: { prefix: "/cash.z.wallet.sdk.rpc.YellowbackStreamer/" }
+                          route: { cluster: lightwalletd, timeout: 0s, max_stream_duration: { grpc_timeout_header_max: 0s } }
+                        - match: { prefix: "/" }
+                          direct_response: { status: 404 }
+                http_filters:
+                  - name: envoy.filters.http.grpc_web
+                    typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_web.v3.GrpcWeb }
+                  - name: envoy.filters.http.cors
+                    typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors }
+                  - name: envoy.filters.http.router
+                    typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router }
+  clusters:
+    - name: lightwalletd
+      type: STATIC
+      connect_timeout: 5s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: { http2_protocol_options: {} }
+      load_assignment:
+        cluster_name: lightwalletd
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: $LW_LWD, port_value: 9067 } } }
+ENVOY
+}
+
+# render's lightwallet branch: the node on the lightwallet's networks instead of host networking,
+# hardened as the explorer's (its memory: lightwallet.node_mem_limit_mb of RAM, default 2304, and
+# LW_NODE_SWAP_MB of swap beyond it, README.md "Host size"), lightwalletd (not while the prefix is
+# imported: it would follow a chain that is still being loaded; prefix-check renders it once the
+# import is done), the gRPC-web proxy and the TLS proxy, plus the Caddyfile and envoy.yaml beside the
+# compose file. backend is internal (no route out); only the TLS proxy publishes ports.
+render_lightwallet() { # net file loadblock-flags
+  local net=$1 f=$2 importing=$3 N="$D/$1/node" R="$O/net/$1" L="$D/$1/lightwallet" mem ports dep=""
+  lightwallet_imds_guard
+  lightwallet_files "$net" "$f"
+  mem=$(cfg "$f" .lightwallet.node_mem_limit_mb)
+  if [ "$(cfg "$f" .lightwallet.tls)" = true ]; then ports='["80:80", "443:443"]'; else ports='["80:80"]'; fi
+  lightwallet_caddyfile "$net" "$f" > "$R/Caddyfile.new"
+  # it carries the certificate contact: root and Caddy's group only
+  chmod 0640 "$R/Caddyfile.new"
+  if [ "$(id -u)" = 0 ]; then chown "0:$UID_LWPROXY" "$R/Caddyfile.new"; fi
+  mv -f "$R/Caddyfile.new" "$R/Caddyfile"
+  lightwallet_envoy "$f" > "$R/envoy.yaml.new"
+  chmod 0644 "$R/envoy.yaml.new"; mv -f "$R/envoy.yaml.new" "$R/envoy.yaml"
+  cat > "$R/compose.yaml" <<YAML
+name: ycash-$net
+services:
+  ycashd:
+    image: $(cfg "$f" .image)
+    container_name: ycashd-$net
+    restart: unless-stopped
+    user: "$UID_NODE:$UID_NODE"
+    read_only: true
+    tmpfs: ["/tmp", "/srv/ycash"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks:
+      backend: { ipv4_address: "$LW_BACKEND.11" }
+      edge: {}
+    env_file: [$D/$net/rpc.env, $R/node.env]
+    volumes: ["$N:/var/lib/ycash"]
+    mem_limit: ${mem}m
+    memswap_limit: $((mem + LW_NODE_SWAP_MB))m
+    stop_grace_period: 180s
+    logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
+YAML
+  if [ -z "$importing" ]; then
+    dep=$'\n    depends_on: { lightwalletd: { condition: service_started } }'
+    cat >> "$R/compose.yaml" <<YAML
+  lightwalletd:
+    image: $(cfg "$f" .lightwallet.image)
+    container_name: lightwalletd-$net
+    restart: unless-stopped
+    user: "$UID_LWD:$UID_LWD"
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      LWD_CONF_PATH: /etc/lightwalletd/ycash.conf
+      LWD_INSECURE: "1"
+      LWD_YELLOWBACK: "1"
+      LWD_TRUSTED_PROXY_CIDRS: "$LW_GRPCWEB/32"
+      LWD_LOG_LEVEL: "$(cfg "$f" .lightwallet.log_level)"
+    volumes: ["$L/lightwalletd.conf:/etc/lightwalletd/ycash.conf:ro", "$L/cache:/var/lib/lightwalletd"]
+    networks:
+      backend: { ipv4_address: "$LW_LWD" }
+    depends_on:
+      ycashd: { condition: service_started }
+    mem_limit: $(cfg "$f" .lightwallet.mem_limit_mb)m
+    healthcheck: { test: ["CMD", "lwdinfo", "-server", "127.0.0.1:9067", "-timeout", "5s"], interval: 30s, timeout: 10s, retries: 5, start_period: 6h }
+    stop_grace_period: 30s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+YAML
+  fi
+  cat >> "$R/compose.yaml" <<YAML
+  grpcweb:
+    image: $(cfg "$f" .lightwallet.grpcweb_image)
+    container_name: grpcweb-$net
+    restart: unless-stopped
+    user: "$UID_GRPCWEB:$UID_GRPCWEB"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--disable-hot-restart", "--log-level", "warn"]
+    volumes: ["$R/envoy.yaml:/etc/envoy/envoy.yaml:ro"]
+    networks:
+      backend: { ipv4_address: "$LW_GRPCWEB" }$dep
+    mem_limit: 128m
+    stop_grace_period: 10s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+  lwproxy:
+    image: $(cfg "$f" .lightwallet.proxy_image)
+    container_name: lwproxy-$net
+    restart: unless-stopped
+    # not root: the binary's file capability needs NET_BIND_SERVICE in the bounding set, the one kept
+    user: "$UID_LWPROXY:$UID_LWPROXY"
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    volumes: ["$R/Caddyfile:/etc/caddy/Caddyfile:ro", "$L/caddy/data:/data", "$L/caddy/config:/config"]
+    # TCP only (HTTP/3 is off)
+    ports: $ports
+    networks:
+      backend: { ipv4_address: "$LW_BACKEND.10" }
+      edge: {}
+    depends_on: { grpcweb: { condition: service_started } }
+    mem_limit: 128m
+    stop_grace_period: 10s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+networks:
+  backend:
+    internal: true
+    # the fixed addresses (.10 to .13) below the dynamic range, so a recreated container can never take one
+    ipam: { config: [{ subnet: "$LW_BACKEND.0/24", ip_range: "$LW_BACKEND.128/25" }] }
+  edge:
+    ipam: { config: [{ subnet: "$LW_EDGE.0/24" }] }
+YAML
+}
+
+wait_lightwallet() { # net seconds: lightwalletd healthy (or, while the prefix is imported, the two proxies up)
+  local i=0 st
+  while [ "$i" -lt "$2" ]; do
+    if grep -q '^  lightwalletd:' "$O/net/$1/compose.yaml"; then
+      st=$(dinspect '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "lightwalletd-$1" absent)
+    else
+      st=$(dinspect '{{.State.Status}}' "grpcweb-$1" absent); [ "$st" = running ] && st=healthy
+    fi
+    if [ "$st" = healthy ] && [ "$(dinspect '{{.State.Status}}' "lwproxy-$1" absent)" = running ]; then return 0; fi
+    sleep 5; i=$((i + 5))
+  done
+  return 1
+}
+
+# apply, after the containers are up. lightwalletd fills its block cache from the node at its first
+# start (minutes on the fast testnet); it answers GetLightdInfo meanwhile.
+lightwallet_up() { # net
+  local f="$D/$1/applied.json"
+  wait_lightwallet "$1" 900 || die "$1: the light-wallet server did not come up within 15 minutes (docker logs lightwalletd-$1 / grpcweb-$1 / lwproxy-$1)"
+  if grep -q '^  lightwalletd:' "$O/net/$1/compose.yaml"; then
+    log "$1 lightwallet up: $(cfg "$f" .lightwallet.image), $(cfg "$f" .lightwallet.hostname)"
+  else
+    log "$1 lightwallet: the proxies up; lightwalletd starts once the prefix is imported (prefix-check, every 10 minutes)"
+  fi
+}
+
+# One gRPC call of GetLightdInfo through the TLS proxy, as a client makes it: native gRPC (HTTP/2;
+# h2c without TLS) or gRPC-web (HTTP/1.1, as a browser may). Prints the call's grpc-status ("0" =
+# answered), else "http <code>" (no gRPC answer: the proxy's 503 while starting, a 404), else "none"
+# (no connection). curl writes HTTP/2 trailers with the headers; gRPC-web carries them in the body.
+lw_probe() { # mode(grpc|web) url [curl options...]
+  local mode=$1 url=$2 h b code st; shift 2
+  h=$(mktemp); b=$(mktemp)
+  if [ "$mode" = grpc ]; then
+    set -- "$@" -H 'content-type: application/grpc' -H 'te: trailers'
+    case "$url" in https:*) set -- "$@" --http2 ;; *) set -- "$@" --http2-prior-knowledge ;; esac
+  else
+    set -- "$@" --http1.1 -H 'content-type: application/grpc-web+proto' -H 'x-grpc-web: 1'
+  fi
+  code=$(printf '\0\0\0\0\0' | curl -sS -o "$b" -D "$h" -w '%{http_code}' --max-time 10 "$@" --data-binary @- \
+    "$url/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo" 2>/dev/null || true)
+  st=$(cat "$h" "$b" 2>/dev/null | tr -d '\r' | grep -a -o -i -m1 'grpc-status: *[0-9]*' | head -n 1 | grep -o '[0-9]*$' || true)
+  rm -f "$h" "$b"
+  if [ -n "$st" ]; then echo "$st"; elif [ -n "$code" ] && [ "$code" != 000 ]; then echo "http $code"; else echo none; fi
+}
+
+# status's `lightwallet` field: the three containers (and the node's restarts and OOM kills, as the
+# explorer's), lightwalletd's own GetLightdInfo and latest block (lwdinfo, inside its container,
+# plain gRPC), the four probes through the TLS proxy (native gRPC and gRPC-web, on this host for its
+# name and through the public name: DNS, the Elastic IP, the security group, the certificate), and
+# `phase`: where a first start is (a detached deploy's step, the prefix import in percent,
+# lightwalletd catching up to the node, serving).
+lightwallet_status() { # net
+  local f="$D/$1/applied.json" N="$D/$1/node" host tls url c st x r o rs='{}' oom='{}' started kills noom
+  local restarted="" info height blocks last phase job gh wh gp wp resolve=()
+  [ "$(cfg "$f" '.lightwallet != null' 2>/dev/null)" = true ] || { echo null; return 0; }
+  host=$(cfg "$f" .lightwallet.hostname); tls=$(cfg "$f" .lightwallet.tls)
+  st='{}'
+  for c in ycashd lightwalletd grpcweb lwproxy; do
+    if [ "$c" != ycashd ]; then
+      st=$(jq -c --arg k "$c" --arg v "$(dinspect '{{.State.Status}}{{if .State.Health}} {{.State.Health.Status}}{{end}}' "$c-$1" absent)" '. + {($k): $v}' <<<"$st")
+    fi
+    x=$(dinspect '{{.RestartCount}} {{.State.OOMKilled}}' "$c-$1" "")
+    r=${x%% *}; o=${x#* }
+    [[ "$r" =~ ^[0-9]+$ ]] || r=null
+    [[ "$o" =~ ^(true|false)$ ]] || o=null
+    rs=$(jq -c --arg k "$c" --argjson v "$r" '. + {($k): $v}' <<<"$rs")
+    oom=$(jq -c --arg k "$c" --argjson v "$o" '. + {($k): $v}' <<<"$oom")
+  done
+  started=$(dinspect '{{.State.StartedAt}}' "ycashd-$1" "")
+  kills=$(node_oom_kills "$started")
+  noom=$(jq -r --argjson docker "$(jq .ycashd <<<"$oom")" '.sinceStart as $s
+    | if $docker == true or ($s != null and $s.cgroup > 0) then "yes"
+      elif $s != null and $s.host > 0 then "yes, the host ran out of memory"
+      elif $s == null then "unknown" else "no" end' <<<"$kills")
+  r=$(jq -r '.ycashd // 0' <<<"$rs")
+  if [ "$r" -gt 0 ]; then restarted=", node restarted $r time$([ "$r" = 1 ] || echo s) (OOM: $noom)"; fi
+  info=$(docker exec "lightwalletd-$1" lwdinfo -server 127.0.0.1:9067 -timeout 5s 2>/dev/null \
+    | jq -c '{version, vendor, chainName, blockHeight, latestHeight, saplingActivationHeight, consensusBranchId}' 2>/dev/null || true)
+  [ -n "$info" ] || info=null
+  height=$(jq -r '.latestHeight // empty' <<<"$info" 2>/dev/null || true); [[ "$height" =~ ^[0-9]+$ ]] || height=""
+  if [ "$tls" = true ]; then
+    url="https://$host"; resolve=(--resolve "$host:443:127.0.0.1")
+    gh=$(lw_probe grpc "$url" "${resolve[@]}"); wh=$(lw_probe web "$url" "${resolve[@]}")
+  else
+    url="http://$host"
+    gh=$(lw_probe grpc http://127.0.0.1); wh=$(lw_probe web http://127.0.0.1)
+  fi
+  gp=$(lw_probe grpc "$url"); wp=$(lw_probe web "$url")
+  blocks=$(cli "$1" getblockcount 2>/dev/null || true); [[ "$blocks" =~ ^[0-9]+$ ]] || blocks=""
+  job=$(job_json)
+  if [ "$(jq -r '.state // ""' <<<"$job")" = running ]; then
+    phase="deploying: $(jq -r '.phase // "starting"' <<<"$job") (since $(jq -r '.phaseSince // .started' <<<"$job"))"
+  elif [ -e "$N/prefix/FRAMED" ] && [ ! -e "$N/prefix/IMPORTED" ]; then
+    last=$(cat "$N/prefix/LAST_HEIGHT" 2>/dev/null || echo 0)
+    if [ -z "$blocks" ] || [ "$last" -le 0 ]; then phase="prefix import: the node is starting$restarted"
+    elif [ "$blocks" -ge "$last" ]; then phase="prefix imported (height $blocks): lightwalletd starts at the next prefix check (every 10 minutes)$restarted"
+    else phase="prefix import: $blocks of $last ($((blocks * 100 / last)) %)$restarted"; fi
+  elif [ "$(dinspect '{{.State.Status}}' "lightwalletd-$1" absent)" != running ]; then
+    phase="lightwalletd is not running (docker logs lightwalletd-$1)"
+  elif [ "$info" = null ]; then
+    phase="lightwalletd is starting (no GetLightdInfo yet)$restarted"
+  elif [ -z "$height" ] || { [ -n "$blocks" ] && [ "$height" -lt $((blocks - 1)) ]; }; then
+    phase="lightwalletd is catching up: ${height:-0} of ${blocks:-?}"
+  elif [ "$gh" = 0 ] && [ "$wh" = 0 ]; then
+    phase=serving
+  else
+    phase="starting (the TLS proxy answers gRPC $gh, gRPC-web $wh on this host)"
+  fi
+  jq -cn --argjson c "$st" --arg url "$url" --arg grpc "$host:$([ "$tls" = true ] && echo 443 || echo 80)" --arg phase "$phase" \
+    --argjson info "$info" --arg height "$height" --arg gh "$gh" --arg wh "$wh" --arg gp "$gp" --arg wp "$wp" \
+    --argjson rs "$rs" --argjson oom "$oom" --arg started "$started" --argjson kills "$kills" \
+    '{phase: $phase, url: $url, grpc: $grpc} + $c
+     + {height: (if $height == "" then null else ($height | tonumber) end), getLightdInfo: $info}
+     + {grpcOnHost: $gh, grpcWebOnHost: $wh, grpcPublic: $gp, grpcWebPublic: $wp}
+     + {restarts: $rs, oomKilled: $oom, nodeStartedAt: (if $started == "" then null else $started end), nodeOomKills: $kills.sinceStart, nodeOomKillsSinceBoot: $kills.sinceBoot}'
+}

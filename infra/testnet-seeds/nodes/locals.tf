@@ -75,10 +75,10 @@ locals {
     dnsseed   = !n.testnet
     # A pool's node builds the block template for the pool's payout address and holds no wallet:
     # -mineraddress must then not be required to be a wallet address (-minetolocalwallet=0). An
-    # explorer's node only answers reads: no wallet either.
+    # explorer's node only answers reads, a lightwallet's only serves lightwalletd: no wallet either.
     extra_args = trimspace(join(" ", compact([n.testnet ? "-maxtipage=999999999" : "", var.extra_args, n.extra_args,
       n.pool == null ? "" : "-disablewallet -mineraddress=${n.pool.payout} -minetolocalwallet=0",
-    n.explorer == null ? "" : "-disablewallet"])))
+    n.explorer == null && n.lightwallet == null ? "" : "-disablewallet"])))
     peers = [for s in local.seed_keys : format("%s:%d", var.seeds[s].public_ip, n.p2p_port)]
     # The yolo pool beside this network's node (files/seedctl render), or null.
     pool = n.pool == null ? null : {
@@ -114,6 +114,19 @@ locals {
       log_level            = n.explorer.log_level
       pg_shared_buffers_mb = n.explorer.pg_shared_buffers_mb
       node_mem_limit_mb    = n.explorer.node_mem_limit_mb
-    }, n.explorer.p2p_inbound ? { p2p_inbound = true } : {}) }
+    }, n.explorer.p2p_inbound ? { p2p_inbound = true } : {}) },
+    # The light-wallet server beside this network's node (files/seedctl-lightwallet).
+    n.lightwallet == null ? {} : { lightwallet = {
+      hostname          = n.lightwallet.hostname
+      acme_email        = var.lightwallet_acme_email
+      tls               = n.lightwallet.tls
+      image             = n.lightwallet.image
+      grpcweb_image     = n.lightwallet.grpcweb_image
+      proxy_image       = n.lightwallet.proxy_image
+      grpcweb_origins   = n.lightwallet.grpcweb_origins
+      mem_limit_mb      = n.lightwallet.mem_limit_mb
+      node_mem_limit_mb = n.lightwallet.node_mem_limit_mb
+      log_level         = n.lightwallet.log_level
+    } }
   ) }
 }

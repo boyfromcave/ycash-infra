@@ -3,7 +3,7 @@
 | Image | Dockerfile | Context |
 |---|---|---|
 | `ycash/ycashd` | `ycash6/contrib/docker/ycashd/Dockerfile` (in the node repo; `ycash-dd` has the same for the v4.5.0 line) | the node tree |
-| `ycash/lightwalletd` | `lightwalletd-dd/Dockerfile` (in its repo) | the lightwalletd tree |
+| `ycash/lightwalletd` (`ghcr.io/<owner>/lightwalletd`) | `lightwalletd-dd/Dockerfile` (in its repo; published from one commit by `lightwalletd-image.yml` for the testnet lightwallet host, `infra/testnet-seeds/README.md` "The lightwallet") | the lightwalletd tree at one commit |
 | `ycash/yindex` | `images/yindex/Dockerfile` | this repo |
 | `ycash/web` | `images/web/Dockerfile` | `yew/web` after `npm run build` |
 | `ycash/faucet` | `images/faucet/Dockerfile` ([README](faucet/README.md): the kind demo's regtest faucet and a testnet's faucet) | `images/faucet` |

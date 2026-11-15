@@ -422,39 +422,7 @@ wait_explorer() { # net seconds: Inzyght healthy (or, while the prefix is import
   return 1
 }
 
-# The kernel log's OOM kills of a ycashd process, the source that records them (Docker's
-# State.OOMKilled read false for the first explorer run's cgroup kill): one JSON object,
-# {"sinceStart": {"cgroup": N, "host": N}, "sinceBoot": {...}}. `cgroup` counts "Memory cgroup out of
-# memory: Killed process ... (ycashd)" (the container's own limit), `host` "Out of memory: Killed
-# process ... (ycashd)" (the whole host out of memory). `sinceStart` counts the kills from a minute
-# before the container's current StartedAt on, so the kill that caused this start is in it and one
-# from an earlier start is not; null when the start time or the kernel log's times are not known;
-# both null when no kernel log is readable. journalctl first; dmesg only when journalctl fails, and
-# then alone (what a failing journalctl printed is dropped, so no kill is counted twice).
-node_oom_kills() { # started-at (Docker's StartedAt, UTC)
-  local log src bt="" start
-  if log=$(journalctl -k -b -q --no-pager -o short-unix 2>/dev/null); then src=journal
-  elif log=$(dmesg 2>/dev/null); then src=dmesg; bt=$(awk '$1 == "btime" { print $2 }' /proc/stat 2>/dev/null || true)
-  else echo '{"sinceStart":null,"sinceBoot":null}'; return 0; fi
-  start=$(jq -rn --arg s "$1" '$s | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch empty' 2>/dev/null || true)
-  [[ "$start" =~ ^[0-9]+$ ]] || start=""
-  [[ "$bt" =~ ^[0-9]+$ ]] || bt=""
-  awk -v src="$src" -v bt="$bt" -v start="$start" '
-    BEGIN { known = start != "" && (src == "journal" || bt != "") }
-    /Killed process [0-9]+ \(ycashd\)/ {
-      if ($0 ~ /Memory cgroup out of memory/) k = "cgroup"; else if ($0 ~ /Out of memory/) k = "host"; else next
-      boot[k]++
-      if (!known) next
-      if (src == "journal") t = $1 + 0
-      else if (match($0, /^\[ *[0-9.]+\]/)) t = bt + substr($0, RSTART + 1, RLENGTH - 2)
-      else next
-      if (t >= start - 60) since[k]++
-    }
-    END {
-      s = known ? sprintf("{\"cgroup\":%d,\"host\":%d}", since["cgroup"], since["host"]) : "null"
-      printf "{\"sinceStart\":%s,\"sinceBoot\":{\"cgroup\":%d,\"host\":%d}}\n", s, boot["cgroup"], boot["host"]
-    }' <<<"$log"
-}
+# node_oom_kills (the kernel log's OOM kills of ycashd) is seedctl's: the lightwallet's status uses it too.
 
 # status's `explorer` field: the three containers, Inzyght's image (and, when a built one is
 # missing, why), the height Inzyght has indexed (from its database), whether the explorer answers
