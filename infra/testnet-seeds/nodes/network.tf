@@ -52,8 +52,10 @@ resource "aws_route_table_association" "public" {
 
 # Inbound: each enabled network's P2P port (to var.p2p_ingress_cidrs; a network with an explorer only
 # with explorer.p2p_inbound, the one case its node's container publishes the port), for a network with a pool its
-# stratum port (to var.pool_ingress_cidrs) and, for a network with an explorer, 443 and 80 (to
-# var.explorer_ingress_cidrs; the explorer's proxy is the only listener there); nothing else. No
+# stratum port (to var.pool_ingress_cidrs), for a network with an explorer, 443 and 80 (to
+# var.explorer_ingress_cidrs; the explorer's proxy is the only listener there) and, for a network
+# with a lightwallet, 443 and 80 (to var.lightwallet_ingress_cidrs; its proxy; its node publishes
+# no P2P port, so none is opened for it); nothing else. No
 # SSH, no RPC: every node's RPC binds to 127.0.0.1 on its own port (an explorer's node: inside its
 # container, reachable only from Inzyght's address), yolo's status page too, and an operator reaches
 # a host through SSM, which needs no inbound port. Disabling or removing a network (or its pool or
@@ -72,6 +74,12 @@ resource "aws_security_group" "seed" {
       condition     = alltrue([for k, n in local.enabled : !try(n.explorer.p2p_inbound, false) || length(var.p2p_ingress_cidrs) > 0])
       error_message = "networks: explorer.p2p_inbound publishes the node's P2P port; it needs p2p_ingress_cidrs (empty, the security group would not open it)."
     }
+    # A caller may commit the all-zero digest as a placeholder until an image is published (validate
+    # passes on it); no plan does.
+    precondition {
+      condition     = alltrue([for k, n in local.enabled : n.lightwallet == null ? true : !anytrue([for i in [n.lightwallet.image, n.lightwallet.grpcweb_image, n.lightwallet.proxy_image] : can(regex("@sha256:0{64}$", i))])])
+      error_message = "networks: a lightwallet image is the all-zero placeholder digest: set the published digest (ycash-infra lightwalletd-image.yml prints it)."
+    }
     precondition {
       condition     = alltrue([for k, n in local.enabled : !try(n.explorer.p2p_inbound, false) || !can(regex("(^| )--?(no)?listen(=[^ ]*)?( |$)", "${var.extra_args} ${n.extra_args}"))])
       error_message = "networks: explorer.p2p_inbound with a -listen (or -nolisten) in extra_args: the node listens by default; drop it, or the port would be opened to a node that does not listen."
@@ -80,7 +88,7 @@ resource "aws_security_group" "seed" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "p2p" {
-  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.explorer == null || try(n.explorer.p2p_inbound, false)]), var.p2p_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
+  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.lightwallet == null && (n.explorer == null || try(n.explorer.p2p_inbound, false))]), var.p2p_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
 
   security_group_id = aws_security_group.seed.id
   description       = "P2P ${each.value.net}"
@@ -109,6 +117,19 @@ resource "aws_vpc_security_group_ingress_rule" "explorer" {
 
   security_group_id = aws_security_group.seed.id
   description       = "explorer ${each.value.net} ${each.value.port == 443 ? "https" : "http (ACME, redirect)"}"
+  ip_protocol       = "tcp"
+  from_port         = each.value.port
+  to_port           = each.value.port
+  cidr_ipv4         = each.value.cidr
+  tags              = var.tags
+}
+
+resource "aws_vpc_security_group_ingress_rule" "lightwallet" {
+  #checkov:skip=CKV_AWS_260:a public light-wallet server: port 80 for the Let's Encrypt HTTP-01 challenge and the redirect to HTTPS
+  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.lightwallet != null]), [443, 80], var.lightwallet_ingress_cidrs) : "${p[0]} ${p[1]} ${p[2]}" => { net = p[0], port = p[1], cidr = p[2] } }
+
+  security_group_id = aws_security_group.seed.id
+  description       = "lightwallet ${each.value.net} ${each.value.port == 443 ? "https (gRPC, gRPC-web)" : "http (ACME, redirect)"}"
   ip_protocol       = "tcp"
   from_port         = each.value.port
   to_port           = each.value.port

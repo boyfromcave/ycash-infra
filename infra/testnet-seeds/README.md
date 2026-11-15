@@ -502,6 +502,102 @@ prefix while it imports and 1.1 GB of prefix cache: 40 GiB is ample. The root vo
 the swap file, the images and the build: give an explorer host `root_volume_size = 30` (the
 default 20 GiB is tight with a 4 GiB swap file and a rebuild beside the running image).
 
+## The lightwallet (a network's `lightwallet`)
+
+The same module, called from a fourth root with its own state, makes a **lightwallet host**: one
+machine that runs a public light-wallet server for the mobile app and the web wallet beside a node
+of its own, at one public HTTPS name: lightwalletd-dd (`--yellowback`, the lightwalletd
+repository's own image, published by `.github/workflows/lightwalletd-image.yml`), a gRPC-web proxy
+(Envoy, as the Kubernetes chart's gateway and yew's web plan use) and a TLS proxy (Caddy, as the
+explorer's). Like the pool and explorer hosts it is never a seed: its own address, state, deploy
+layer and role.
+
+```hcl
+module "lightwallet" {   # e.g. the operator's testnet-lightwallet/nodes root, one host, fast only
+  source            = "git::https://github.com/<owner>/ycash-infra.git//infra/testnet-seeds/nodes?ref=<sha>"
+  seeds             = data.terraform_remote_state.ips.outputs.seeds    # its own ips root, one address
+  name_prefix       = "testnet-lightwallet"
+  vpc_cidr          = "10.80.0.0/16"
+  instance_type     = "t3a.medium"
+  data_volume_size  = 30
+  p2p_ingress_cidrs = []                       # nothing published for P2P: the node only connects out
+  networks = {
+    yb-fast = {
+      profile    = "fast"
+      extra_args = "-listen=0 -addnode=<the network's seed name>:18833"
+      insight    = true                        # -txindex -insightexplorer, before the first import
+      lightwallet = {
+        hostname      = "<the server's name>"  # its A record points at the host's address
+        image         = "ghcr.io/<owner>/lightwalletd@sha256:..."   # lightwalletd-image.yml
+        grpcweb_image = "envoyproxy/envoy:v1.40.2@sha256:..."
+        proxy_image   = "caddy:2.10-alpine@sha256:..."
+        grpcweb_origins = ["https://<the web wallet's origin>"]   # CORS: each origin by name; required, never "*"
+        # mem_limit_mb      = 768              # lightwalletd
+        # node_mem_limit_mb = 2304             # the node container ("Host size" of the explorer)
+      }
+    }
+  }
+  lightwallet_acme_email = var.acme_email      # optional certificate contact; from a secret, never committed
+  prefix = { ... }                             # the same testnet-prefix-v1 pin as the seeds
+}
+```
+
+What a `lightwallet` adds, per host (`files/seedctl-lightwallet`, seedctl's lightwallet half):
+
+| Container | Image | Runs as | Networks | Notes |
+|---|---|---|---|---|
+| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend` (.11), `edge` | `YCASHD_INSIGHT=1` (`-txindex -insightexplorer -experimentalfeatures`: lightwalletd's `GetAddressUtxos` / `GetTaddressTxids` read the address index); RPC bound to its `backend` address (.11) and loopback only, never `0.0.0.0` (`rpcbind` in its `ycash.conf`, `-rpcbind=127.0.0.1` on its command line; ycashd binds both), allowed for lightwalletd's fixed address only (`172.31.252.12`; and loopback, for `seedctl`'s `docker exec`); `-disablewallet`; no published port; P2P out through `edge`; `node_mem_limit_mb` (2304 MiB) plus 2 GiB of swap, `-dbcache=256` in the root, the explorer's lesson ("Host size" above) |
+| `lightwalletd-<key>` | `lightwallet.image` (by digest) | uid 2002, read-only root, no capabilities, `mem_limit_mb` (768) | `backend` only (.12) | plain gRPC on 9067 (`--no-tls-very-insecure`: TLS ends at the proxy), `--yellowback`; the node's credential in its own 0400 file (`/srv/ycash-data/<key>/lightwallet/lightwalletd.conf`, mounted read-only; never an environment variable or an argument); its block cache in `lightwallet/cache` on the data volume (a reset deletes it with the chain); `--trusted-proxy-cidr` the gRPC-web proxy's address only, so its per-peer Yellowback limiter counts each client by the address the TLS proxy saw; started once the prefix is imported; healthcheck `lwdinfo` (GetLightdInfo) |
+| `grpcweb-<key>` | `lightwallet.grpcweb_image` (Envoy, by digest) | uid 2007, read-only root, no capabilities, 128 MiB | `backend` only (.13) | h2c on 8080 from the TLS proxy; the `grpc_web` filter (a browser's `application/grpc-web` request in, gRPC to lightwalletd; native gRPC passes through untouched), CORS for `grpcweb_origins` only, each matched exactly (`POST`, `OPTIONS`; the request headers `content-type`, `x-grpc-web`, `x-user-agent` and `grpc-timeout`, which is what a gRPC-web client sends: yew's web client sends the first two; the `grpc-status` / `grpc-message` headers exposed), routes for `cash.z.wallet.sdk.rpc.CompactTxStreamer` and `YellowbackStreamer` only (any other path 404); no admin interface; no request timeout (block ranges, the mempool stream) |
+| `lwproxy-<key>` | `lightwallet.proxy_image` (Caddy, by digest) | uid 2006, every capability dropped but binding low ports, read-only root, 128 MiB | `backend` (.10), `edge` | the only published ports, TCP 80 and 443 (HTTP/3 off); Let's Encrypt certificate for `hostname` (HTTP-01), renewal, redirect to HTTPS, HSTS; HTTP/1.1 and HTTP/2, every request streamed (`flush_interval -1`) over h2c to the gRPC-web proxy with `X-Real-IP` set to the client's address (a client's own header is replaced); a 4 MB request limit (gRPC's); certificate in `lightwallet/caddy` (kept across resets and new instances); a plain 503 while the backend is not up |
+
+- **One name, one port, both protocols.** The apps call `<hostname>:443` with native gRPC over
+  TLS (HTTP/2); the web wallet calls `https://<hostname>` with gRPC-web (`fetch`, HTTP/1.1 or 2).
+  Both go through the TLS proxy and the gRPC-web proxy to lightwalletd. The web wallet's page is
+  served elsewhere (its own origin), so it reaches this server across origins: CORS on the gRPC-web
+  proxy answers its preflight for the origins `grpcweb_origins` names (no wildcard: a page from any
+  other origin is refused by the browser), and its content security policy must name this server
+  (`connect-src`). With `tls = false` (a test without a name) the proxy listens on port 80 only,
+  with h2c for native gRPC.
+- **Networks.** `backend` (`172.31.252.0/24`; .10 the TLS proxy, .11 the node, .12 lightwalletd, .13
+  the gRPC-web proxy, every other container from `.128/25`) is internal: no route out, so neither
+  lightwalletd nor Envoy can reach anything but each other and the node. `edge`
+  (`172.31.253.0/24`) carries the node's outbound P2P and the TLS proxy's ports. A `DOCKER-USER`
+  rule refuses both subnets the metadata address (as the explorer's, and with the same reasoning
+  for the boot window).
+- **lightwalletd holds the node's full RPC credential**: the node has no wallet, so there are no keys
+  or funds behind it, but a compromised lightwalletd could stop or disconnect this host's own node;
+  it cannot reach another host's (each has its own credential). lightwalletd is the only RPC client
+  the node admits besides `seedctl` on the host.
+- **Inbound:** 443 and 80 to `lightwallet_ingress_cidrs` (default everyone). Nothing else: the
+  node publishes no P2P port (it only connects out), so the security group opens none for it.
+- **The prefix.** The node bootstraps from the network's prefix like every other node here; while
+  it imports, only the node and the two proxies run (the proxy answers 503), and `prefix-check`
+  starts lightwalletd once the import is done. lightwalletd then fills its block cache from the
+  node (from Sapling's activation) and serves meanwhile.
+- **seedctl:** `apply`, `reset`, `stop`, `sync` and `boot` act on all four containers; `reset` also
+  deletes lightwalletd's block cache with the chain (its configuration, the node's credential and
+  the certificate stay). `status` adds a `lightwallet` field:
+
+  | Field | What it says |
+  |---|---|
+  | `phase` | `deploying: <step>` (a detached run), `prefix import: H of L (N %)`, `prefix imported …`, `lightwalletd is not running`, `lightwalletd is starting (no GetLightdInfo yet)`, `lightwalletd is catching up: H of B`, `the node is catching up: B of H headers`, `the node has no peers …`, `serving`, or `starting (the TLS proxy answers …)`. `serving` = lightwalletd at the node's tip, the node within one block of the headers its peers announced and at least one peer, and both protocols answering through the proxy on the host. The limit: if every peer of the node is behind as well, nothing on the host can tell |
+  | `url`, `grpc` | the gRPC-web URL and the native gRPC endpoint (`host:443`) |
+  | `lightwalletd`, `grpcweb`, `lwproxy` | each container's state (and lightwalletd's health) |
+  | `height`, `getLightdInfo` | lightwalletd's latest cached block, and its `GetLightdInfo` (version, vendor, chain, block height, Sapling activation, branch id), read inside its container with `lwdinfo` |
+  | `node` | the node's own `blocks`, `headers` (`getblockchaininfo`) and `connections` (`getconnectioncount`) |
+  | `grpcOnHost`, `grpcWebOnHost` | a `GetLightdInfo` through the TLS proxy on this host, for its name, as native gRPC and as gRPC-web: the call's `grpc-status` (`"0"` answered), else `http <code>`, else `none` |
+  | `grpcPublic`, `grpcWebPublic` | the same through the public name (DNS, the Elastic IP, the security group, the certificate) |
+  | `restarts`, `oomKilled`, `nodeStartedAt`, `nodeOomKills`, `nodeOomKillsSinceBoot` | as the explorer's |
+- **The Yellowback service** (`YellowbackStreamer`) starts only where the node serves `yed_*` (the
+  vault upgrade and an attestor set for the network); without them lightwalletd serves
+  `CompactTxStreamer` alone and logs "Yellowback service not started", and its calls
+  (`GetChainInfo` among them) answer `Unimplemented`. That is the fast testnet's case in beta2 (it
+  has no attestor set), and not a fault: `status` and its probes check `GetLightdInfo` only, so a
+  server without the Yellowback service still reads `serving`.
+- **The certificate contact** (`lightwallet_acme_email`, optional) is handled as the explorer's
+  (sensitive in the module, root-only on the host).
+
 ## Cost estimate
 
 On-demand prices in us-east-1, as of 2026-10. Other regions are within about 20 percent.
@@ -524,6 +620,9 @@ On-demand prices in us-east-1, as of 2026-10. Other regions are within about 20 
 - An explorer host (`t3a.medium`, 40 GiB data + 30 GiB root, one public IPv4, one network):
   ≈ $27.45 + $5.60 + $3.65 ≈ **$37/month**, plus data transfer out (pages and API answers; small
   at testnet traffic).
+- A lightwallet host (`t3a.medium`, 30 GiB data + 20 GiB root, one public IPv4, one network):
+  ≈ $27.45 + $4.00 + $3.65 ≈ **$35/month**, plus data transfer out (compact blocks to every wallet
+  that syncs: small at testnet traffic).
 - A third host adds ≈ $39. An arm64 `t4g.medium` is ≈ $3/month cheaper per host; it needs an
   arm64 image, which the `node-image` workflow does not build today.
 
@@ -640,7 +739,10 @@ credentials and no plan:
   config, 443 and 80 only, the host files with the build context), that a network without the new
   options has no new key in its config, and the refusals (`main` beside a testnet, two networks on
   one profile, an image without a digest, an explorer without `insight`, beside a pool, with both
-  an image and a build, at `DEBUG`);
+  an image and a build, at `DEBUG`); the lightwallet host (its config, 443 and 80 only and no P2P,
+  the host files, the `lightwallets` output without the contact; plain HTTP and listed origins) and
+  its refusals (without `insight`, a placeholder all-zero digest, an origin with a path, beside an
+  explorer or a pool);
 - `shellcheck` on the host's scripts;
 - `tests/seedctl.sh`: `seedctl` against a fake `docker` in a scratch root: apply with the shared
   prefix cache, the rendered arguments and ports, prefix-check, status, a reset and an upgrade of
@@ -655,5 +757,9 @@ credentials and no plan:
   its refusals, and its removal; `install-files`' allow-list; `detach` (the job, its phase and
   result in status); a detached run holding the lock (status at once with its phase,
   `install-files` and a second `detach` refused at once, naming it); status before the first
-  `applied.json` (the job, `interrupted` after a reboot); and a host without the prefix tools
-  (refused at once).
+  `applied.json` (the job, `interrupted` after a reboot); a lightwallet: the node on its networks
+  with RPC for lightwalletd's address only, the two proxies during the import and lightwalletd
+  after it (trusting the gRPC-web proxy only), the node's credential only in lightwalletd's 0400
+  file, the Caddyfile and Envoy's routes and origins, the metadata rule, status (GetLightdInfo, the
+  height, the four probes, each phase), reset (cache gone, certificate kept), plain HTTP, its
+  refusals and its removal; and a host without the prefix tools (refused at once).

@@ -103,6 +103,24 @@ variable "networks" {
     extra_args. Without it the explorer's node publishes no port and the security group opens none
     for that network (README.md, "The explorer": "Inbound P2P").
     One explorer per host (it owns ports 80 and 443), never beside a pool.
+
+    `lightwallet` (default none) runs a public light-wallet server beside that network's node
+    (README.md, "The lightwallet"): lightwalletd-dd with --yellowback (`image`, by digest:
+    lightwalletd-image.yml), a gRPC-web proxy (Envoy, `grpcweb_image`) and a TLS proxy (Caddy,
+    `proxy_image`). It needs `insight = true` (lightwalletd's address calls read the node's address
+    index). `hostname` is the public name the proxy obtains a Let's Encrypt certificate for (its A
+    record must point at the host's address; the optional contact is var.lightwallet_acme_email);
+    `tls` (default true; false = plain HTTP on port 80, with h2c for native gRPC, for a test without
+    a name). Both protocols are served on that one name and port: native gRPC (the apps) and
+    gRPC-web (the web wallet); every request goes through the gRPC-web proxy, whose filter
+    translates gRPC-web and passes native gRPC through untouched. `grpcweb_origins` (required, no
+    default) the CORS origins a browser page may call it from, each `http(s)://host[:port]`: the
+    web wallet's real origins, named one by one; `*` is refused. `mem_limit_mb` (default 768) is lightwalletd's
+    memory limit, `node_mem_limit_mb` (default 2304) the node container's, with 2 GiB of swap beyond
+    it; `log_level` lightwalletd's (logrus 1-6, default 4 = info). The node's RPC is reachable from
+    lightwalletd's fixed address on the host's internal network only; nothing but the proxy
+    publishes a port. One lightwallet per host (it owns ports 80 and 443): never beside a pool or an
+    explorer.
   EOT
   type = map(object({
     profile    = string
@@ -135,6 +153,21 @@ variable "networks" {
       node_mem_limit_mb = optional(number, 2304)
       # accept inbound P2P: publish the network's P2P port, open it to var.p2p_ingress_cidrs
       p2p_inbound = optional(bool, false)
+    }))
+    lightwallet = optional(object({
+      hostname      = string
+      tls           = optional(bool, true)
+      image         = string
+      grpcweb_image = string
+      proxy_image   = string
+      # the web wallet's origins (CORS), each http(s)://host[:port]; required, never "*"
+      grpcweb_origins = list(string)
+      # lightwalletd's memory limit, MiB
+      mem_limit_mb = optional(number, 768)
+      # the node container's memory limit, MiB (its swap allowance is 2048 MiB beyond it)
+      node_mem_limit_mb = optional(number, 2304)
+      # lightwalletd's --log-level (logrus: 4 = info)
+      log_level = optional(number, 4)
     }))
   }))
   default = {
@@ -206,6 +239,24 @@ variable "networks" {
   validation {
     condition     = length([for k, n in var.networks : k if n.enabled && n.explorer != null]) <= 1
     error_message = "networks: one explorer per host (it owns ports 80 and 443)."
+  }
+  validation {
+    condition = alltrue([for k, n in var.networks : n.lightwallet == null ? true : (
+      n.insight && n.pool == null && n.explorer == null && n.profile != "main" &&
+      can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", n.lightwallet.hostname)) &&
+      alltrue([for i in [n.lightwallet.image, n.lightwallet.grpcweb_image, n.lightwallet.proxy_image] :
+      can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", i))]) &&
+      length(n.lightwallet.grpcweb_origins) >= 1 &&
+      alltrue([for o in n.lightwallet.grpcweb_origins : can(regex("^https?://[a-z0-9.-]+(:[0-9]{1,5})?$", o))]) &&
+      n.lightwallet.mem_limit_mb >= 256 && n.lightwallet.mem_limit_mb <= 65536 && floor(n.lightwallet.mem_limit_mb) == n.lightwallet.mem_limit_mb &&
+      n.lightwallet.node_mem_limit_mb >= 512 && n.lightwallet.node_mem_limit_mb <= 65536 && floor(n.lightwallet.node_mem_limit_mb) == n.lightwallet.node_mem_limit_mb &&
+      n.lightwallet.log_level >= 1 && n.lightwallet.log_level <= 6 && floor(n.lightwallet.log_level) == n.lightwallet.log_level
+    )])
+    error_message = "networks: a lightwallet needs insight = true, a testnet profile, no pool and no explorer; hostname a lowercase DNS name; image, grpcweb_image and proxy_image pinned by digest; grpcweb_origins one or more http(s)://host[:port], never \"*\"; mem_limit_mb 256-65536, node_mem_limit_mb 512-65536, log_level 1-6, whole numbers."
+  }
+  validation {
+    condition     = length([for k, n in var.networks : k if n.enabled && (n.explorer != null || n.lightwallet != null)]) <= 1
+    error_message = "networks: one explorer or lightwallet per host (each owns ports 80 and 443)."
   }
   validation {
     condition     = length([for k, n in var.networks : k if n.enabled]) >= 1
@@ -311,6 +362,27 @@ variable "explorer_acme_email" {
   validation {
     condition     = can(regex("^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+)?$", var.explorer_acme_email))
     error_message = "explorer_acme_email: empty or an e-mail address."
+  }
+}
+
+variable "lightwallet_ingress_cidrs" {
+  description = "Who may reach a network's light-wallet server (networks.<key>.lightwallet) on ports 443 and 80 (80 for the Let's Encrypt HTTP-01 challenge and the redirect to HTTPS). A public server: everyone. Only used where a network has a lightwallet; nothing is opened without one."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+  validation {
+    condition     = alltrue([for c in var.lightwallet_ingress_cidrs : can(cidrhost(c, 0))])
+    error_message = "lightwallet_ingress_cidrs: IPv4 CIDRs."
+  }
+}
+
+variable "lightwallet_acme_email" {
+  description = "The contact a lightwallet's proxy gives Let's Encrypt for its certificate (optional; empty = none). Pass it from a secret, never commit it. Sensitive: it reaches only the network configs (seedctl renders it into the host's Caddyfile), never a plan line or another output."
+  type        = string
+  default     = ""
+  sensitive   = true
+  validation {
+    condition     = can(regex("^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+)?$", var.lightwallet_acme_email))
+    error_message = "lightwallet_acme_email: empty or an e-mail address."
   }
 }
 

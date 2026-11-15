@@ -49,6 +49,17 @@ output "explorers" {
 }
 
 output "host_files" {
-  description = "The files seedctl needs for an apply or a reset beyond itself (the prefix tools; for an explorer, seedctl-explorer and in build mode the Inzyght build context), as one JSON map of name to { mode, content }, gzip + base64: the deploy workflow hands it to `seedctl install-files` before every run, as it installs seedctl. Empty when there are none. No secret."
+  description = "The files seedctl needs for an apply or a reset beyond itself (the prefix tools; for an explorer, seedctl-explorer and in build mode the Inzyght build context; for a lightwallet, seedctl-lightwallet), as one JSON map of name to { mode, content }, gzip + base64: the deploy workflow hands it to `seedctl install-files` before every run, as it installs seedctl. Empty when there are none. No secret."
   value       = length(local.host_files) == 0 ? "" : base64gzip(jsonencode(local.host_files))
+}
+
+output "lightwallets" {
+  description = "Per enabled network with a lightwallet: its public name and how to reach it, native gRPC (the apps: host:port) and gRPC-web (the web wallet: a URL); no e-mail address, no secret."
+  value = { for k, n in local.enabled : k => {
+    hostname     = n.lightwallet.hostname
+    grpc         = "${n.lightwallet.hostname}:${n.lightwallet.tls ? 443 : 80}"
+    url          = "${n.lightwallet.tls ? "https" : "http"}://${n.lightwallet.hostname}"
+    tls          = n.lightwallet.tls
+    lightwalletd = n.lightwallet.image
+  } if n.lightwallet != null }
 }

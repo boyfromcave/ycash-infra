@@ -22,7 +22,8 @@
 #   seedctl prefix-check       once a network holds the whole prefix, drop its -loadblock flags
 #                              and the framed copies (a systemd timer runs it every 10 minutes)
 #   seedctl install-files F    put the module's host_files (F: the decoded JSON) into /opt/ycash-seed:
-#                              the prefix tools, seedctl-explorer, the Inzyght build context; nothing
+#                              the prefix tools, seedctl-explorer, the Inzyght build context,
+#                              seedctl-lightwallet; nothing
 #                              else (an allow-list); the workflow runs it before each change (never
 #                              for status); refused at once while a detached run holds the lock
 #   seedctl detach CMD ARGS    run `seedctl CMD ARGS` (apply, reset or sync) in the background, as
@@ -35,7 +36,9 @@
 # only). apply, reset, stop, sync and boot act on both containers together; status adds a `pool` field.
 #
 # A network whose config has an `explorer` also runs the explorer (PostgreSQL, Inzyght, a TLS proxy)
-# in the same project; that half is seedctl-explorer, beside this file (its header).
+# in the same project; that half is seedctl-explorer, beside this file (its header). One whose
+# config has a `lightwallet` runs a light-wallet server (lightwalletd, a gRPC-web proxy, a TLS proxy)
+# the same way: seedctl-lightwallet.
 #
 # Layout: /srv/ycash-data (the data volume) holds per network NET/node (the datadir, mounted at
 # /var/lib/ycash), NET/rpc.env (its RPC credential, made here, never leaves the host) and
@@ -84,24 +87,28 @@ check_config() { # file name
     and (.zmq_port == null or (.zmq_port | type == "number" and . >= 1024 and . <= 65535 and . == floor))
   ' "$1" >/dev/null || die "config for $2 is not valid"
   if ex_of "$1"; then need_explorer; explorer_check "$1" "$2"; fi
+  if lw_of "$1"; then need_lightwallet; lightwallet_check "$1" "$2"; fi
 }
 
-# seedctl-explorer: from the deploy workflow (install-files; user_data has no room), kept on the data
-# volume for boot.
+# seedctl-explorer and seedctl-lightwallet: from the deploy workflow (install-files; user_data has no
+# room), kept on the data volume for boot.
 ex_of() { [ "$(cfg "$1" '.explorer != null' 2>/dev/null)" = true ]; }   # config file
-need_explorer() {
+lw_of() { [ "$(cfg "$1" '.lightwallet != null' 2>/dev/null)" = true ]; }   # config file
+need_half() { # explorer | lightwallet
   local p
-  [ -z "${EX_LOADED:-}" ] || return 0
-  for p in "$O/seedctl-explorer" "$D/seedctl-explorer"; do
+  case " ${HALVES:-} " in *" $1 "*) return 0 ;; esac
+  for p in "$O/seedctl-$1" "$D/seedctl-$1"; do
     [ -s "$p" ] || continue
-    if [ "$p" != "$D/seedctl-explorer" ] && ! cmp -s "$p" "$D/seedctl-explorer"; then
-      cp "$p" "$D/seedctl-explorer.new" && mv -f "$D/seedctl-explorer.new" "$D/seedctl-explorer"
+    if [ "$p" != "$D/seedctl-$1" ] && ! cmp -s "$p" "$D/seedctl-$1"; then
+      cp "$p" "$D/seedctl-$1.new" && mv -f "$D/seedctl-$1.new" "$D/seedctl-$1"
     fi
     # shellcheck source=/dev/null
-    . "$p"; EX_LOADED=1; return 0
+    . "$p"; HALVES="${HALVES:-} $1"; return 0
   done
-  die "no seedctl-explorer on this host (the deploy workflow installs it)"
+  die "no seedctl-$1 on this host (the deploy workflow installs it)"
 }
+need_explorer() { need_half explorer; }
+need_lightwallet() { need_half lightwallet; }
 
 decode_to() { # base64 file
   printf '%s' "$1" | base64 -d > "$2" 2>/dev/null || die "config is not base64"
@@ -129,15 +136,20 @@ dinspect() { # format container default
 
 # Write /opt/ycash-seed/net/NET/{node.env,compose.yaml} from a config file. The -loadblock flags
 # are added while a framed prefix waits to be imported; ZMQ (zmq_port) only after that. An
-# explorer's node: RPC for its backend network, ZMQ on its backend address (seedctl-explorer).
+# explorer's node: RPC for its backend network, ZMQ on its backend address (seedctl-explorer); a
+# lightwallet's likewise (seedctl-lightwallet).
 render() { # net file
   local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1"
-  local p2p rpc args p lb="" zmq="" zp ex insight=0 bind=127.0.0.1 allow=127.0.0.1 zb=127.0.0.1
+  local p2p rpc args p lb="" zmq="" zp ex lw insight=0 bind=127.0.0.1 allow=127.0.0.1 zb=127.0.0.1
   p2p=$(cfg "$f" .p2p_port); rpc=$(cfg "$f" .rpc_port)
-  ex=$(cfg "$f" '.explorer != null')
+  ex=$(cfg "$f" '.explorer != null'); lw=$(cfg "$f" '.lightwallet != null')
   [ "$(cfg "$f" '.insight // false')" = true ] && insight=1
   if [ "$ex" = true ]; then need_explorer; bind=0.0.0.0; allow=$EX_INZYGHT; zb=$EX_BACKEND.11; fi
+  if [ "$lw" = true ]; then need_lightwallet; bind=$LW_BACKEND.11; allow=$LW_LWD; zb=$LW_BACKEND.11; fi
   args="-port=$p2p -externalip=$EXTERNAL_IP $(cfg "$f" .node_args)"
+  # a lightwallet's node binds its RPC to its backend address (rpcbind in ycash.conf) and to loopback
+  # (ycash-cli in the container, status), never 0.0.0.0: ycashd adds this -rpcbind to the conf's
+  if [ "$lw" = true ]; then args="$args -rpcbind=127.0.0.1"; fi
   [ "$(cfg "$f" .dnsseed)" = true ] || args="$args -dnsseed=0"
   for p in $(cfg "$f" '.peers[]'); do
     [ "$p" = "$EXTERNAL_IP:$p2p" ] || args="$args -addnode=$p"
@@ -165,6 +177,8 @@ YCASHD_EXTRA_ARGS=$(echo "$args$lb$zmq" | tr -s ' ' | sed 's/^ //;s/ $//')
 ENV
   if [ "$ex" = true ]; then
     render_explorer_node "$net" "$f" "$lb"
+  elif [ "$lw" = true ]; then
+    render_lightwallet "$net" "$f" "$lb"
   else
     cat > "$R/compose.yaml" <<YAML
 name: ycash-$net
@@ -310,8 +324,9 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   tmp="$D/$net/desired.json"
   [ "$2" = - ] || decode_to "$2" "$tmp"
   check_config "$tmp" "$net"
-  # an explorer's config carries the certificate contact: root only (applied.json keeps the mode)
-  if ex_of "$tmp"; then chmod 0600 "$tmp"; fi
+  # an explorer's or a lightwallet's config carries the certificate contact: root only (applied.json
+  # keeps the mode)
+  if ex_of "$tmp" || lw_of "$tmp"; then chmod 0600 "$tmp"; fi
   mkdir -p "$N"
   if [ ! -s "$D/$net/rpc.env" ]; then
     (umask 077; printf 'YCASHD_RPC_USER=seed\nYCASHD_RPC_PASSWORD=%s\n' "$(openssl rand -hex 24)" > "$D/$net/rpc.env")
@@ -347,6 +362,10 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   elif [ -d "$D/$net/explorer" ]; then
     docker rm -f "postgres-$net" "inzyght-$net" "proxy-$net" >/dev/null 2>&1 || true   # an explorer removed from the config
   fi
+  if lw_of "$D/$net/applied.json"; then job_phase "waiting for the light-wallet server"; lightwallet_up "$net"
+  elif [ -d "$D/$net/lightwallet" ]; then
+    docker rm -f "lightwalletd-$net" "grpcweb-$net" "lwproxy-$net" >/dev/null 2>&1 || true   # a lightwallet removed from the config
+  fi
   [ "$xb" = 0 ] || die "$net: the node, PostgreSQL and the proxy are up but Inzyght is not: $(explorer_build_reason "$net") (seedctl status shows it; a deploy retries the build)"
 }
 
@@ -355,8 +374,10 @@ reset() { # net config-b64
   valid_name "$net"
   log "$net: RESET: stopping and deleting its chain"
   if [ -e "$O/net/$net/compose.yaml" ]; then compose "$net" down --timeout 180 || true; fi
-  docker rm -f "ycashd-$net" "yolo-$net" "postgres-$net" "inzyght-$net" "proxy-$net" >/dev/null 2>&1 || true
-  rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json" "$D/$net/explorer/pg"
+  docker rm -f "ycashd-$net" "yolo-$net" "postgres-$net" "inzyght-$net" "proxy-$net" "lightwalletd-$net" "grpcweb-$net" "lwproxy-$net" >/dev/null 2>&1 || true
+  # the chain, and what was built from it (the explorer's index, lightwalletd's block cache); the
+  # certificates and the secrets stay
+  rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json" "$D/$net/explorer/pg" "$D/$net/lightwallet/cache"
   apply "$net" "$2"
 }
 
@@ -402,8 +423,42 @@ boot() {
   done
 }
 
+# The kernel log's OOM kills of a ycashd process, the source that records them (Docker's
+# State.OOMKilled read false for the first explorer run's cgroup kill): one JSON object,
+# {"sinceStart": {"cgroup": N, "host": N}, "sinceBoot": {...}}. `cgroup` counts "Memory cgroup out of
+# memory: Killed process ... (ycashd)" (the container's own limit), `host` "Out of memory: Killed
+# process ... (ycashd)" (the whole host out of memory). `sinceStart` counts the kills from a minute
+# before the container's current StartedAt on, so the kill that caused this start is in it and one
+# from an earlier start is not; null when the start time or the kernel log's times are not known;
+# both null when no kernel log is readable. journalctl first; dmesg only when journalctl fails, and
+# then alone (what a failing journalctl printed is dropped, so no kill is counted twice).
+node_oom_kills() { # started-at (Docker's StartedAt, UTC)
+  local log src bt="" start
+  if log=$(journalctl -k -b -q --no-pager -o short-unix 2>/dev/null); then src=journal
+  elif log=$(dmesg 2>/dev/null); then src=dmesg; bt=$(awk '$1 == "btime" { print $2 }' /proc/stat 2>/dev/null || true)
+  else echo '{"sinceStart":null,"sinceBoot":null}'; return 0; fi
+  start=$(jq -rn --arg s "$1" '$s | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch empty' 2>/dev/null || true)
+  [[ "$start" =~ ^[0-9]+$ ]] || start=""
+  [[ "$bt" =~ ^[0-9]+$ ]] || bt=""
+  awk -v src="$src" -v bt="$bt" -v start="$start" '
+    BEGIN { known = start != "" && (src == "journal" || bt != "") }
+    /Killed process [0-9]+ \(ycashd\)/ {
+      if ($0 ~ /Memory cgroup out of memory/) k = "cgroup"; else if ($0 ~ /Out of memory/) k = "host"; else next
+      boot[k]++
+      if (!known) next
+      if (src == "journal") t = $1 + 0
+      else if (match($0, /^\[ *[0-9.]+\]/)) t = bt + substr($0, RSTART + 1, RLENGTH - 2)
+      else next
+      if (t >= start - 60) since[k]++
+    }
+    END {
+      s = known ? sprintf("{\"cgroup\":%d,\"host\":%d}", since["cgroup"], since["host"]) : "null"
+      printf "{\"sinceStart\":%s,\"sinceBoot\":{\"cgroup\":%d,\"host\":%d}}\n", s, boot["cgroup"], boot["host"]
+    }' <<<"$log"
+}
+
 status() { # [net]
-  local nets net st img info peers pool ex job
+  local nets net st img info peers pool ex lw job
   nets=${1:-$(applied_nets || true)}   # (applied_nets fails when there is none)
   # before a host's first applied.json (a detached first deploy still going, or interrupted by a
   # reboot): one line with the job, so its phase and state show from the start
@@ -426,12 +481,14 @@ status() { # [net]
     fi
     ex=null
     if ex_of "$D/$net/applied.json"; then ex=$( (need_explorer && explorer_status "$net") 2>/dev/null || echo '{"error": "seedctl-explorer is not on this host"}'); fi
+    lw=null
+    if lw_of "$D/$net/applied.json"; then lw=$( (need_lightwallet && lightwallet_status "$net") 2>/dev/null || echo '{"error": "seedctl-lightwallet is not on this host"}'); fi
     job=$(job_json)
     jq -cn --arg host "$SEED_NAME" --arg ip "$EXTERNAL_IP" --arg net "$net" --arg st "$st" --arg img "$img" \
-      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" --argjson ex "$ex" --argjson job "$job" \
+      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" --argjson ex "$ex" --argjson lw "$lw" --argjson job "$job" \
       '{host: $host, ip: $ip, network: $net, container: $st, image: $img} + $info + $peers
        + (if $pool == null then {} else {pool: $pool} end) + (if $ex == null then {} else {explorer: $ex} end)
-       + (if $job == null then {} else {job: $job} end)'
+       + (if $lw == null then {} else {lightwallet: $lw} end) + (if $job == null then {} else {job: $job} end)'
   done
 }
 
@@ -454,7 +511,7 @@ prefix_check() {
 # The module's host files only (main.tf local.host_files): an allow-list of names, so a payload can
 # never write seed.env, setup.sh, seedctl or anything outside /opt/ycash-seed. Checked whole before
 # anything is written; one file or several per call (the workflow may split them across commands).
-HOST_FILES='["prefix-restore.sh", "frame.py", "seedctl-explorer", "inzyght-build.json"]'
+HOST_FILES='["prefix-restore.sh", "frame.py", "seedctl-explorer", "inzyght-build.json", "seedctl-lightwallet"]'
 install_files() { # json: { name: { mode, content } }
   local k m
   jq -e --argjson ok "$HOST_FILES" 'type == "object" and length > 0
