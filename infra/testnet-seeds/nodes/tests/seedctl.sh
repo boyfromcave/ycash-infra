@@ -60,7 +60,8 @@ case "$1" in
     esac
     case "${!#}" in
       getblockcount) echo "$FAKE_HEIGHT" ;;
-      getblockchaininfo) echo '{"chain":"test","blocks":1,"headers":1,"verificationprogress":1}' ;;
+      getblockchaininfo) echo "{\"chain\":\"test\",\"blocks\":$FAKE_HEIGHT,\"headers\":${FAKE_HEADERS:-$FAKE_HEIGHT},\"verificationprogress\":1}" ;;
+      getconnectioncount) echo "${FAKE_CONNS:-2}" ;;
       getpeerinfo) echo '[{"inbound":true},{"inbound":false}]' ;;
     esac ;;
   # a container named in FAKE_ABSENT is missing: an empty line on stdout, then the error (as docker does)
@@ -424,15 +425,15 @@ LWC=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c '.insight = true | .extra_a
   image: "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666",
   grpcweb_image: "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777",
   proxy_image: "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444",
-  grpcweb_origins: ["*"], mem_limit_mb: 768, node_mem_limit_mb: 2304, log_level: 4}')
+  grpcweb_origins: ["https://wallet.example.org"], mem_limit_mb: 768, node_mem_limit_mb: 2304, log_level: 4}')
 LW=$(echo "$LWC" | b64)
 "$SEEDCTL" apply yb-fast "$LW" 2>"$T/err" || { cat "$T/err"; fail "apply with a lightwallet"; }
 c="$O/net/yb-fast/compose.yaml"; e="$O/net/yb-fast/node.env"; L="$D/yb-fast/lightwallet"
-grep -qx 'YCASHD_INSIGHT=1' "$e" && grep -qx 'YCASHD_RPC_BIND=0.0.0.0' "$e" && grep -qx 'YCASHD_RPC_ALLOWIP=172.31.252.12' "$e" && ! grep -q zmqpub "$e" && grep -q -- '-loadblock=' "$e" && grep -q -- '-disablewallet' "$e" || fail "the node while importing: indexes, RPC for lightwalletd's address only, no wallet: $(cat "$e")"
+grep -qx 'YCASHD_INSIGHT=1' "$e" && grep -qx 'YCASHD_RPC_BIND=172.31.252.11' "$e" && grep -q '^YCASHD_EXTRA_ARGS=.* -rpcbind=127.0.0.1 ' "$e" && [ "$(grep -c -- '-rpcbind=' "$e")" = 1 ] && grep -qx 'YCASHD_RPC_ALLOWIP=172.31.252.12' "$e" && ! grep -q zmqpub "$e" && grep -q -- '-loadblock=' "$e" && grep -q -- '-disablewallet' "$e" || fail "the node while importing: indexes, RPC bound to its backend address and loopback, for lightwalletd's address only, no wallet: $(cat "$e")"
 ! grep -q 'network_mode: host' "$c" && grep -q 'ipv4_address: "172.31.252.11"' "$c" && grep -q 'container_name: grpcweb-yb-fast' "$c" && grep -q 'container_name: lwproxy-yb-fast' "$c" && ! grep -q 'container_name: lightwalletd-yb-fast' "$c" && grep -q 'mem_limit: 2304m' "$c" && grep -q 'memswap_limit: 4352m' "$c" || fail "while importing: node and the two proxies, no lightwalletd: $(cat "$c")"
 grep -qF 'ports: ["80:80", "443:443"]' "$c" && [ "$(grep -c 'ports:' "$c")" = 1 ] && [ "$(awk '/^  [a-z]+:$/ { s = $1 } /ports:/ { print s }' "$c")" = "lwproxy:" ] || fail "only the TLS proxy publishes ports, 80 and 443"
 grep -qx 'lightwallet.example.org {' "$O/net/yb-fast/Caddyfile" && grep -qx '	email ops@example.org' "$O/net/yb-fast/Caddyfile" && grep -q 'reverse_proxy h2c://172.31.252.13:8080 {' "$O/net/yb-fast/Caddyfile" && grep -q 'header_up X-Real-IP {remote_host}' "$O/net/yb-fast/Caddyfile" && grep -q 'protocols h1 h2$' "$O/net/yb-fast/Caddyfile" || fail "the Caddyfile: the name, the contact, h2c to the gRPC-web proxy, the client's address"
-grep -q 'allow_origin_string_match: \[{"safe_regex":{"regex":".\*"}}\]' "$O/net/yb-fast/envoy.yaml" && grep -q 'address: 172.31.252.12, port_value: 9067' "$O/net/yb-fast/envoy.yaml" && grep -q 'prefix: "/cash.z.wallet.sdk.rpc.YellowbackStreamer/"' "$O/net/yb-fast/envoy.yaml" && grep -q 'direct_response: { status: 404 }' "$O/net/yb-fast/envoy.yaml" && ! grep -q 'admin' "$O/net/yb-fast/envoy.yaml" || fail "envoy.yaml: any origin, lightwalletd's two services only, no admin"
+grep -qF 'allow_origin_string_match: [{"exact":"https://wallet.example.org"}]' "$O/net/yb-fast/envoy.yaml" && grep -qF 'allow_headers: "content-type, x-grpc-web, x-user-agent, grpc-timeout"' "$O/net/yb-fast/envoy.yaml" && ! grep -q 'safe_regex' "$O/net/yb-fast/envoy.yaml" && grep -q 'address: 172.31.252.12, port_value: 9067' "$O/net/yb-fast/envoy.yaml" && grep -q 'prefix: "/cash.z.wallet.sdk.rpc.YellowbackStreamer/"' "$O/net/yb-fast/envoy.yaml" && grep -q 'direct_response: { status: 404 }' "$O/net/yb-fast/envoy.yaml" && ! grep -q 'admin' "$O/net/yb-fast/envoy.yaml" || fail "envoy.yaml: the listed origin and the gRPC-web request headers only, lightwalletd's two services only, no admin"
 pw=$(sed -n 's/^YCASHD_RPC_PASSWORD=//p' "$D/yb-fast/rpc.env")
 [ "$(stat -c %a "$L/lightwalletd.conf")" = 400 ] && grep -qx "rpcpassword=$pw" "$L/lightwalletd.conf" && grep -qx 'rpcbind=172.31.252.11' "$L/lightwalletd.conf" && grep -qx 'rpcport=18832' "$L/lightwalletd.conf" && ! grep -rqF -e "$pw" "$O/net/yb-fast" && [ "$(stat -c %a "$D/yb-fast/applied.json")" = 600 ] || fail "the node's credential only in lightwalletd's 0400 conf; the config (with the contact) root only"
 grep -qx 'iptables -I DOCKER-USER 1 -s 172.31.252.0/23 -d 169.254.169.254/32 -j REJECT' "$LOG" || fail "the lightwallet's networks are refused the metadata service"
@@ -442,13 +443,16 @@ ok "a lightwallet while the prefix imports: node on its networks, the two proxie
 "$SEEDCTL" prefix-check 2>/dev/null
 grep -q 'container_name: lightwalletd-yb-fast' "$c" && grep -q 'LWD_TRUSTED_PROXY_CIDRS: "172.31.252.13/32"' "$c" && grep -q 'LWD_YELLOWBACK: "1"' "$c" && grep -q 'LWD_INSECURE: "1"' "$c" && grep -q 'user: "2002:2002"' "$c" && grep -q 'ipv4_address: "172.31.252.12"' "$c" && grep -qF "$L/lightwalletd.conf:/etc/lightwalletd/ycash.conf:ro" "$c" && grep -q 'mem_limit: 768m' "$c" && grep -q 'depends_on: { lightwalletd: { condition: service_started } }' "$c" && ! grep -q loadblock "$e" || fail "lightwalletd after the import: $(cat "$c")"
 s=$(FAKE_HEIGHT=600000 "$SEEDCTL" status yb-fast)
-[ "$(echo "$s" | jq -c '[.lightwallet.phase, .lightwallet.height, .lightwallet.getLightdInfo.chainName, .lightwallet.getLightdInfo.consensusBranchId, .lightwallet.grpcOnHost, .lightwallet.grpcWebOnHost, .lightwallet.grpcPublic, .lightwallet.grpcWebPublic, .lightwallet.url, .lightwallet.grpc, .lightwallet.lightwalletd]')" = '["serving",600000,"test","6d5b7a31","0","0","0","0","https://lightwallet.example.org","lightwallet.example.org:443","healthy"]' ] || fail "status serving: $s"
+[ "$(echo "$s" | jq -c '[.lightwallet.phase, .lightwallet.height, .lightwallet.getLightdInfo.chainName, .lightwallet.getLightdInfo.consensusBranchId, .lightwallet.grpcOnHost, .lightwallet.grpcWebOnHost, .lightwallet.grpcPublic, .lightwallet.grpcWebPublic, .lightwallet.url, .lightwallet.grpc, .lightwallet.lightwalletd, .lightwallet.node]')" = '["serving",600000,"test","6d5b7a31","0","0","0","0","https://lightwallet.example.org","lightwallet.example.org:443","healthy",{"blocks":600000,"headers":600000,"connections":2}]' ] || fail "status serving: $s"
 grep -q -- "--resolve lightwallet.example.org:443:127.0.0.1 .*--http2 .*https://lightwallet.example.org/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo" "$LOG" && grep -q -- "--http1.1 -H content-type: application/grpc-web+proto" "$LOG" || fail "the probes: native gRPC over HTTP/2 and gRPC-web, on this host for the name"
 [ "$(FAKE_LWD_HEIGHT=599000 "$SEEDCTL" status yb-fast | jq -r .lightwallet.phase)" = "lightwalletd is catching up: 599000 of 600000" ] || fail "status while lightwalletd catches up"
+[ "$(FAKE_HEADERS=600500 "$SEEDCTL" status yb-fast | jq -c '[.lightwallet.phase, .lightwallet.node.headers]')" = '["the node is catching up: 600000 of 600500 headers",600500]' ] || fail "status while the node is behind its peers' headers"
+[ "$(FAKE_HEADERS=600001 "$SEEDCTL" status yb-fast | jq -r .lightwallet.phase)" = serving ] || fail "status: one header ahead (a block in flight) is still serving"
+[ "$(FAKE_CONNS=0 "$SEEDCTL" status yb-fast | jq -c '[.lightwallet.phase, .lightwallet.node.connections]')" = '["the node has no peers (height 600000): it cannot know the network'"'"'s tip",0]' ] || fail "status with a node without peers"
 [ "$(FAKE_LWD_DOWN=1 "$SEEDCTL" status yb-fast | jq -c '[.lightwallet.phase, .lightwallet.getLightdInfo, .lightwallet.height]')" = '["lightwalletd is starting (no GetLightdInfo yet)",null,null]' ] || fail "status before lightwalletd answers"
 [ "$(FAKE_LW=starting "$SEEDCTL" status yb-fast | jq -c '[.lightwallet.phase, .lightwallet.grpcOnHost, .lightwallet.grpcWebPublic]')" = '["starting (the TLS proxy answers gRPC http 503, gRPC-web http 503 on this host)","http 503","http 503"]' ] || fail "status with the proxy not through"
 [ "$(FAKE_LW=down "$SEEDCTL" status yb-fast | jq -r .lightwallet.grpcPublic)" = none ] || fail "status without a connection"
-ok "after the import: lightwalletd at its fixed address, trusting the gRPC-web proxy only; status reports GetLightdInfo, the height and the four probes"
+ok "after the import: lightwalletd at its fixed address, trusting the gRPC-web proxy only; status reports GetLightdInfo, the height, the node's headers and peers, and the four probes"
 mkdir -p "$L/cache/db" && touch "$L/cache/db/blocks" "$L/caddy/data/cert"
 "$SEEDCTL" reset yb-fast "$LW" 2>/dev/null
 [ ! -e "$L/cache/db/blocks" ] && [ -e "$L/caddy/data/cert" ] && [ -e "$L/lightwalletd.conf" ] && grep -q 'docker rm -f .* lightwalletd-yb-fast grpcweb-yb-fast lwproxy-yb-fast' "$LOG" || fail "reset: the block cache goes with the chain; the certificate stays"
@@ -459,7 +463,7 @@ grep -qx ':80 {' "$O/net/yb-fast/Caddyfile" && grep -q 'protocols h1 h2c$' "$O/n
 : > "$LOG"; "$SEEDCTL" status yb-fast >/dev/null
 grep -q -- "--http2-prior-knowledge .*http://127.0.0.1/cash.z" "$LOG" || fail "plain HTTP: the native probe is h2c on this host"
 ok "plain HTTP (no name): port 80, h2c for native gRPC; CORS for the listed origins only"
-for bad in '.lightwallet.grpcweb_origins = ["https://x.example.org/path"]' '.lightwallet.grpcweb_origins = []' '.lightwallet.image = "ghcr.io/example/lightwalletd:latest"' \
+for bad in '.lightwallet.grpcweb_origins = ["https://x.example.org/path"]' '.lightwallet.grpcweb_origins = []' '.lightwallet.grpcweb_origins = ["*"]' 'del(.lightwallet.grpcweb_origins)' '.lightwallet.image = "ghcr.io/example/lightwalletd:latest"' \
            '.lightwallet.hostname = "x\nemail evil"' '.lightwallet.log_level = 7' '.insight = false' '.lightwallet.mem_limit_mb = 100' \
            '.explorer = {"hostname": "explorer.example.org"}' '.network = "mainnet"'; do
   BADL=$(echo "$LWC" | jq -c "$bad" | b64)

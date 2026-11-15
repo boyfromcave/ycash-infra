@@ -145,8 +145,11 @@ render() { # net file
   ex=$(cfg "$f" '.explorer != null'); lw=$(cfg "$f" '.lightwallet != null')
   [ "$(cfg "$f" '.insight // false')" = true ] && insight=1
   if [ "$ex" = true ]; then need_explorer; bind=0.0.0.0; allow=$EX_INZYGHT; zb=$EX_BACKEND.11; fi
-  if [ "$lw" = true ]; then need_lightwallet; bind=0.0.0.0; allow=$LW_LWD; zb=$LW_BACKEND.11; fi
+  if [ "$lw" = true ]; then need_lightwallet; bind=$LW_BACKEND.11; allow=$LW_LWD; zb=$LW_BACKEND.11; fi
   args="-port=$p2p -externalip=$EXTERNAL_IP $(cfg "$f" .node_args)"
+  # a lightwallet's node binds its RPC to its backend address (rpcbind in ycash.conf) and to loopback
+  # (ycash-cli in the container, status), never 0.0.0.0: ycashd adds this -rpcbind to the conf's
+  if [ "$lw" = true ]; then args="$args -rpcbind=127.0.0.1"; fi
   [ "$(cfg "$f" .dnsseed)" = true ] || args="$args -dnsseed=0"
   for p in $(cfg "$f" '.peers[]'); do
     [ "$p" = "$EXTERNAL_IP:$p2p" ] || args="$args -addnode=$p"

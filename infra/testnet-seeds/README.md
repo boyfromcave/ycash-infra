@@ -531,7 +531,7 @@ module "lightwallet" {   # e.g. the operator's testnet-lightwallet/nodes root, o
         image         = "ghcr.io/<owner>/lightwalletd@sha256:..."   # lightwalletd-image.yml
         grpcweb_image = "envoyproxy/envoy:v1.40.2@sha256:..."
         proxy_image   = "caddy:2.10-alpine@sha256:..."
-        # grpcweb_origins   = ["*"]            # the web wallet's origins (CORS); default any
+        grpcweb_origins = ["https://<the web wallet's origin>"]   # CORS: each origin by name; required, never "*"
         # mem_limit_mb      = 768              # lightwalletd
         # node_mem_limit_mb = 2304             # the node container ("Host size" of the explorer)
       }
@@ -546,16 +546,17 @@ What a `lightwallet` adds, per host (`files/seedctl-lightwallet`, seedctl's ligh
 
 | Container | Image | Runs as | Networks | Notes |
 |---|---|---|---|---|
-| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend` (.11), `edge` | `YCASHD_INSIGHT=1` (`-txindex -insightexplorer -experimentalfeatures`: lightwalletd's `GetAddressUtxos` / `GetTaddressTxids` read the address index); RPC bound inside the container, allowed for lightwalletd's fixed address only (`172.31.252.12`; and loopback, for `seedctl`'s `docker exec`); `-disablewallet`; no published port; P2P out through `edge`; `node_mem_limit_mb` (2304 MiB) plus 2 GiB of swap, `-dbcache=256` in the root, the explorer's lesson ("Host size" above) |
+| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend` (.11), `edge` | `YCASHD_INSIGHT=1` (`-txindex -insightexplorer -experimentalfeatures`: lightwalletd's `GetAddressUtxos` / `GetTaddressTxids` read the address index); RPC bound to its `backend` address (.11) and loopback only, never `0.0.0.0` (`rpcbind` in its `ycash.conf`, `-rpcbind=127.0.0.1` on its command line; ycashd binds both), allowed for lightwalletd's fixed address only (`172.31.252.12`; and loopback, for `seedctl`'s `docker exec`); `-disablewallet`; no published port; P2P out through `edge`; `node_mem_limit_mb` (2304 MiB) plus 2 GiB of swap, `-dbcache=256` in the root, the explorer's lesson ("Host size" above) |
 | `lightwalletd-<key>` | `lightwallet.image` (by digest) | uid 2002, read-only root, no capabilities, `mem_limit_mb` (768) | `backend` only (.12) | plain gRPC on 9067 (`--no-tls-very-insecure`: TLS ends at the proxy), `--yellowback`; the node's credential in its own 0400 file (`/srv/ycash-data/<key>/lightwallet/lightwalletd.conf`, mounted read-only; never an environment variable or an argument); its block cache in `lightwallet/cache` on the data volume (a reset deletes it with the chain); `--trusted-proxy-cidr` the gRPC-web proxy's address only, so its per-peer Yellowback limiter counts each client by the address the TLS proxy saw; started once the prefix is imported; healthcheck `lwdinfo` (GetLightdInfo) |
-| `grpcweb-<key>` | `lightwallet.grpcweb_image` (Envoy, by digest) | uid 2007, read-only root, no capabilities, 128 MiB | `backend` only (.13) | h2c on 8080 from the TLS proxy; the `grpc_web` filter (a browser's `application/grpc-web` request in, gRPC to lightwalletd; native gRPC passes through untouched), CORS for `grpcweb_origins` (`POST`, `OPTIONS`; the `grpc-status` / `grpc-message` headers exposed), routes for `cash.z.wallet.sdk.rpc.CompactTxStreamer` and `YellowbackStreamer` only (any other path 404); no admin interface; no request timeout (block ranges, the mempool stream) |
+| `grpcweb-<key>` | `lightwallet.grpcweb_image` (Envoy, by digest) | uid 2007, read-only root, no capabilities, 128 MiB | `backend` only (.13) | h2c on 8080 from the TLS proxy; the `grpc_web` filter (a browser's `application/grpc-web` request in, gRPC to lightwalletd; native gRPC passes through untouched), CORS for `grpcweb_origins` only, each matched exactly (`POST`, `OPTIONS`; the request headers `content-type`, `x-grpc-web`, `x-user-agent` and `grpc-timeout`, which is what a gRPC-web client sends: yew's web client sends the first two; the `grpc-status` / `grpc-message` headers exposed), routes for `cash.z.wallet.sdk.rpc.CompactTxStreamer` and `YellowbackStreamer` only (any other path 404); no admin interface; no request timeout (block ranges, the mempool stream) |
 | `lwproxy-<key>` | `lightwallet.proxy_image` (Caddy, by digest) | uid 2006, every capability dropped but binding low ports, read-only root, 128 MiB | `backend` (.10), `edge` | the only published ports, TCP 80 and 443 (HTTP/3 off); Let's Encrypt certificate for `hostname` (HTTP-01), renewal, redirect to HTTPS, HSTS; HTTP/1.1 and HTTP/2, every request streamed (`flush_interval -1`) over h2c to the gRPC-web proxy with `X-Real-IP` set to the client's address (a client's own header is replaced); a 4 MB request limit (gRPC's); certificate in `lightwallet/caddy` (kept across resets and new instances); a plain 503 while the backend is not up |
 
 - **One name, one port, both protocols.** The apps call `<hostname>:443` with native gRPC over
   TLS (HTTP/2); the web wallet calls `https://<hostname>` with gRPC-web (`fetch`, HTTP/1.1 or 2).
   Both go through the TLS proxy and the gRPC-web proxy to lightwalletd. The web wallet's page is
   served elsewhere (its own origin), so it reaches this server across origins: CORS on the gRPC-web
-  proxy answers its preflight, and its content security policy must name this server
+  proxy answers its preflight for the origins `grpcweb_origins` names (no wildcard: a page from any
+  other origin is refused by the browser), and its content security policy must name this server
   (`connect-src`). With `tls = false` (a test without a name) the proxy listens on port 80 only,
   with h2c for native gRPC.
 - **Networks.** `backend` (`172.31.252.0/24`; .10 the TLS proxy, .11 the node, .12 lightwalletd, .13
@@ -580,16 +581,20 @@ What a `lightwallet` adds, per host (`files/seedctl-lightwallet`, seedctl's ligh
 
   | Field | What it says |
   |---|---|
-  | `phase` | `deploying: <step>` (a detached run), `prefix import: H of L (N %)`, `prefix imported …`, `lightwalletd is not running`, `lightwalletd is starting (no GetLightdInfo yet)`, `lightwalletd is catching up: H of B`, `serving`, or `starting (the TLS proxy answers …)` |
+  | `phase` | `deploying: <step>` (a detached run), `prefix import: H of L (N %)`, `prefix imported …`, `lightwalletd is not running`, `lightwalletd is starting (no GetLightdInfo yet)`, `lightwalletd is catching up: H of B`, `the node is catching up: B of H headers`, `the node has no peers …`, `serving`, or `starting (the TLS proxy answers …)`. `serving` = lightwalletd at the node's tip, the node within one block of the headers its peers announced and at least one peer, and both protocols answering through the proxy on the host. The limit: if every peer of the node is behind as well, nothing on the host can tell |
   | `url`, `grpc` | the gRPC-web URL and the native gRPC endpoint (`host:443`) |
   | `lightwalletd`, `grpcweb`, `lwproxy` | each container's state (and lightwalletd's health) |
   | `height`, `getLightdInfo` | lightwalletd's latest cached block, and its `GetLightdInfo` (version, vendor, chain, block height, Sapling activation, branch id), read inside its container with `lwdinfo` |
+  | `node` | the node's own `blocks`, `headers` (`getblockchaininfo`) and `connections` (`getconnectioncount`) |
   | `grpcOnHost`, `grpcWebOnHost` | a `GetLightdInfo` through the TLS proxy on this host, for its name, as native gRPC and as gRPC-web: the call's `grpc-status` (`"0"` answered), else `http <code>`, else `none` |
   | `grpcPublic`, `grpcWebPublic` | the same through the public name (DNS, the Elastic IP, the security group, the certificate) |
   | `restarts`, `oomKilled`, `nodeStartedAt`, `nodeOomKills`, `nodeOomKillsSinceBoot` | as the explorer's |
 - **The Yellowback service** (`YellowbackStreamer`) starts only where the node serves `yed_*` (the
   vault upgrade and an attestor set for the network); without them lightwalletd serves
-  `CompactTxStreamer` alone and logs "Yellowback service not started".
+  `CompactTxStreamer` alone and logs "Yellowback service not started", and its calls
+  (`GetChainInfo` among them) answer `Unimplemented`. That is the fast testnet's case in beta2 (it
+  has no attestor set), and not a fault: `status` and its probes check `GetLightdInfo` only, so a
+  server without the Yellowback service still reads `serving`.
 - **The certificate contact** (`lightwallet_acme_email`, optional) is handled as the explorer's
   (sensitive in the module, root-only on the host).
 

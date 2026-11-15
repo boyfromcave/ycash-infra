@@ -436,10 +436,11 @@ run "lightwallet_host" {
         extra_args = "-listen=0 -addnode=fastnet-seed.example.org:18833"
         insight    = true
         lightwallet = {
-          hostname      = "lightwallet.example.org"
-          image         = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-          grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-          proxy_image   = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          hostname        = "lightwallet.example.org"
+          grpcweb_origins = ["https://wallet.example.org"]
+          image           = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+          grpcweb_image   = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+          proxy_image     = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444"
         }
       }
     }
@@ -451,7 +452,7 @@ run "lightwallet_host" {
     error_message = "a lightwallet's node: the indexes, no ZMQ, no wallet"
   }
   assert {
-    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).lightwallet) == jsonencode({ acme_email = "ops@example.org", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", grpcweb_origins = ["*"], hostname = "lightwallet.example.org", image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", log_level = 4, mem_limit_mb = 768, node_mem_limit_mb = 2304, proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444", tls = true })
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).lightwallet) == jsonencode({ acme_email = "ops@example.org", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", grpcweb_origins = ["https://wallet.example.org"], hostname = "lightwallet.example.org", image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", log_level = 4, mem_limit_mb = 768, node_mem_limit_mb = 2304, proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444", tls = true })
     error_message = "the lightwallet's config: name, contact, images, defaults"
   }
   assert {
@@ -495,7 +496,7 @@ run "lightwallet_plain_http_and_origins" {
 run "refuses_a_lightwallet_without_insight" {
   command = plan
   variables {
-    networks = { yb-fast = { profile = "fast", lightwallet = { hostname = "lw.example.org", image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+    networks = { yb-fast = { profile = "fast", lightwallet = { hostname = "lw.example.org", grpcweb_origins = ["https://wallet.example.org"], image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
   }
   expect_failures = [var.networks]
 }
@@ -503,7 +504,7 @@ run "refuses_a_lightwallet_without_insight" {
 run "refuses_a_placeholder_digest" {
   command = plan
   variables {
-    networks = { yb-fast = { profile = "fast", insight = true, lightwallet = { hostname = "lw.example.org", image = "ghcr.io/example/lightwalletd@sha256:0000000000000000000000000000000000000000000000000000000000000000", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+    networks = { yb-fast = { profile = "fast", insight = true, lightwallet = { hostname = "lw.example.org", grpcweb_origins = ["https://wallet.example.org"], image = "ghcr.io/example/lightwalletd@sha256:0000000000000000000000000000000000000000000000000000000000000000", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
   }
   expect_failures = [aws_security_group.seed]
 }
@@ -516,11 +517,27 @@ run "refuses_an_origin_with_a_path" {
   expect_failures = [var.networks]
 }
 
+run "refuses_a_wildcard_origin" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, lightwallet = { hostname = "lw.example.org", grpcweb_origins = ["https://wallet.example.org", "*"], image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_no_origin" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, lightwallet = { hostname = "lw.example.org", grpcweb_origins = [], image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [var.networks]
+}
+
 run "refuses_a_lightwallet_beside_an_explorer" {
   command = plan
   variables {
     networks = {
-      yb-fast = { profile = "fast", insight = true, lightwallet = { hostname = "lw.example.org", image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } }
+      yb-fast = { profile = "fast", insight = true, lightwallet = { hostname = "lw.example.org", grpcweb_origins = ["https://wallet.example.org"], image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } }
       yb-slow = { profile = "slow", insight = true, explorer = { hostname = "explorer.example.org", image = "ghcr.io/example/inzyght@sha256:5555555555555555555555555555555555555555555555555555555555555555", postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } }
     }
   }
@@ -530,7 +547,7 @@ run "refuses_a_lightwallet_beside_an_explorer" {
 run "refuses_a_lightwallet_beside_a_pool" {
   command = plan
   variables {
-    networks = { yb-fast = { profile = "fast", insight = true, pool = { image = "ghcr.io/example/yolo@sha256:1111111111111111111111111111111111111111111111111111111111111111", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb" }, lightwallet = { hostname = "lw.example.org", image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+    networks = { yb-fast = { profile = "fast", insight = true, pool = { image = "ghcr.io/example/yolo@sha256:1111111111111111111111111111111111111111111111111111111111111111", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb" }, lightwallet = { hostname = "lw.example.org", grpcweb_origins = ["https://wallet.example.org"], image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
   }
   expect_failures = [var.networks]
 }

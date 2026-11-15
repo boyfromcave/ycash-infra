@@ -35,7 +35,7 @@ lightwallet_check() { # file name
     and (.lightwallet.tls | type == "boolean")
     and ([.lightwallet.image, .lightwallet.grpcweb_image, .lightwallet.proxy_image] | all(type == "string" and test($digest)))
     and (.lightwallet.grpcweb_origins | type == "array" and length >= 1
-      and all(type == "string" and (. == "*" or test("^https?://[a-z0-9.-]+(:[0-9]{1,5})?$"))))
+      and all(type == "string" and test("^https?://[a-z0-9.-]+(:[0-9]{1,5})?$")))
     and (.lightwallet.mem_limit_mb | type == "number" and . >= 256 and . <= 65536 and . == floor)
     and (.lightwallet.node_mem_limit_mb | type == "number" and . >= 512 and . <= 65536 and . == floor)
     and (.lightwallet.log_level | type == "number" and . >= 1 and . <= 6 and . == floor)
@@ -126,12 +126,14 @@ CADDY
 
 # Envoy's configuration: one listener (h2c, from the TLS proxy only), the gRPC-web filter (it turns a
 # browser's application/grpc-web(-text) request into gRPC and its answer back, and passes native gRPC
-# through untouched), CORS for the web wallet's origins, and routes for lightwalletd's two services
+# through untouched), CORS for the web wallet's origins (each named exactly, never any origin) and
+# the request headers a gRPC-web client sends (yew's web client: content-type and x-grpc-web; the
+# other two are grpc-web's x-user-agent and a deadline), and routes for lightwalletd's two services
 # only (CompactTxStreamer, YellowbackStreamer); any other path is a 404. No admin interface. No
 # request timeout (GetBlockRange, the mempool stream); a stream with no traffic for an hour is reset.
 lightwallet_envoy() { # file
   local origins
-  origins=$(jq -c '.lightwallet.grpcweb_origins | if index("*") then [{safe_regex: {regex: ".*"}}] else map({exact: .}) end' "$1")
+  origins=$(jq -c '.lightwallet.grpcweb_origins | map({exact: .})' "$1")
   cat <<ENVOY
 # rendered by seedctl: the light-wallet server's gRPC-web proxy (ycash-infra infra/testnet-seeds/README.md, "The lightwallet")
 static_resources:
@@ -156,7 +158,7 @@ static_resources:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
                           allow_origin_string_match: $origins
                           allow_methods: "POST, OPTIONS"
-                          allow_headers: "*"
+                          allow_headers: "content-type, x-grpc-web, x-user-agent, grpc-timeout"
                           expose_headers: "grpc-status, grpc-message, grpc-status-details-bin"
                           max_age: "86400"
                       routes:
@@ -356,12 +358,16 @@ lw_probe() { # mode(grpc|web) url [curl options...]
 # status's `lightwallet` field: the three containers (and the node's restarts and OOM kills, as the
 # explorer's), lightwalletd's own GetLightdInfo and latest block (lwdinfo, inside its container,
 # plain gRPC), the four probes through the TLS proxy (native gRPC and gRPC-web, on this host for its
-# name and through the public name: DNS, the Elastic IP, the security group, the certificate), and
+# name and through the public name: DNS, the Elastic IP, the security group, the certificate), the
+# node's own view (`node`: its blocks, the headers its peers announced, its connections), and
 # `phase`: where a first start is (a detached deploy's step, the prefix import in percent,
-# lightwalletd catching up to the node, serving).
+# lightwalletd catching up to the node, the node catching up to its peers or without any, serving).
+# `serving` needs lightwalletd at the node's tip, the node within a block of the headers it knows
+# and at least one peer; a node whose every peer is behind too still reads as serving (no
+# reference outside the network to compare with).
 lightwallet_status() { # net
   local f="$D/$1/applied.json" N="$D/$1/node" host tls url c st x r o rs='{}' oom='{}' started kills noom
-  local restarted="" info height blocks last phase job gh wh gp wp resolve=()
+  local restarted="" info height blocks headers conns last phase job gh wh gp wp resolve=()
   [ "$(cfg "$f" '.lightwallet != null' 2>/dev/null)" = true ] || { echo null; return 0; }
   host=$(cfg "$f" .lightwallet.hostname); tls=$(cfg "$f" .lightwallet.tls)
   st='{}'
@@ -397,6 +403,8 @@ lightwallet_status() { # net
   fi
   gp=$(lw_probe grpc "$url"); wp=$(lw_probe web "$url")
   blocks=$(cli "$1" getblockcount 2>/dev/null || true); [[ "$blocks" =~ ^[0-9]+$ ]] || blocks=""
+  headers=$(cli "$1" getblockchaininfo 2>/dev/null | jq -r '.headers // empty' 2>/dev/null || true); [[ "$headers" =~ ^[0-9]+$ ]] || headers=""
+  conns=$(cli "$1" getconnectioncount 2>/dev/null || true); [[ "$conns" =~ ^[0-9]+$ ]] || conns=""
   job=$(job_json)
   if [ "$(jq -r '.state // ""' <<<"$job")" = running ]; then
     phase="deploying: $(jq -r '.phase // "starting"' <<<"$job") (since $(jq -r '.phaseSince // .started' <<<"$job"))"
@@ -411,6 +419,10 @@ lightwallet_status() { # net
     phase="lightwalletd is starting (no GetLightdInfo yet)$restarted"
   elif [ -z "$height" ] || { [ -n "$blocks" ] && [ "$height" -lt $((blocks - 1)) ]; }; then
     phase="lightwalletd is catching up: ${height:-0} of ${blocks:-?}"
+  elif [ -n "$blocks" ] && [ -n "$headers" ] && [ "$headers" -gt $((blocks + 1)) ]; then
+    phase="the node is catching up: $blocks of $headers headers"
+  elif [ "$conns" = 0 ]; then
+    phase="the node has no peers (height ${blocks:-?}): it cannot know the network's tip"
   elif [ "$gh" = 0 ] && [ "$wh" = 0 ]; then
     phase=serving
   else
@@ -419,8 +431,11 @@ lightwallet_status() { # net
   jq -cn --argjson c "$st" --arg url "$url" --arg grpc "$host:$([ "$tls" = true ] && echo 443 || echo 80)" --arg phase "$phase" \
     --argjson info "$info" --arg height "$height" --arg gh "$gh" --arg wh "$wh" --arg gp "$gp" --arg wp "$wp" \
     --argjson rs "$rs" --argjson oom "$oom" --arg started "$started" --argjson kills "$kills" \
-    '{phase: $phase, url: $url, grpc: $grpc} + $c
-     + {height: (if $height == "" then null else ($height | tonumber) end), getLightdInfo: $info}
+    --arg blocks "$blocks" --arg headers "$headers" --arg conns "$conns" \
+    'def num: if . == "" then null else tonumber end;
+     {phase: $phase, url: $url, grpc: $grpc} + $c
+     + {height: ($height | num), getLightdInfo: $info}
+     + {node: {blocks: ($blocks | num), headers: ($headers | num), connections: ($conns | num)}}
      + {grpcOnHost: $gh, grpcWebOnHost: $wh, grpcPublic: $gp, grpcWebPublic: $wp}
      + {restarts: $rs, oomKilled: $oom, nodeStartedAt: (if $started == "" then null else $started end), nodeOomKills: $kills.sinceStart, nodeOomKillsSinceBoot: $kills.sinceBoot}'
 }

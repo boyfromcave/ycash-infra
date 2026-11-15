@@ -113,8 +113,9 @@ variable "networks" {
     `tls` (default true; false = plain HTTP on port 80, with h2c for native gRPC, for a test without
     a name). Both protocols are served on that one name and port: native gRPC (the apps) and
     gRPC-web (the web wallet); every request goes through the gRPC-web proxy, whose filter
-    translates gRPC-web and passes native gRPC through untouched. `grpcweb_origins` the CORS origins a browser page may call it from (default
-    any: the API is public and reads no cookie). `mem_limit_mb` (default 768) is lightwalletd's
+    translates gRPC-web and passes native gRPC through untouched. `grpcweb_origins` (required, no
+    default) the CORS origins a browser page may call it from, each `http(s)://host[:port]`: the
+    web wallet's real origins, named one by one; `*` is refused. `mem_limit_mb` (default 768) is lightwalletd's
     memory limit, `node_mem_limit_mb` (default 2304) the node container's, with 2 GiB of swap beyond
     it; `log_level` lightwalletd's (logrus 1-6, default 4 = info). The node's RPC is reachable from
     lightwalletd's fixed address on the host's internal network only; nothing but the proxy
@@ -154,12 +155,13 @@ variable "networks" {
       p2p_inbound = optional(bool, false)
     }))
     lightwallet = optional(object({
-      hostname        = string
-      tls             = optional(bool, true)
-      image           = string
-      grpcweb_image   = string
-      proxy_image     = string
-      grpcweb_origins = optional(list(string), ["*"])
+      hostname      = string
+      tls           = optional(bool, true)
+      image         = string
+      grpcweb_image = string
+      proxy_image   = string
+      # the web wallet's origins (CORS), each http(s)://host[:port]; required, never "*"
+      grpcweb_origins = list(string)
       # lightwalletd's memory limit, MiB
       mem_limit_mb = optional(number, 768)
       # the node container's memory limit, MiB (its swap allowance is 2048 MiB beyond it)
@@ -245,12 +247,12 @@ variable "networks" {
       alltrue([for i in [n.lightwallet.image, n.lightwallet.grpcweb_image, n.lightwallet.proxy_image] :
       can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", i))]) &&
       length(n.lightwallet.grpcweb_origins) >= 1 &&
-      alltrue([for o in n.lightwallet.grpcweb_origins : o == "*" || can(regex("^https?://[a-z0-9.-]+(:[0-9]{1,5})?$", o))]) &&
+      alltrue([for o in n.lightwallet.grpcweb_origins : can(regex("^https?://[a-z0-9.-]+(:[0-9]{1,5})?$", o))]) &&
       n.lightwallet.mem_limit_mb >= 256 && n.lightwallet.mem_limit_mb <= 65536 && floor(n.lightwallet.mem_limit_mb) == n.lightwallet.mem_limit_mb &&
       n.lightwallet.node_mem_limit_mb >= 512 && n.lightwallet.node_mem_limit_mb <= 65536 && floor(n.lightwallet.node_mem_limit_mb) == n.lightwallet.node_mem_limit_mb &&
       n.lightwallet.log_level >= 1 && n.lightwallet.log_level <= 6 && floor(n.lightwallet.log_level) == n.lightwallet.log_level
     )])
-    error_message = "networks: a lightwallet needs insight = true, a testnet profile, no pool and no explorer; hostname a lowercase DNS name; image, grpcweb_image and proxy_image pinned by digest; grpcweb_origins \"*\" or http(s)://host[:port] each; mem_limit_mb 256-65536, node_mem_limit_mb 512-65536, log_level 1-6, whole numbers."
+    error_message = "networks: a lightwallet needs insight = true, a testnet profile, no pool and no explorer; hostname a lowercase DNS name; image, grpcweb_image and proxy_image pinned by digest; grpcweb_origins one or more http(s)://host[:port], never \"*\"; mem_limit_mb 256-65536, node_mem_limit_mb 512-65536, log_level 1-6, whole numbers."
   }
   validation {
     condition     = length([for k, n in var.networks : k if n.enabled && (n.explorer != null || n.lightwallet != null)]) <= 1

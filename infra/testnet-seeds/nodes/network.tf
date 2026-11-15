@@ -77,7 +77,7 @@ resource "aws_security_group" "seed" {
     # A caller may commit the all-zero digest as a placeholder until an image is published (validate
     # passes on it); no plan does.
     precondition {
-      condition     = alltrue([for k, n in local.enabled : n.lightwallet == null || !anytrue([for i in [n.lightwallet.image, n.lightwallet.grpcweb_image, n.lightwallet.proxy_image] : can(regex("@sha256:0{64}$", i))])])
+      condition     = alltrue([for k, n in local.enabled : n.lightwallet == null ? true : !anytrue([for i in [n.lightwallet.image, n.lightwallet.grpcweb_image, n.lightwallet.proxy_image] : can(regex("@sha256:0{64}$", i))])])
       error_message = "networks: a lightwallet image is the all-zero placeholder digest: set the published digest (ycash-infra lightwalletd-image.yml prints it)."
     }
     precondition {

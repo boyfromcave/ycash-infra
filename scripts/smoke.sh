@@ -20,7 +20,9 @@ echo "-- ListSets";            $G $H cash.z.wallet.sdk.rpc.YellowbackStreamer/Li
 ADDR=${ADDR:-$(kubectl --context "$CONTEXT" -n "$NS" exec "$RELEASE-ycashd-0" -- ycash-cli -datadir=/var/lib/ycash listunspent 1 9999999 2>/dev/null | jq -r '.[0].address // empty')}
 echo "-- GetAddressUtxos for ${ADDR:-?} (routed to yindex)"; [ -n "$ADDR" ] && $G -d "{\"addresses\":[\"$ADDR\"],\"startHeight\":1,\"maxEntries\":2}" $H cash.z.wallet.sdk.rpc.CompactTxStreamer/GetAddressUtxos || echo "(no funded address found; set ADDR=)"
 echo "-- gRPC-web (what the browser does)"
-curl -sk -o /dev/null -w "HTTP %{http_code} content-type %{content_type}\n" -H 'content-type: application/grpc-web+proto' -H 'x-grpc-web: 1' --data-binary $'\x00\x00\x00\x00\x00' "$URL/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo"
+# the five bytes of an empty message frame come on stdin: a shell argument cannot carry a NUL byte
+# (bash cuts the string at the first one, so curl would send an empty body and wait for the frame)
+printf '\0\0\0\0\0' | curl -sk --max-time 20 -o /dev/null -w "HTTP %{http_code} content-type %{content_type}\n" -H 'content-type: application/grpc-web+proto' -H 'x-grpc-web: 1' --data-binary @- "$URL/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo"
 # A-3 (plan §5): a client naming a fresh x-real-ip / x-forwarded-for per request must NOT get a
 # fresh Yellowback bucket per request. The gateway drops both headers, so every call of the burst
 # shares this host's bucket on whichever lightwalletd replica serves it: BURST heavy calls per replica
