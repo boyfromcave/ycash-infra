@@ -33,6 +33,8 @@ explorer_check() { # file name
     and (.explorer.log_level | test("^(INFO|WARN|ERROR)$"))
     and ([.explorer.threads, .explorer.mem_limit_mb, .explorer.pg_shared_buffers_mb] | all(type == "number" and . >= 1 and . == floor))
     and ((.explorer.node_mem_limit_mb // 2304) | type == "number" and . >= 512 and . <= 65536 and . == floor)
+    and ((.explorer.p2p_inbound // false) | type == "boolean")
+    and (.explorer.p2p_inbound != true or (.extra_args | test("(^| )--?(no)?listen(=[^ ]*)?( |$)") | not))
   ' "$1" >/dev/null || die "the explorer in the config for $2 is not valid"
 }
 
@@ -59,10 +61,20 @@ explorer_up() { # net
 # allowance would move with the RAM figure; a fixed 2 GiB keeps it the same. It permits swapping where
 # the kernel accounts swap for the cgroup; the RAM limit is what the node relies on (README.md,
 # "Host size": the first run's node was killed by its cgroup at 1536 MiB, not saved by swap).
+# Inbound P2P (explorer.p2p_inbound): the node's P2P port published, that port only, on the host's
+# IPv4 interfaces (0.0.0.0, never [::]): Docker forwards it with a DNAT rule, so the node sees each
+# inbound peer's own address (its peer list, the explorer's network page and its ban logic need it);
+# the userland proxy, which would show every peer as the bridge gateway, only carries connections
+# made from the host itself. The node advertises the host's address (-externalip, render). Without
+# the option nothing is published and the compose file is the one it was before the option.
 NODE_SWAP_MB=2048
 render_explorer_node() { # net file loadblock-flags
-  local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1" mem
+  local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1" mem p2p ports=""
   mem=$(cfg "$f" '.explorer.node_mem_limit_mb // 2304')
+  if [ "$(cfg "$f" '.explorer.p2p_inbound // false')" = true ]; then
+    p2p=$(cfg "$f" .p2p_port)
+    ports=$'\n    ports: ["0.0.0.0:'"$p2p:$p2p"'/tcp"]'
+  fi
   cat > "$R/compose.yaml" <<YAML
 name: ycash-$net
 services:
@@ -79,7 +91,7 @@ services:
       backend: { ipv4_address: "$EX_BACKEND.11" }
       edge: {}
     env_file: [$D/$net/rpc.env, $R/node.env]
-    volumes: ["$N:/var/lib/ycash"]
+    volumes: ["$N:/var/lib/ycash"]$ports
     mem_limit: ${mem}m
     memswap_limit: $((mem + NODE_SWAP_MB))m
     stop_grace_period: 180s

@@ -100,7 +100,8 @@ locals {
     n.insight ? { insight = true } : {},
     n.zmq != null || n.explorer != null ? { zmq_port = coalesce(n.zmq, 28332) } : {},
     # The explorer beside this network's node (files/seedctl render_explorer).
-    n.explorer == null ? {} : { explorer = {
+    # p2p_inbound appears only when true, so an explorer without it keeps the config it had before.
+    n.explorer == null ? {} : { explorer = merge({
       hostname             = n.explorer.hostname
       acme_email           = var.explorer_acme_email
       tls                  = n.explorer.tls
@@ -113,6 +114,6 @@ locals {
       log_level            = n.explorer.log_level
       pg_shared_buffers_mb = n.explorer.pg_shared_buffers_mb
       node_mem_limit_mb    = n.explorer.node_mem_limit_mb
-    } }
+    }, n.explorer.p2p_inbound ? { p2p_inbound = true } : {}) }
   ) }
 }

@@ -50,7 +50,8 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Inbound: each enabled network's P2P port (to var.p2p_ingress_cidrs), for a network with a pool its
+# Inbound: each enabled network's P2P port (to var.p2p_ingress_cidrs; a network with an explorer only
+# with explorer.p2p_inbound, the one case its node's container publishes the port), for a network with a pool its
 # stratum port (to var.pool_ingress_cidrs) and, for a network with an explorer, 443 and 80 (to
 # var.explorer_ingress_cidrs; the explorer's proxy is the only listener there); nothing else. No
 # SSH, no RPC: every node's RPC binds to 127.0.0.1 on its own port (an explorer's node: inside its
@@ -65,11 +66,21 @@ resource "aws_security_group" "seed" {
 
   lifecycle {
     create_before_destroy = true
+    # An explorer's inbound P2P is the published port and the ingress rule together: never one
+    # without the other (README.md, "The explorer": "Inbound P2P").
+    precondition {
+      condition     = alltrue([for k, n in local.enabled : !try(n.explorer.p2p_inbound, false) || length(var.p2p_ingress_cidrs) > 0])
+      error_message = "networks: explorer.p2p_inbound publishes the node's P2P port; it needs p2p_ingress_cidrs (empty, the security group would not open it)."
+    }
+    precondition {
+      condition     = alltrue([for k, n in local.enabled : !try(n.explorer.p2p_inbound, false) || !can(regex("(^| )--?(no)?listen(=[^ ]*)?( |$)", "${var.extra_args} ${n.extra_args}"))])
+      error_message = "networks: explorer.p2p_inbound with a -listen (or -nolisten) in extra_args: the node listens by default; drop it, or the port would be opened to a node that does not listen."
+    }
   }
 }
 
 resource "aws_vpc_security_group_ingress_rule" "p2p" {
-  for_each = { for p in setproduct(sort(keys(local.enabled)), var.p2p_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
+  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.explorer == null || try(n.explorer.p2p_inbound, false)]), var.p2p_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
 
   security_group_id = aws_security_group.seed.id
   description       = "P2P ${each.value.net}"

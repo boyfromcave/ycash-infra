@@ -332,6 +332,21 @@ if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "accepted a newline i
 BADX=$(echo "$EXPL" | base64 -d | jq -c '.explorer.build.context_sha256 = "abababababababababababababababababababababababababababababababab"' | b64)
 if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "built from a context that does not match its sha256"; fi
 ok "node_mem_limit_mb renders the node's limit; refuses a small one, DEBUG, an injected host name, a build context that does not match"
+# inbound P2P: the node's P2P port published (IPv4, that port only), the host's address advertised;
+# refused with a -listen in the arguments or a non-boolean; without the option, the file as before
+"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null && cp "$c" "$T/compose.before" || fail "apply without p2p_inbound"
+INX=$(echo "$MEMX" | base64 -d | jq -c '.explorer.p2p_inbound = true' | b64)
+"$SEEDCTL" apply yb-fast "$INX" 2>/dev/null || fail "apply with p2p_inbound"
+grep -qxF '    ports: ["0.0.0.0:18833:18833/tcp"]' "$c" && [ "$(grep -c 'ports:' "$c")" = 2 ] && grep -qF 'ports: ["80:80", "443:443"]' "$c" \
+  && [ "$(awk '/^  [a-z]+:$/ { s = $1 } /ports: \["0.0.0.0:18833/ { print s }' "$c")" = "ycashd:" ] || fail "p2p_inbound: the node publishes 18833 on IPv4, the proxy 80 and 443, nothing else: $(grep -n 'ports:' "$c")"
+diff <(grep -v '^    ports: \["0.0.0.0:18833:18833/tcp"\]$' "$c") "$T/compose.before" >/dev/null || fail "p2p_inbound changes the published port only"
+grep -q -- '-port=18833 -externalip=192.0.2.10 ' "$e" && ! grep -q -- '-listen' "$e" && grep -qx 'YCASHD_LISTEN=1' "$e" || fail "p2p_inbound: the node listens and advertises the host's address: $(cat "$e")"
+for bad in '.extra_args += " -listen=0"' '.extra_args += " -nolisten"' '.extra_args += " -listen=false"' '.explorer.p2p_inbound = "yes"'; do
+  BADX=$(echo "$INX" | base64 -d | jq -c "$bad" | b64)
+  if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "p2p_inbound accepted $bad"; fi
+done
+"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null && cmp -s "$c" "$T/compose.before" || fail "p2p_inbound off again: the compose file as before"
+ok "p2p_inbound publishes the node's P2P port only, advertises the host's address; refuses a -listen; off renders as before"
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null
 grep -q 'network_mode: host' "$c" && ! grep -q postgres "$c" && grep -q 'docker rm -f postgres-yb-fast inzyght-yb-fast proxy-yb-fast' "$LOG" && grep -qx 'YCASHD_INSIGHT=0' "$e" || fail "an explorer removed from the config"

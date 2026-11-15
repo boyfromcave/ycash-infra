@@ -292,6 +292,74 @@ run "explorer_by_digest_plain_http" {
     condition     = !contains(keys(jsondecode(base64decode(output.network_configs["yb-slow"]))), "explorer") && output.explorers["yb-fast"].url == "http://explorer.example.org/"
     error_message = "the explorer is fast's only"
   }
+  assert {
+    condition     = jsonencode(sort(keys(aws_vpc_security_group_ingress_rule.p2p))) == jsonencode(["yb-slow 0.0.0.0/0"])
+    error_message = "P2P inbound for slow only: the explorer's node publishes no P2P port without p2p_inbound, so none is opened for it"
+  }
+}
+
+# Inbound P2P on the explorer's node (README.md, "The explorer": "Inbound P2P"): the option in the
+# config, the P2P port opened to p2p_ingress_cidrs, the host's address advertised as on every node.
+run "explorer_p2p_inbound" {
+  variables {
+    seeds = {
+      "seed-0" = { allocation_id = "eipalloc-00000000000000000", public_ip = "192.0.2.30" }
+    }
+    networks = {
+      yb-fast = {
+        profile    = "fast"
+        extra_args = "-addnode=fastnet-seed.example.org:18833"
+        insight    = true
+        explorer = {
+          hostname       = "explorer.example.org"
+          build          = { repo = "https://github.com/example/inzyght", commit = "17f505f273c053247b59d20270e4d6a7b74994fb" }
+          postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+          proxy_image    = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          p2p_inbound    = true
+        }
+      }
+    }
+    extra_args        = "-dbcache=256 -maxconnections=32"
+    p2p_ingress_cidrs = ["0.0.0.0/0"]
+  }
+  assert {
+    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).explorer.p2p_inbound == true && jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args == "-maxtipage=999999999 -dbcache=256 -maxconnections=32 -addnode=fastnet-seed.example.org:18833 -disablewallet"
+    error_message = "p2p_inbound reaches the config; no -listen of the module's own"
+  }
+  assert {
+    condition     = jsonencode([for r in aws_vpc_security_group_ingress_rule.p2p : "${r.from_port}-${r.to_port} ${r.cidr_ipv4}"]) == jsonencode(["18833-18833 0.0.0.0/0"]) && length(aws_vpc_security_group_ingress_rule.explorer) == 2 && length(aws_vpc_security_group_ingress_rule.stratum) == 0
+    error_message = "inbound: the P2P port to p2p_ingress_cidrs, besides 443 and 80"
+  }
+  assert {
+    condition     = strcontains(local.seed_env["seed-0"], "EXTERNAL_IP=192.0.2.30\n")
+    error_message = "the host's address reaches seedctl, which advertises it (-externalip)"
+  }
+}
+
+run "refuses_p2p_inbound_without_ingress" {
+  command = plan
+  variables {
+    networks          = { yb-fast = { profile = "fast", insight = true, explorer = { hostname = "explorer.example.org", p2p_inbound = true, image = "ghcr.io/example/inzyght@sha256:5555555555555555555555555555555555555555555555555555555555555555", postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+    p2p_ingress_cidrs = []
+  }
+  expect_failures = [aws_security_group.seed]
+}
+
+run "refuses_p2p_inbound_with_listen_0" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, extra_args = "-listen=0 -addnode=fastnet-seed.example.org:18833", explorer = { hostname = "explorer.example.org", p2p_inbound = true, image = "ghcr.io/example/inzyght@sha256:5555555555555555555555555555555555555555555555555555555555555555", postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [aws_security_group.seed]
+}
+
+run "refuses_p2p_inbound_with_a_module_wide_nolisten" {
+  command = plan
+  variables {
+    networks   = { yb-fast = { profile = "fast", insight = true, explorer = { hostname = "explorer.example.org", p2p_inbound = true, image = "ghcr.io/example/inzyght@sha256:5555555555555555555555555555555555555555555555555555555555555555", postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+    extra_args = "-dbcache=256 -nolisten"
+  }
+  expect_failures = [aws_security_group.seed]
 }
 
 run "insight_and_zmq_without_explorer" {
