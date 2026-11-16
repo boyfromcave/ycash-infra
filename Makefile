@@ -318,6 +318,10 @@ lint-testnet: ## the testnet renders (render-only until N1): charts/ycash-testne
 	# the refusals: the faucet without T-9, a profile-less snapshotter, alerts without the probe
 	! helm template t $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml --set faucet.enabled=true >/dev/null 2>&1
 	! helm template t $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml --set snapshotter.enabled=true >/dev/null 2>&1
+	# a statement-fields setting (it would drop a field ycash-bootstrap requires)
+	helm template yb-fast $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml -f $(TESTNET_CHART)/values-yb-fast.yaml $(TESTNET_SERVICES_SET) >/dev/null
+	! helm template yb-fast $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml -f $(TESTNET_CHART)/values-yb-fast.yaml $(TESTNET_SERVICES_SET) \
+	  --set 'snapshotter.statementFields={network,height,blockhash}' >/dev/null 2>&1
 	! helm template t $(TESTNET_CHART) -f $(TESTNET_CHART)/values-kind.yaml --set probe.enabled=false --set status.enabled=false --set monitoring.alerts.enabled=true >/dev/null 2>&1
 
 template: ## render the kind values to stdout

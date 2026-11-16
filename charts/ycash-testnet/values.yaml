@@ -329,9 +329,8 @@ snapshotter:
   version: ""                 # the release named in the manifest; empty = from the node's getnetworkinfo subversion
   # the node whose tip picks H_B; empty = this release's verifier-dd RPC Service
   referenceRpc: ""
-  # Statement fields (plan §4.2). Every statement the run produces has exactly these, and they must be
-  # byte-identical across the legs.
-  statementFields: [network, height, blockhash, chainwork, utxo_hash_serialized, vault_statehash, yed_statehash]
+  # No statementFields setting: every statement carries all seven ycash-state/1 fields
+  # (bundles/state/FORMAT.md "Statement"), byte-identical across the legs; the chart refuses the key.
   activeDeadlineSeconds: 43200   # a first run syncs the whole chain twice (ycash6 and ycash-dd)
   storage:
     src:  { className: "", size: 60Gi }    # the producer's ycash6 datadir (kept)

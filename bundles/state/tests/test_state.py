@@ -89,6 +89,31 @@ class Base(unittest.TestCase):
         return os.path.join(self.work, "out", name)
 
 
+class Records(unittest.TestCase):
+    """Every published record (bundles/state/mainnet/records) carries its format's exact statement
+    fields, as the restorer requires, and its statements agree with its manifest and SHA256SUMS."""
+
+    def test_published_records_carry_every_field(self):
+        records = os.path.join(STATE, "mainnet", "records")
+        seen = 0
+        for dirpath, _, files in sorted(os.walk(records)):
+            names = sorted(f for f in files if f.startswith("statement-") and f.endswith(".json"))
+            if not names:
+                continue
+            m = json.load(open(os.path.join(dirpath, "manifest.json")))
+            sums = dict(reversed(line.split("  ", 1)) for line in open(os.path.join(dirpath, "SHA256SUMS")).read().splitlines())
+            for n in names:
+                with self.subTest(record=os.path.relpath(os.path.join(dirpath, n), records)):
+                    raw = open(os.path.join(dirpath, n)).read()
+                    st = json.loads(raw)
+                    self.assertEqual(raw, V.canonical(st))
+                    self.assertEqual(V.check_statement_fields(n, st, m["format"]), [])
+                    self.assertTrue(all(m[k] == v for k, v in st.items()))
+                    self.assertEqual(sums[n], V.sha256(os.path.join(dirpath, n)))
+                    seen += 1
+        self.assertGreaterEqual(seen, 7)
+
+
 class Pick(Base):
     def test_height_from_the_reference_tip(self):
         ref = RefNode(513700)
@@ -159,10 +184,50 @@ class Bundle(Base):
         self.assertFalse(os.path.exists(self.out("manifest.json")))
         self.assertFalse(os.path.exists(os.path.join(self.src, ".snapshotter", "last-height")))
 
-    def test_statement_fields(self):
-        self.bundle(STATEMENT_FIELDS="network height blockhash chainwork vault_statehash yed_statehash")
-        self.assertNotIn("utxo_hash_serialized", json.load(open(self.out("statement-ycash-dd.json"))))
-        self.assertEqual(V.verify(self.out()), [])
+    def test_statements_carry_every_field(self):
+        self.bundle()
+        for n in ("statement-ycash6.json", "statement-ycash-dd.json"):
+            self.assertEqual(sorted(json.load(open(self.out(n)))), sorted(V.STATEMENT_FIELDS))
+
+    def test_dropping_a_statement_field_is_refused(self):
+        # the setting that once dropped fields is refused before anything runs
+        r = self.run_step("pick", ok=False, SNAP_HEIGHT=H,
+                          STATEMENT_FIELDS="network height blockhash chainwork vault_statehash yed_statehash")
+        self.assertIn("STATEMENT_FIELDS is no longer supported", r.stderr)
+
+    def test_verify_refuses_a_statement_lacking_a_field(self):
+        self.bundle()
+        good = {n: open(self.out(n)).read() for n in ("statement-ycash6.json", "statement-ycash-dd.json",
+                                                     "manifest.json", "SHA256SUMS")}
+        for field in V.STATEMENT_FIELDS:
+            with self.subTest(field=field):
+                for n, raw in good.items():
+                    with open(self.out(n), "w") as f:
+                        f.write(raw)
+                for n in ("statement-ycash6.json", "statement-ycash-dd.json"):    # both alike: byte-identical
+                    st = json.loads(good[n])
+                    del st[field]
+                    with open(self.out(n), "w") as f:
+                        f.write(V.canonical(st))
+                sums = []
+                for line in good["SHA256SUMS"].splitlines():
+                    name = line.split("  ", 1)[1]
+                    sums.append(f"{V.sha256(self.out(name))}  {name}")
+                with open(self.out("SHA256SUMS"), "w") as f:
+                    f.write("\n".join(sums) + "\n")
+                errs = V.verify(self.out())
+                self.assertIn(f"statement-ycash6.json lacks {field}", " ".join(errs))
+                self.assertIn(f"statement-ycash-dd.json lacks {field}", " ".join(errs))
+                r = subprocess.run([sys.executable, "-I", VERIFY, self.out()], capture_output=True, text=True)
+                self.assertNotEqual(r.returncode, 0)
+
+    def test_verify_refuses_a_statement_with_a_field_of_another_format(self):
+        self.assertIn("finalsaplingroot", " ".join(V.check_statement_fields(
+            "s", dict.fromkeys(V.STATEMENT_FIELDS + ("finalsaplingroot",)), V.FORMAT)))
+        self.assertEqual(V.check_statement_fields("s", dict.fromkeys(V.STATEMENT_FIELDS), V.FORMAT), [])
+        self.assertEqual(V.check_statement_fields("s", dict.fromkeys(V.V2_STATEMENT_FIELDS), V.FORMAT_V3), [])
+        self.assertIn("lacks chainsupply_zat", " ".join(V.check_statement_fields(
+            "s", dict.fromkeys(V.V2_STATEMENT_FIELDS[:-1]), V.FORMAT_V2)))
 
     def test_kept_verifier_datadir_has_no_failed_mark(self):
         self.bundle()
