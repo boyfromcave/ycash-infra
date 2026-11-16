@@ -99,15 +99,21 @@ below the fork is not on the testnet's P2P network from the start, so a first no
 the **prefix bundle** (format `ycash-prefix/1`, `bundles/prefix/` in this repository).
 
 `values-yb-fast.yaml` turns it on with the published `testnet-prefix-v1` bundle
-(`baseUrl` `https://ycash-contributors-object-store.s3.amazonaws.com/snapshots/prefix/testnet-prefix-v1`,
+(`baseUrl` `https://snapshots.ycash.team/prefix/testnet-prefix-v1`,
 `sha256sums` `c7b55a2a…cbc403`); `values-yb-slow.yaml` and `values-legacy.yaml` turn it on with the
 published `mainnet-prefix-v1` bundle (Ycash mainnet 0..3,079,999 = H_S; `baseUrl`
-`https://ycash-contributors-object-store.s3.amazonaws.com/snapshots/prefix/mainnet-prefix-v1`,
+`https://snapshots.ycash.team/prefix/mainnet-prefix-v1`,
 `sha256sums` `456e8205…4eecd3`, `network` `ycash-mainnet`, `lastHeight` 3079999; 308 chunks, 18.7 GB
 gzipped, 23.1 GB framed, so those two releases set the node volumes to 120 Gi). `prefixRestore.network`
 (default `zcash-testnet`) is passed to both containers as `PREFIX_NETWORK` and to `frame.py --network`.
 Both init containers run `images.prefixFrame`
 ([images/prefix-frame](../../images/prefix-frame/README.md)).
+
+`baseUrl` is the public snapshots front (`snapshots.ycash.team`, a CDN). The source does not matter
+to integrity: the restore refuses any `SHA256SUMS` whose hash is not `sha256sums`, and any chunk that
+does not match it. A deployment that sits next to the object store may set `prefixRestore.baseUrl`
+to the store's direct address in its private overlay, to fetch in-region; that address is not kept
+in this repository.
 
 With `prefixRestore.enabled`:
 1. `prefix-fetch` (`prefix.sh fetch`: `files/prefix-restore.sh`, then minisign) runs only on an
