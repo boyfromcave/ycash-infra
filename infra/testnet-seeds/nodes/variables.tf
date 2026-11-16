@@ -70,12 +70,20 @@ variable "networks" {
 
     `pool` (testnet profiles only; default none) runs a yolo stratum pool beside that network's node
     on every host (README.md, "The pool"): `image` the yolo image by digest (yolo-image.yml),
-    `payout` the transparent address every block pays (yolo --payout; it is also the node's
-    -mineraddress, and the node runs with -disablewallet -minetolocalwallet=0: no key on the host),
-    `port` the stratum port (default 3333, opened to var.pool_ingress_cidrs; yolo's status page is
-    on port + 1, loopback only), `text` an optional coinbase text (yolo --text), `share_ratio` yolo's
-    --share-ratio (default 1, the block target; above 1 needs a yolo with the flag). The pool reaches the
-    node only through its stock mining RPCs on 127.0.0.1.
+    `payout` a transparent address, always the node's -mineraddress (the node runs with
+    -disablewallet -minetolocalwallet=0: no key on the host) and, unless `per_miner`, the address
+    every block pays (yolo --payout), `port` the stratum port (default 3333, opened to
+    var.pool_ingress_cidrs; yolo's status page is on port + 1, loopback only), `text` an optional
+    coinbase text (yolo --text), `share_ratio` yolo's --share-ratio (default 1, the block target;
+    above 1 needs a yolo with the flag). `per_miner` (default false) pays each miner at its stratum
+    username instead (yolo without --payout; a transparent, Sapling or post-quantum address,
+    optionally `<address>.<label>`; any other username is refused, there is no fallback address):
+    it needs a yolo with paired jobs (yolo#16) and, for Sapling and post-quantum miners, a node with
+    getcoinbasetemplatefor (6.22.0-beta3 or later). With it, `coinbase_concurrency` (default 2,
+    1-64; yolo --coinbase-concurrency; above 2 the node also gets -rpcthreads of it plus 2, so do
+    not set -rpcthreads in extra_args) and `max_paired_per_ip` (default 8, 1-4096; yolo
+    --max-paired-per-ip). The pool reaches the node only through its stock mining RPCs (and
+    getcoinbasetemplatefor) on 127.0.0.1.
 
     `insight` (default false) builds the node's transaction and address indexes (-txindex
     -insightexplorer -experimentalfeatures, the image's YCASHD_INSIGHT=1). Set it before the network's
@@ -134,6 +142,10 @@ variable "networks" {
       port        = optional(number, 3333)
       text        = optional(string, "")
       share_ratio = optional(number, 1)
+      # per-miner mode (yolo without --payout: each miner paid at its username)
+      per_miner            = optional(bool, false)
+      coinbase_concurrency = optional(number, 2)
+      max_paired_per_ip    = optional(number, 8)
     }))
     insight = optional(bool, false)
     zmq     = optional(number)
@@ -197,9 +209,18 @@ variable "networks" {
       !contains([18832, 18833, 18932, 18933, 19032, 19033, 8832, 8833], n.pool.port) &&
       !contains([18832, 18833, 18932, 18933, 19032, 19033, 8832, 8833], n.pool.port + 1) &&
       can(regex("^[A-Za-z0-9 ._:/-]{0,60}$", n.pool.text)) &&
-      n.pool.share_ratio >= 1 && n.pool.share_ratio <= 1000000 && floor(n.pool.share_ratio) == n.pool.share_ratio
+      n.pool.share_ratio >= 1 && n.pool.share_ratio <= 1000000 && floor(n.pool.share_ratio) == n.pool.share_ratio &&
+      n.pool.coinbase_concurrency >= 1 && n.pool.coinbase_concurrency <= 64 && floor(n.pool.coinbase_concurrency) == n.pool.coinbase_concurrency &&
+      n.pool.max_paired_per_ip >= 1 && n.pool.max_paired_per_ip <= 4096 && floor(n.pool.max_paired_per_ip) == n.pool.max_paired_per_ip
     )])
-    error_message = "networks: pool on a testnet profile only, image pinned by digest, payout a base58 transparent address, port 1024-65534 clear of every node port (port + 1 is the status page), text of at most 60 letters, digits, spaces and . _ : / -, share_ratio a whole number from 1 to 1000000."
+    error_message = "networks: pool on a testnet profile only, image pinned by digest, payout a base58 transparent address, port 1024-65534 clear of every node port (port + 1 is the status page), text of at most 60 letters, digits, spaces and . _ : / -, share_ratio a whole number from 1 to 1000000, coinbase_concurrency a whole number from 1 to 64, max_paired_per_ip a whole number from 1 to 4096."
+  }
+  validation {
+    # yolo needs the node's -rpcthreads at least coinbase_concurrency + 2; above 2 the module sets it
+    condition = alltrue([for k, n in var.networks : n.pool == null ? true : (
+      !n.pool.per_miner || n.pool.coinbase_concurrency <= 2 || !can(regex("(^| )-rpcthreads=", n.extra_args))
+    )])
+    error_message = "networks: a per-miner pool with coinbase_concurrency above 2 sets the node's -rpcthreads itself; remove -rpcthreads from extra_args."
   }
   validation {
     condition     = length(distinct([for k, n in var.networks : n.pool.port if n.enabled && n.pool != null])) == length([for k, n in var.networks : k if n.enabled && n.pool != null])
