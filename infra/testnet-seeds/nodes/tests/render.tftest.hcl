@@ -203,6 +203,68 @@ run "pool_host" {
   }
 }
 
+# A per-miner pool (README.md, "The pool": "Per-miner mode"): the node keeps -mineraddress; above a
+# coinbase_concurrency of 2 it gets -rpcthreads of it plus 2; the config carries the per-miner fields.
+run "pool_host_per_miner" {
+  variables {
+    seeds = {
+      "seed-0" = { allocation_id = "eipalloc-00000000000000000", public_ip = "192.0.2.20" }
+    }
+    networks = {
+      yb-fast = {
+        profile    = "fast"
+        extra_args = "-addnode=fastnet-seed.example.org:18833"
+        pool = {
+          image                = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          payout               = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb"
+          per_miner            = true
+          coinbase_concurrency = 3
+        }
+      }
+    }
+    p2p_ingress_cidrs = []
+  }
+  assert {
+    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args == "-maxtipage=999999999 -dbcache=256 -maxconnections=64 -addnode=fastnet-seed.example.org:18833 -disablewallet -mineraddress=smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb -minetolocalwallet=0 -rpcthreads=5"
+    error_message = "a per-miner pool's node: -mineraddress kept, -rpcthreads = coinbase_concurrency + 2"
+  }
+  assert {
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).pool) == jsonencode({ image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", port = 3333, status_port = 3334, text = "", share_ratio = 1, per_miner = true, coinbase_concurrency = 3, max_paired_per_ip = 8 })
+    error_message = "the per-miner pool's config: per_miner, coinbase_concurrency 3, max_paired_per_ip 8 (default)"
+  }
+}
+
+run "pool_host_per_miner_default_concurrency" {
+  variables {
+    networks = {
+      yb-fast = {
+        profile = "fast"
+        pool    = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", per_miner = true }
+      }
+    }
+  }
+  assert {
+    condition     = !strcontains(jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args, "-rpcthreads")
+    error_message = "the default concurrency (2) leaves the node's -rpcthreads at its default (4)"
+  }
+}
+
+run "refuses_a_bad_per_miner_pool" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", per_miner = true, coinbase_concurrency = 65, max_paired_per_ip = 0 } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_rpcthreads_beside_a_raised_concurrency" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", extra_args = "-rpcthreads=8", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", per_miner = true, coinbase_concurrency = 4 } } }
+  }
+  expect_failures = [var.networks]
+}
+
 run "no_pool_no_stratum_port" {
   assert {
     condition     = length(aws_vpc_security_group_ingress_rule.stratum) == 0 && jsondecode(base64decode(output.network_configs["yb-fast"])).pool == null

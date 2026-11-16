@@ -82,7 +82,10 @@ check_config() { # file name
       and (.pool.payout | test("^[1-9A-HJ-NP-Za-km-z]{26,40}$"))
       and (.pool.port | type == "number") and (.pool.status_port | type == "number")
       and ((.pool.text // "") | test("^[A-Za-z0-9 ._:/-]{0,60}$"))
-      and ((.pool.share_ratio // 1) | type == "number" and . >= 1 and . == floor)))
+      and ((.pool.share_ratio // 1) | type == "number" and . >= 1 and . == floor)
+      and ((.pool.per_miner // false) | type == "boolean")
+      and ((.pool.coinbase_concurrency // 2) | type == "number" and . >= 1 and . <= 64 and . == floor)
+      and ((.pool.max_paired_per_ip // 8) | type == "number" and . >= 1 and . <= 4096 and . == floor)))
     and ((.insight // false) | type == "boolean")
     and (.zmq_port == null or (.zmq_port | type == "number" and . >= 1024 and . <= 65535 and . == floor))
   ' "$1" >/dev/null || die "config for $2 is not valid"
@@ -199,7 +202,10 @@ YAML
 }
 
 # The pool beside NET's node: yolo, paying every block to pool.payout (--payout; the node's
-# -mineraddress is the same address, locals.tf), on the node's RPC at 127.0.0.1 with the node's own
+# -mineraddress is the same address, locals.tf) or, with pool.per_miner, each miner at its stratum
+# username (no --payout: yolo's paired jobs, --coinbase-concurrency and --max-paired-per-ip; the
+# node keeps -mineraddress, whose coinbase yolo checks every pair against and swaps a transparent
+# miner's script into), on the node's RPC at 127.0.0.1 with the node's own
 # credential (pool.conf: never on a command line, readable by yolo's uid only). The stratum port is
 # open to the internet: at most 64 sockets, 4 per address; the status page explicitly on loopback.
 # yolo runs with host networking, so the instance metadata service's hop limit of 1 does not keep it
@@ -215,7 +221,7 @@ imds_guard() {
 }
 
 render_pool() { # net file
-  local net=$1 f=$2 R="$O/net/$1" pc="$D/$1/pool.conf" text ratio
+  local net=$1 f=$2 R="$O/net/$1" pc="$D/$1/pool.conf" text ratio pay
   imds_guard
   ( umask 077
     # shellcheck source=/dev/null
@@ -228,6 +234,12 @@ render_pool() { # net file
   [ -z "$text" ] || text=", \"--text\", \"$text\""
   ratio=$(cfg "$f" '.pool.share_ratio // 1')
   [ "$ratio" = 1 ] || text=", \"--share-ratio\", \"$ratio\"$text"
+  # the per-miner values are whole numbers (checked above); jq prints them as such
+  if [ "$(cfg "$f" '.pool.per_miner // false')" = true ]; then
+    pay="\"--coinbase-concurrency\", \"$(cfg "$f" '.pool.coinbase_concurrency // 2')\", \"--max-paired-per-ip\", \"$(cfg "$f" '.pool.max_paired_per_ip // 8')\""
+  else
+    pay="\"--payout\", \"$(cfg "$f" .pool.payout)\""
+  fi
   cat >> "$R/compose.yaml" <<YAML
   yolo:
     image: $(cfg "$f" .pool.image)
@@ -241,7 +253,7 @@ render_pool() { # net file
     security_opt: ["no-new-privileges:true"]
     mem_limit: 256m
     volumes: ["$pc:/etc/yolo/pool.conf:ro"]
-    command: ["--conf", "/etc/yolo/pool.conf", "--payout", "$(cfg "$f" .pool.payout)", "--bind", "0.0.0.0", "--port", "$(cfg "$f" .pool.port)", "--status-port", "$(cfg "$f" .pool.status_port)", "--status-bind", "127.0.0.1", "--max-connections", "64", "--max-per-ip", "4", "--log", "info"$text]
+    command: ["--conf", "/etc/yolo/pool.conf", $pay, "--bind", "0.0.0.0", "--port", "$(cfg "$f" .pool.port)", "--status-port", "$(cfg "$f" .pool.status_port)", "--status-bind", "127.0.0.1", "--max-connections", "64", "--max-per-ip", "4", "--log", "info"$text]
     stop_grace_period: 10s
     logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
 YAML
@@ -250,12 +262,14 @@ YAML
 pool_status() { # net: yolo's /status, cut to what an operator reads ({} when it does not answer).
   # rejected = submits refused; stale = submits for a job the chain moved past (yolo >= a5e8acec4);
   # highHash = submits above the share target (yolo#13; before it they were in rejected); shares =
-  # submits that met only the share target (--share-ratio). A field the image lacks shows null.
+  # submits that met only the share target (--share-ratio); payout "username" in per-miner mode, with
+  # minersByKind, minerList (each miner's kind, address and label), coinbaseCall (paired jobs
+  # available: the node serves getcoinbasetemplatefor) and pairs (yolo#16). A field the image lacks shows null.
   local sp
   sp=$(cfg "$D/$1/applied.json" '.pool.status_port // empty' 2>/dev/null || true)
   [ -n "$sp" ] || { echo null; return 0; }
   curl -fsS --max-time 3 "http://127.0.0.1:$sp/status" 2>/dev/null \
-    | jq -c '{nodeUp, height, templateAgeSeconds, miners, connections, accepted, rejected, stale, highHash, shares, shareRatio, lastSubmitVerdict, payout, equihash}' 2>/dev/null \
+    | jq -c '{nodeUp, height, templateAgeSeconds, miners, connections, accepted, rejected, stale, highHash, shares, shareRatio, lastSubmitVerdict, payout, equihash, minersByKind, minerList, coinbaseCall, pairs}' 2>/dev/null \
     || echo '{}'
 }
 

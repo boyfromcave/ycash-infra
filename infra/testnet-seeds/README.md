@@ -252,7 +252,7 @@ What a `pool` adds, per host:
   `127.0.0.1:<port + 1>` (`--status-bind 127.0.0.1`, explicit), `--share-ratio <share_ratio>` when above 1 (shares keep GPU miners
   connected between blocks and show the fleet's speed; yolo README, "Shares"), the node's RPC on `127.0.0.1` with the node's own credential from
   `/srv/ycash-data/<key>/pool.conf` (mode 0400, never on a command line). It reaches the node
-  only through the stock mining RPCs (workspace rule 2). Host networking means the metadata
+  only through the stock mining RPCs (and, in per-miner mode, `getcoinbasetemplatefor`; workspace rule 2). Host networking means the metadata
   service's hop limit of 1 does not stop yolo, so an iptables owner rule refuses uid 2004 the
   metadata addresses (169.254.169.254 and fd00:ec2::254): seedctl installs it before it starts yolo,
   and `setup.sh`'s `ycash-imds-guard.service` from every boot on, before Docker starts.
@@ -264,9 +264,61 @@ What a `pool` adds, per host:
   "Exposure").
 - **seedctl** runs both containers together (`apply`, `reset`, `stop`, `sync`, `boot`); `apply`
   also waits for yolo's status page; `status` adds a `pool` field (container, image, node up,
-  height, miners, accepted, rejected, stale, highHash, shares, share ratio, last verdict).
+  height, miners, accepted, rejected, stale, highHash, shares, share ratio, last verdict, payout,
+  and yolo's per-miner fields `minersByKind`, `minerList`, `coinbaseCall` and `pairs`, null from a
+  yolo without them).
   `stale` (a job the chain has moved past) and `highHash` (a hash above the share target, which
   GPU miners send now and then; never a valid block) are not refusals and are not in `rejected`.
+
+### Per-miner mode (`per_miner = true`)
+
+By default the pool pays every block to `payout`. With `per_miner = true` it pays **each miner at
+its own address**: yolo runs without `--payout`, and a miner's stratum username is its payout
+address, transparent (`sm…`, `s2…`), Sapling (`ytestsapling1…`) or post-quantum (`tqf…`, `tqs…`),
+optionally `<address>.<label>` (a label of 1 to 32 of `A-Z a-z 0-9 _ -`, shown on `status` only).
+yolo checks the username with the node's `validateaddress` / `z_validateaddress` on
+`mining.authorize` and refuses anything else: there is **no fallback address** for a username that
+is not one (yolo README, "Which address gets paid"). A transparent miner is paid by rewriting
+`vout[0]` of the node's own coinbase; a Sapling or post-quantum miner by a **paired job**, the
+coinbase the node builds for it with `getcoinbasetemplatefor`, which needs ycashd 6.22.0-beta3 or
+later (on an older node yolo starts, reports `"coinbaseCall": false` and refuses Sapling and
+post-quantum usernames; transparent ones still work) and a yolo with paired jobs (yolo#16 or later;
+an older image refuses the new options and does not start).
+
+```hcl
+      pool = {
+        image                = "ghcr.io/<owner>/yolo@sha256:..."   # yolo upgrade/vault b3abf81 or later
+        payout               = "sm..."   # still required: the node's -mineraddress
+        per_miner            = true
+        coinbase_concurrency = 2         # default 2, 1-64: yolo --coinbase-concurrency
+        max_paired_per_ip    = 8         # default 8, 1-4096: yolo --max-paired-per-ip
+        port                 = 3333
+        share_ratio          = 32
+      }
+```
+
+- `payout` stays: it is the node's `-mineraddress`, so `getblocktemplate` still carries a coinbase;
+  yolo checks every paired coinbase against it (height, fees, total, fund output) and swaps a
+  transparent miner's script into it. Nothing is paid to it in this mode unless a miner mines under
+  that address.
+- `coinbase_concurrency`: `getcoinbasetemplatefor` calls in flight at once (each Sapling one costs
+  the node a proof, a few seconds on a `t3a.small`; keep its CPU credits `unlimited` while Sapling
+  miners run). yolo wants the node's `-rpcthreads` at least this plus 2: the node's default, 4,
+  covers the default 2; above 2 the module appends `-rpcthreads=<n + 2>` itself, and refuses a
+  `-rpcthreads` in the network's `extra_args`.
+- `max_paired_per_ip`: distinct Sapling and post-quantum addresses one source IP may mine to at once
+  (each costs the node a coinbase per block); further ones are refused at `mining.authorize`.
+  `--max-per-ip 4` (sockets per IP) still applies and is the tighter bound here.
+- The Sapling proving parameters: ycash6 images carry them built into the binary (`images/ycashd`
+  README), so a pool node on a ycash6 image needs nothing more; `-disablewallet` does not affect
+  `getcoinbasetemplatefor`. A ycash-dd (4.5.0 line) image would need them in `~/.zcash-params` and
+  has no `getcoinbasetemplatefor`; it is not a per-miner pool node.
+- The node's `-ydf` (its voluntary development-fund share past the mandate end) is the network's
+  `extra_args`: the module neither sets nor reads it, and every paired coinbase carries exactly the
+  share the node's own coinbase does.
+- Switching mode recreates the yolo container only (its command line changes); the node is
+  recreated only when its arguments change (`-rpcthreads` above a concurrency of 2). Check with
+  `status`: `pool.payout` is `"username"` and `pool.coinbaseCall` is `true`.
 
 The image is `ghcr.io/<owner>/yolo`, built from the yolo repository at one commit on its
 `upgrade/vault` by `yolo-image.yml` with [`images/yolo/Dockerfile`](../../images/yolo/Dockerfile).

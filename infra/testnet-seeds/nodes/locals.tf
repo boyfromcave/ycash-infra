@@ -78,17 +78,22 @@ locals {
     # explorer's node only answers reads, a lightwallet's only serves lightwalletd: no wallet either.
     extra_args = trimspace(join(" ", compact([n.testnet ? "-maxtipage=999999999" : "", var.extra_args, n.extra_args,
       n.pool == null ? "" : "-disablewallet -mineraddress=${n.pool.payout} -minetolocalwallet=0",
+      # yolo's paired jobs: getcoinbasetemplatefor calls in flight plus the template poll and submitblock
+      # (the node's default, 4, covers the default concurrency of 2)
+      n.pool == null ? "" : n.pool.per_miner && n.pool.coinbase_concurrency > 2 ? "-rpcthreads=${n.pool.coinbase_concurrency + 2}" : "",
     n.explorer == null && n.lightwallet == null ? "" : "-disablewallet"])))
     peers = [for s in local.seed_keys : format("%s:%d", var.seeds[s].public_ip, n.p2p_port)]
-    # The yolo pool beside this network's node (files/seedctl render), or null.
-    pool = n.pool == null ? null : {
+    # The yolo pool beside this network's node (files/seedctl render), or null. The per-miner fields
+    # appear only with per_miner, so a single-payout pool keeps exactly the config it had before.
+    pool = n.pool == null ? null : merge({
       image       = n.pool.image
       payout      = n.pool.payout
       port        = n.pool.port
       status_port = n.pool.port + 1
       text        = n.pool.text
       share_ratio = n.pool.share_ratio
-    }
+      }, n.pool.per_miner ? { per_miner = true } : {},
+    n.pool.per_miner ? { coinbase_concurrency = n.pool.coinbase_concurrency, max_paired_per_ip = n.pool.max_paired_per_ip } : {})
     prefix = n.testnet && n.bootstrap && var.prefix != null ? {
       base_url    = local.profile_prefix[n.profile].base_url
       sums_sha256 = local.profile_prefix[n.profile].sums_sha256
