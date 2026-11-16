@@ -2,10 +2,12 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://www.opensource.org/licenses/mit-license.php .
 """Offline tests of the mainnet snapshot tool (bundles/state/mainnet/snapshot.py: pack, finalize, kogany)
-and of verify.py's `ycash-state/2` and `kogany-state/1`/`2` rules, on stand-in datadirs (no node)."""
+and of verify.py's `ycash-state/2`, `ycash-state/3` and `kogany-state/1`/`2` rules, on stand-in datadirs
+(no node)."""
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -68,14 +70,25 @@ class Mainnet(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def build(self, purpose=None):
-        a = argparse.Namespace(capture=self.cap, version=None, purpose=purpose)
+    def build(self, purpose=None, part_bytes=None):
+        a = argparse.Namespace(capture=self.cap, version=None, purpose=purpose, part_bytes=part_bytes)
         quiet(snapshot.pack, a)
         quiet(snapshot.finalize, a)
 
     def manifest(self):
         with open(os.path.join(self.out, "manifest.json")) as f:
             return json.load(f)
+
+    def joined(self):
+        """The bundle's parts joined in order: the tarball a ycash-state/2 producer writes."""
+        data = b""
+        for p in self.manifest()["parts"]:
+            with open(os.path.join(self.out, p["name"]), "rb") as f:
+                data += f.read()
+        return data
+
+    def tar(self):
+        return tarfile.open(fileobj=io.BytesIO(self.joined()), mode="r:gz")
 
     def rewrite_manifest(self, **kw):
         m = self.manifest()
@@ -87,8 +100,11 @@ class Mainnet(unittest.TestCase):
         self.build(purpose="the Ycash fork block")
         self.assertEqual(verify.verify(self.out, tree=True), [])
         m = self.manifest()
-        self.assertEqual(m["format"], "ycash-state/2")
+        self.assertEqual(m["format"], "ycash-state/3")
         self.assertEqual(m["tarball"], "ycash6-main-570000-full.tar.gz")
+        self.assertEqual([p["name"] for p in m["parts"]], ["ycash6-main-570000-full.tar.gz.000"])  # one part
+        self.assertEqual((m["part_bytes"], m["unpacked_bytes"]), (1 << 30, 6000 + 4 + 5 + 5 + len(b"MANIFEST-000001\n")))
+        self.assertFalse(os.path.exists(os.path.join(self.out, m["tarball"])))
         self.assertEqual(m["created"], "2019-09-09T03:33:20Z")
         self.assertEqual(m["purpose"], "the Ycash fork block")
 
@@ -102,7 +118,7 @@ class Mainnet(unittest.TestCase):
         self.build()
         m = self.manifest()
         self.assertEqual((m["flavour"], m["tarball"]), ("full-insight", "ycash6-main-570000-full-insight.tar.gz"))
-        with tarfile.open(os.path.join(self.out, m["tarball"])) as t:
+        with self.tar() as t:
             names = t.getnames()
         self.assertIn("main/blocks/insight-index/000007.ldb", names)
         self.assertNotIn("main/blocks/insight-index/LOCK", names)
@@ -141,13 +157,16 @@ class Mainnet(unittest.TestCase):
         self.build()                            # a full tarball, relabelled
         old = self.manifest()["tarball"]
         new = old.replace("-full.", "-full-insight.")
-        os.rename(os.path.join(self.out, old), os.path.join(self.out, new))
-        self.rewrite_manifest(flavour="full-insight", tarball=new)
+        parts = self.manifest()["parts"]
+        for p in parts:
+            os.rename(os.path.join(self.out, p["name"]), os.path.join(self.out, p["name"].replace(old, new)))
+            p["name"] = p["name"].replace(old, new)
+        self.rewrite_manifest(flavour="full-insight", tarball=new, parts=parts)
         self.assertTrue(any("full-insight without a file" in e for e in verify.verify(self.out)))
 
     def test_tar_entries_and_headers(self):
         self.build()
-        with tarfile.open(os.path.join(self.out, self.manifest()["tarball"])) as t:
+        with self.tar() as t:
             names = t.getnames()
             for e in t.getmembers():
                 self.assertEqual((e.mtime, e.uid, e.gid, e.uname, e.gname), (0, 0, 0, "", ""))
@@ -161,7 +180,6 @@ class Mainnet(unittest.TestCase):
     def test_pack_is_reproducible(self):
         self.build()
         first = self.manifest()["sha256"]
-        os.remove(os.path.join(self.out, self.manifest()["tarball"]))
         self.build()
         self.assertEqual(self.manifest()["sha256"], first)
 
@@ -184,17 +202,26 @@ class Mainnet(unittest.TestCase):
         self.rewrite_manifest(verifiers=["other"])
         self.assertTrue(any("statement-ycash6.json is required" in e for e in verify.verify(self.out)))
 
-    def published(self):
+    def published(self, have=None, code=0, **env):
+        """Run publish-s3.sh against a stand-in aws; `have` maps a key already in the bucket to its size
+        (head-object answers it). Returns the `s3 cp` destinations, in order."""
         log = os.path.join(self.tmp.name, "aws.log")
+        if os.path.exists(log):
+            os.remove(log)
         fake = os.path.join(self.tmp.name, "aws")
+        sizes = "".join("  *%s*) echo %d; exit 0 ;;\n" % (k, v) for k, v in (have or {}).items())
         with open(fake, "w") as f:
             f.write("#!/bin/sh\necho \"$*\" >> %s\n"
                     "case \"$2\" in ls) exit 1 ;; esac\n"
-                    "[ \"$4\" = - ] && exit 1\nexit 0\n" % log)
+                    "if [ \"$2\" = head-object ]; then case \"$*\" in\n%s  esac; exit 255; fi\n"
+                    "[ \"$4\" = - ] && exit 1\nexit 0\n" % (log, sizes))
         os.chmod(fake, 0o700)
         r = subprocess.run(["bash", os.path.join(STATE, "mainnet", "publish-s3.sh"), self.out, "s3://bucket-x/snap"],
-                           env=dict(os.environ, AWS=fake), capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
+                           env=dict(os.environ, AWS=fake, **env), capture_output=True, text=True)
+        self.assertEqual(r.returncode, code, r.stderr)
+        self.publish_stderr, self.publish_stdout = r.stderr, r.stdout
+        if not os.path.exists(log):
+            return []
         with open(log) as f:
             return [l.split()[-1] for l in f.read().splitlines() if l.startswith("s3 cp") and not l.endswith(" -")]
 
@@ -202,7 +229,7 @@ class Mainnet(unittest.TestCase):
         self.build()
         dests = self.published()
         base = "s3://bucket-x/snap/main/570000/"
-        self.assertEqual(dests[0], base + "ycash6-main-570000-full.tar.gz")
+        self.assertEqual(dests[0], base + "ycash6-main-570000-full.tar.gz.000")
         self.assertEqual(dests[-3:], [base + "manifest.json", base + "SHA256SUMS",
                                       "s3://bucket-x/snap/main/latest/manifest.json"])
 
@@ -211,7 +238,7 @@ class Mainnet(unittest.TestCase):
         self.build()
         dests = self.published()
         base = "s3://bucket-x/snap/main-insight/570000/"
-        self.assertEqual(dests[0], base + "ycash6-main-570000-full-insight.tar.gz")
+        self.assertEqual(dests[0], base + "ycash6-main-570000-full-insight.tar.gz.000")
         self.assertEqual(dests[-3:], [base + "manifest.json", base + "SHA256SUMS",
                                       "s3://bucket-x/snap/main-insight/latest/manifest.json"])
         self.assertFalse(any("/snap/main/" in d for d in dests))
@@ -222,6 +249,176 @@ class Mainnet(unittest.TestCase):
         snapshot.write_sums(self.out)
         self.assertTrue(any("unexpected" in e for e in verify.verify(self.out)))
 
+
+def noise(n, seed=b"n"):
+    """n bytes that gzip cannot shrink (a hash chain), so a small tree packs to several parts."""
+    out, h = b"", seed
+    while len(out) < n:
+        h = hashlib.sha256(h).digest()
+        out += h
+    return out[:n]
+
+
+class Parts(Mainnet):
+    """beta3 item 9 (`ycash-state/3`): the tarball stored in three parts verifies, joins byte for byte to
+    the one-file `/2` tarball of the same tree, and every broken part, file or manifest is refused."""
+
+    def setUp(self):
+        super().setUp()
+        write(os.path.join(self.cap, "datadir", "main", "blocks", "blk00001.dat"), noise(30000))
+        root = os.path.join(self.cap, "datadir")
+        entries = snapshot.bundle_entries(root, "main")
+        self.one_file = os.path.join(self.tmp.name, "one-file.tar.gz")
+        self.one_tree = snapshot.pack_tree(root, "main", entries, self.one_file)
+        with open(self.one_file, "rb") as f:
+            self.one = f.read()
+        self.pb = -(-len(self.one) // 3)                   # ceil: exactly three parts
+        self.build(part_bytes=self.pb)
+
+    def part(self, i):
+        return os.path.join(self.out, self.manifest()["parts"][i]["name"])
+
+    def test_three_parts_are_the_one_file_tarball(self):
+        m = self.manifest()
+        self.assertEqual(len(m["parts"]), 3)
+        self.assertEqual([p["bytes"] for p in m["parts"]], [self.pb, self.pb, len(self.one) - 2 * self.pb])
+        self.assertEqual(self.joined(), self.one)
+        self.assertEqual((m["sha256"], m["bytes"]), (hashlib.sha256(self.one).hexdigest(), len(self.one)))
+        self.assertEqual(m["tree_sha256"], self.one_tree)
+        self.assertEqual(verify.verify(self.out, tree=True), [])
+        with open(os.path.join(self.out, "SHA256SUMS")) as f:
+            sums = dict(reversed(line.split("  ")) for line in f.read().splitlines())
+        for p in m["parts"]:
+            self.assertEqual(sums[p["name"]], p["sha256"])
+        self.assertNotIn(m["tarball"], sums)              # the whole stream is never a file of the bundle
+
+    def test_a_flipped_byte_in_part_2(self):
+        with open(self.part(1), "r+b") as f:
+            b = f.read(1)
+            f.seek(0)
+            f.write(bytes([b[0] ^ 1]))
+        errs = verify.verify(self.out)
+        self.assertTrue(any(".001 does not match" in e for e in errs), errs)
+        snapshot.write_sums(self.out)                     # sums rewritten to match: the manifest still refuses
+        errs = verify.verify(self.out)
+        self.assertTrue(any("SHA256SUMS line is not the manifest's" in e for e in errs), errs)
+        self.assertTrue(any("joined in order" in e for e in errs), errs)
+
+    def test_a_missing_part(self):
+        os.remove(self.part(2))
+        errs = verify.verify(self.out)
+        self.assertTrue(any(".002 is missing" in e for e in errs), errs)
+        snapshot.write_sums(self.out)
+        self.assertTrue(any(".002 is missing" in e for e in verify.verify(self.out)))
+
+    def test_a_short_middle_part(self):
+        with open(self.part(1), "r+b") as f:
+            f.truncate(self.pb - 1)
+        snapshot.write_sums(self.out)
+        errs = verify.verify(self.out)
+        self.assertTrue(any(".001: %d bytes, the manifest says %d" % (self.pb - 1, self.pb) in e for e in errs), errs)
+
+    def test_an_extra_file(self):
+        write(os.path.join(self.out, "notes.txt"), b"?")
+        snapshot.write_sums(self.out)
+        self.assertTrue(any("unexpected" in e for e in verify.verify(self.out)))
+
+    def test_parts_out_of_sequence(self):
+        parts = self.manifest()["parts"]
+        parts[1], parts[2] = parts[2], parts[1]
+        self.rewrite_manifest(parts=parts)
+        errs = verify.verify(self.out)
+        self.assertTrue(any("part 1 is named" in e for e in errs), errs)
+
+    def test_parts_size_rules(self):
+        m = self.manifest()
+        self.rewrite_manifest(part_bytes=self.pb + 1)    # a part shorter than part_bytes before the last
+        self.assertTrue(any("every part but the last" in e for e in verify.verify(self.out)))
+        self.rewrite_manifest(part_bytes=m["part_bytes"], bytes=m["bytes"] + 1)
+        self.assertTrue(any("the parts hold" in e for e in verify.verify(self.out)))
+        self.rewrite_manifest(bytes=m["bytes"], unpacked_bytes=m["unpacked_bytes"] + 1)
+        self.assertTrue(any("unpacked_bytes" in e for e in verify.verify(self.out)))
+
+    def test_a_v3_bundle_that_also_holds_the_whole_tarball(self):
+        shutil.copyfile(self.one_file, os.path.join(self.out, self.manifest()["tarball"]))
+        snapshot.write_sums(self.out)
+        errs = verify.verify(self.out)                    # larger than a part: the size guard refuses it first
+        self.assertTrue(any("tar.gz: %d bytes, over part_bytes" % len(self.one) in e for e in errs), errs)
+        self.build()                                      # one part of 1 GiB: the whole tarball fits the guard
+        shutil.copyfile(self.one_file, os.path.join(self.out, self.manifest()["tarball"]))
+        snapshot.write_sums(self.out)
+        errs = verify.verify(self.out)
+        self.assertTrue(any("never holds the whole tarball" in e for e in errs), errs)
+
+    def test_the_object_guards(self):
+        write(os.path.join(self.out, "notes.txt"), noise(self.pb + 1))
+        snapshot.write_sums(self.out)
+        errs = verify.verify(self.out)
+        self.assertTrue(any("notes.txt: %d bytes, over part_bytes" % (self.pb + 1) in e for e in errs), errs)
+        os.remove(os.path.join(self.out, "notes.txt"))
+        snapshot.write_sums(self.out)
+        saved = verify.MAX_OBJECT_BYTES
+        verify.MAX_OBJECT_BYTES = self.pb - 1             # stands in for 49 GiB: every format is held to it
+        try:
+            self.assertTrue(any("limit for any bundle object" in e for e in verify.verify(self.out)))
+        finally:
+            verify.MAX_OBJECT_BYTES = saved
+
+    def test_a_one_file_v2_bundle_still_verifies(self):
+        m = self.manifest()
+        for p in m["parts"]:
+            os.remove(os.path.join(self.out, p["name"]))
+        shutil.copyfile(self.one_file, os.path.join(self.out, m["tarball"]))
+        v2 = {k: v for k, v in m.items() if k not in ("parts", "part_bytes", "unpacked_bytes")}
+        v2["format"] = "ycash-state/2"
+        self.rewrite_manifest_to(v2)
+        self.assertEqual(verify.verify(self.out, tree=True), [])
+        self.rewrite_manifest_to(dict(v2, parts=m["parts"]))
+        self.assertTrue(any("ycash-state/3 fields" in e for e in verify.verify(self.out)))
+
+    def rewrite_manifest_to(self, m):
+        snapshot.dump(os.path.join(self.out, "manifest.json"), m)
+        snapshot.write_sums(self.out)
+
+    def test_an_old_verifier_refuses_v3(self):
+        """The reader of a format it does not know refuses it by `format` (bundle-parts.md §5)."""
+        saved = verify.FORMATS
+        verify.FORMATS = (verify.FORMAT, verify.FORMAT_V2)
+        try:
+            errs = verify.verify(self.out)
+        finally:
+            verify.FORMATS = saved
+        self.assertTrue(any("format 'ycash-state/3', expected one of" in e for e in errs), errs)
+
+    def test_pack_again_replaces_the_parts(self):
+        first = self.manifest()["sha256"]
+        write(os.path.join(self.out, self.manifest()["tarball"] + ".007.part"), b"left by a killed pack")
+        self.build(part_bytes=self.pb * 2)                # two parts now; the third and the leftover go
+        self.assertEqual(len(self.manifest()["parts"]), 2)
+        self.assertEqual(self.manifest()["sha256"], first)
+        self.assertEqual(verify.verify(self.out, tree=True), [])
+
+    def test_publish_uploads_the_parts_first_and_skips_one_already_there(self):
+        base = "s3://bucket-x/snap/main/570000/"
+        names = [p["name"] for p in self.manifest()["parts"]]
+        dests = self.published()
+        self.assertEqual(dests[:3], [base + n for n in names])
+        self.assertEqual(dests[-3:], [base + "manifest.json", base + "SHA256SUMS", "s3://bucket-x/snap/main/latest/manifest.json"])
+        self.assertEqual(sorted(dests[3:-3]), [base + "statement-ycash6.json", base + "treestate.json"])
+        dests = self.published(have={names[0]: self.pb, names[1]: 1})   # a re-run: part 0 is there, part 1 is short
+        self.assertNotIn(base + names[0], dests)
+        self.assertEqual(dests[:2], [base + names[1], base + names[2]])
+        self.assertIn(names[0] + ": already uploaded", self.publish_stdout)
+
+    def test_publish_refuses_an_object_over_the_guard(self):
+        self.assertEqual(self.published(code=1, MAX_OBJECT_BYTES=str(self.pb - 1)), [])
+        self.assertIn("object limit", self.publish_stderr)
+
+
+
+# Parts reuses Mainnet's capture and helpers, not its tests (those run once, in Mainnet).
+for _name in [n for n in vars(Mainnet) if n.startswith("test_")]:
+    setattr(Parts, _name, None)
 
 def kogany_cache(tmp):
     v = os.path.join(tmp, "cache", "state", "v30", "mainnet")

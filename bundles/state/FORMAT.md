@@ -129,7 +129,7 @@ statements (the tarball too while it is under GitHub's 2 GiB asset limit).
 ## Checking a bundle
 
 ```bash
-python3 -I bundles/state/verify.py DIR      # files, hashes, canonical JSON, statements agree, tar entries and headers
+python3 -I bundles/state/verify.py DIR      # files, hashes, canonical JSON, statements agree, tar entries and headers (any format)
 make state-test                             # the snapshotter's steps and verify.py against a stand-in node, offline
 ```
 
@@ -225,6 +225,87 @@ The UTXO set hash at `H` comes from one implementation (ycash6). The independent
 
 A restoring operator who wants more runs `-reindex-chainstate`, which rebuilds the state from the
 bundle's own blocks.
+
+---
+
+# Mainnet state bundle in parts, format v3 (`ycash-state/3`)
+
+## In plain words
+
+The CDN in front of the bundles does not serve one object over 50 GB, and the mainnet `full-insight`
+tarball was 41.8 GB at 3,100,949 and grows with the chain. v3 is v2 with the tarball **stored in
+parts** of 1 GiB: the same tar stream, cut into consecutive pieces. Nothing else changes. A restore
+needs only one part of extra disk (it checks each part, then streams it into one extraction), an
+interrupted download costs at most one part, and no object comes near the limit at any chain size.
+Design and measurements: workspace `docs/plans/beta3/bundle-parts.md`.
+
+## Contract
+
+Everything in v2's "Contract" applies, except what follows. The kogany formats are unchanged; this
+extension is written so that a `kogany-state/3` can adopt it word for word.
+
+**The stream is unchanged; only the storage is cut.** The producer writes exactly the bytes a v2
+tarball would hold (the same GNU tar through `gzip -n -6`) and cuts them into consecutive byte ranges.
+The parts joined in order are, byte for byte, the tarball a v2 producer writes from the same datadir.
+Parts are not separate tar or gzip members, so the encoding, reproducibility and `tree_sha256` are v2's.
+
+**Part names.** `<tarball>.<NNN>`: three decimal digits from `000` (`ycash6-main-3100949-full-insight.tar.gz.000`
+... `.039`). At most 1,000 parts. The names sort in stream order and match the restorer's file-name rule
+`[A-Za-z0-9][A-Za-z0-9._-]*`.
+
+**Part size.** Every part is exactly `part_bytes` long except the last, which is 1..`part_bytes`. A v3
+bundle has at least one part (the producer writes v3 for a bundle of any size). The producer's
+`part_bytes` is 1,073,741,824 (1 GiB): far below the CDN's limit, one S3 PUT, under GitHub's 2 GiB
+release-asset limit, and the restorer's disk overhead. It is a manifest field: a reader never assumes it.
+
+**`manifest.json`.** v2's fields with `format: "ycash-state/3"`, plus:
+
+| Field | Value |
+|---|---|
+| `tarball`, `sha256`, `bytes` | v2's meaning, for the **whole stream** (the parts joined). No file of that name is in the bundle or published |
+| `part_bytes` | the size of every part but the last (`1073741824`) |
+| `parts` | `[{"name": "<tarball>.000", "bytes": n, "sha256": hex}, ...]` in stream order: the names consecutive from `.000`, the sizes as above, summing to `bytes` |
+| `unpacked_bytes` | the sum of the regular files' sizes in the tar: the datadir it restores to (a restorer's disk check reads it) |
+
+**Files.** The parts, `manifest.json`, the statements, `treestate.json`, `SHA256SUMS`, and nothing
+else; signatures beside them as in v1. **Never the whole tarball**, so that no reader of v1 or v2 can
+half-work on a v3 bundle.
+
+**`SHA256SUMS`.** v1's rule unchanged: every file in the directory except the signatures, sorted
+bytewise, so the parts, the manifest, the statements and `treestate.json`. Each part's line equals its
+`parts[].sha256`. The whole stream is not listed (it is not a file), and `sha256sum -c SHA256SUMS` works
+as before.
+
+**Signature.** As v1: `SHA256SUMS.minisig` signs `SHA256SUMS`. That covers each part by its line, and
+the manifest by its line: through the manifest, the part list, `part_bytes`, `unpacked_bytes`, the
+whole stream's `sha256` and `bytes`, and `tree_sha256`. Nothing new is signed.
+
+**No object over 49 GiB.** No file of a bundle directory may exceed 49 GiB (52,613,349,376 bytes) in
+any format, and none may exceed `part_bytes` in v3. `verify.py` and `mainnet/publish-s3.sh` both refuse
+one, so the CDN limit is a checked rule.
+
+**Where it is published.** As v2 (`<base>/main/<H>/`, `<base>/main-insight/<H>/`, each with
+`latest/manifest.json`). Part names are relative to `<base>/<root>/<H>/` and never resolved against
+`latest/`: a reader takes `height` from `latest/manifest.json` and fetches everything from `<H>/`.
+`publish-s3.sh` uploads the parts first, in order, and `manifest.json` and `SHA256SUMS` last, so a
+reader that sees a manifest sees every part it names.
+
+**Restoring.** `ycash-bootstrap --network main --source <base>/main/latest/` (ycash6
+`contrib/bootstrap`): it checks the signature, the manifest and the pins, then fetches each part,
+checks its size and hash before any byte of it is extracted, streams the parts into one extraction
+in a staging directory, checks the whole stream's hash and the tree hash at its end, installs, and has
+the node check the statement at H. By hand: download the parts, `sha256sum -c SHA256SUMS`, then
+`cat <the parts in order> | tar -xzf - -C <datadir> --strip-components=1` (the bundle plus the
+datadir on disk).
+
+## Compatibility
+
+`format` is the version field and readers dispatch on it. A reader that does not know v3 refuses it by
+its format (`verify.py`: "manifest: format 'ycash-state/3', expected one of ..."; an older
+`ycash-bootstrap` refuses any format but v1); a v1 or v2 recipe that fetches `<tarball>` gets a 404,
+because v3 never publishes that object. New readers read v1, v2 and the kogany formats as before; a v2
+bundle is one part named `tarball`. Published v2 bundles stay valid; the parts of a v2 tarball cut at
+1 GiB would form the same stream with the same `sha256` (with a new `SHA256SUMS` and signature).
 
 ---
 
