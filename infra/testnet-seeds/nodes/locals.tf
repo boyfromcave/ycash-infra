@@ -76,12 +76,15 @@ locals {
     # A pool's node builds the block template for the pool's payout address and holds no wallet:
     # -mineraddress must then not be required to be a wallet address (-minetolocalwallet=0). An
     # explorer's node only answers reads, a lightwallet's only serves lightwalletd: no wallet either.
+    # An x402 host's node keeps its wallet (the faucet's) and gets an export directory inside its
+    # datadir (seedctl x402-backup) and more RPC threads (the API, the facilitator and the faucet).
     extra_args = trimspace(join(" ", compact([n.testnet ? "-maxtipage=999999999" : "", var.extra_args, n.extra_args,
       n.pool == null ? "" : "-disablewallet -mineraddress=${n.pool.payout} -minetolocalwallet=0",
       # yolo's paired jobs: getcoinbasetemplatefor calls in flight plus the template poll and submitblock
       # (the node's default, 4, covers the default concurrency of 2)
       n.pool == null ? "" : n.pool.per_miner && n.pool.coinbase_concurrency > 2 ? "-rpcthreads=${n.pool.coinbase_concurrency + 2}" : "",
-    n.explorer == null && n.lightwallet == null ? "" : "-disablewallet"])))
+      n.explorer == null && n.lightwallet == null ? "" : "-disablewallet",
+    n.x402 == null ? "" : "-exportdir=/var/lib/ycash/export -rpcthreads=8 -rpcworkqueue=64"])))
     peers = [for s in local.seed_keys : format("%s:%d", var.seeds[s].public_ip, n.p2p_port)]
     # The yolo pool beside this network's node (files/seedctl render), or null. The per-miner fields
     # appear only with per_miner, so a single-payout pool keeps exactly the config it had before.
@@ -132,6 +135,30 @@ locals {
       mem_limit_mb      = n.lightwallet.mem_limit_mb
       node_mem_limit_mb = n.lightwallet.node_mem_limit_mb
       log_level         = n.lightwallet.log_level
+    } },
+    # The x402 demonstration beside this network's node (files/seedctl-x402).
+    n.x402 == null ? {} : { x402 = {
+      hostname                 = n.x402.hostname
+      acme_email               = var.x402_acme_email
+      tls                      = n.x402.tls
+      api_image                = n.x402.api_image
+      facilitator_image        = n.x402.facilitator_image
+      faucet_image             = n.x402.faucet_image
+      proxy_image              = n.x402.proxy_image
+      explorer_url             = n.x402.explorer_url
+      lightwalletd             = n.x402.lightwalletd
+      price_exact_zat          = n.x402.price_exact_zat
+      price_broadcast_zat      = n.x402.price_broadcast_zat
+      zero_conf_cap_zat        = n.x402.zero_conf_cap_zat
+      paid_per_minute          = n.x402.paid_per_minute
+      unpaid_per_minute        = n.x402.unpaid_per_minute
+      free_per_minute          = n.x402.free_per_minute
+      conn_rate_limit          = n.x402.conn_rate_limit
+      faucet                   = n.x402.faucet
+      node_mem_limit_mb        = n.x402.node_mem_limit_mb
+      api_mem_limit_mb         = n.x402.api_mem_limit_mb
+      facilitator_mem_limit_mb = n.x402.facilitator_mem_limit_mb
+      faucet_mem_limit_mb      = n.x402.faucet_mem_limit_mb
     } }
   ) }
 }

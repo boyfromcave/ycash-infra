@@ -55,8 +55,23 @@ case "$1" in
   exec)
     case "$2" in postgres-*) echo 510796; exit 0 ;;
       # lightwalletd's lwdinfo: GetLightdInfo and the latest block (FAKE_LWD_HEIGHT), or no answer
+      # the x402 host's faucet: its /info (wget inside its container)
+      faucet-*) echo '{"mode":"testnet","available":true,"tip":600000,"amountZat":10000000,"powBits":16,"params":false}'; exit 0 ;;
       lightwalletd-*) [ -z "${FAKE_LWD_DOWN:-}" ] || exit 1
         echo "{\"version\":\"v0.4.6\",\"vendor\":\"Ycash\",\"taddrSupport\":true,\"chainName\":\"test\",\"saplingActivationHeight\":280000,\"consensusBranchId\":\"6d5b7a31\",\"blockHeight\":${FAKE_LWD_HEIGHT:-600000},\"latestHeight\":${FAKE_LWD_HEIGHT:-600000}}"; exit 0 ;;
+    esac
+    # the x402 host's wallet calls (seedctl-x402): the faucet's addresses, balances and export
+    case " $* " in
+      *" getnewaddress "*) echo smFakePayToAddress123456789abcdefg; exit 0 ;;
+      # FAKE_NOTMINE=t / z: the wallet no longer holds payTo's / the Sapling address's key
+      *" validateaddress "*) m=true; [ "${FAKE_NOTMINE:-}" != t ] || m=false
+        if [ -n "${FAKE_PQ:-}" ]; then echo '{"isvalid":true,"isscript":false,"pqscheme":"falcon","ismine":true}'; else echo "{\"isvalid\":true,\"isscript\":false,\"ismine\":$m}"; fi; exit 0 ;;
+      *" z_validateaddress "*) m=true; [ "${FAKE_NOTMINE:-}" != z ] || m=false; echo "{\"isvalid\":true,\"type\":\"sapling\",\"ismine\":$m}"; exit 0 ;;
+      *" z_listaddresses "*) echo '[]'; exit 0 ;;
+      *" z_getnewaddress sapling "*) echo ytestsapling1fakefaucetaddressqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq; exit 0 ;;
+      *" z_getbalance ytestsapling1"*) echo 12.5; exit 0 ;;
+      *" z_getbalance "*) echo 0.0003; exit 0 ;;
+      *" z_exportwallet "*) echo "/var/lib/ycash/export/${!#}"; exit 0 ;;
     esac
     case "${!#}" in
       getblockcount) echo "$FAKE_HEIGHT" ;;
@@ -91,6 +106,18 @@ case "$*" in
           *) printf 'HTTP/2 200\r\ncontent-type: application/grpc\r\n\r\ngrpc-status: 0\r\n' > "$hdr"; : > "$out" ;;
         esac; echo 200 ;;
       starting) printf 'HTTP/2 503\r\n\r\n' > "$hdr"; echo starting > "$out"; echo 503 ;;
+      down) echo 000; exit 7 ;;
+    esac ;;
+  # the x402 host's two routes through its proxy (x4_probe): the free one 200, the paid one 402 with
+  # PAYMENT-REQUIRED; FAKE_X4 starting (the proxy's 503) or down (no connection)
+  */pricing | */v1/address/*)
+    prev=""; for a in "$@"; do case "$prev" in -D) hdr=$a ;; esac; prev=$a; done
+    case "${FAKE_X4:-ok}" in
+      ok) case "$*" in
+          */pricing*) printf 'HTTP/2 200\r\n\r\n' > "$hdr"; echo 200 ;;
+          *) printf 'HTTP/2 402\r\npayment-required: eyJ4NDAyVmVyc2lvbiI6Mn0=\r\n\r\n' > "$hdr"; echo 402 ;;
+        esac ;;
+      starting) printf 'HTTP/2 503\r\n\r\n' > "$hdr"; echo 503 ;;
       down) echo 000; exit 7 ;;
     esac ;;
   *127.0.0.1:3334/status*) echo '{"nodeUp":true,"height":510432,"templateAgeSeconds":0,"miners":2,"connections":2,"accepted":1,"rejected":0,"lastSubmitVerdict":"accepted","payout":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","equihash":"192,7","shares":9,"stale":4,"highHash":3,"shareRatio":32,"uptimeSeconds":60,"minersByKind":{"p2pkh":1,"p2sh":0,"pq":0,"sapling":1,"fixed":0},"minerList":[{"id":0,"kind":"p2pkh","address":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","label":null},{"id":1,"kind":"sapling","address":"ytestsapling1example","label":"rig1"}],"coinbaseCall":true,"pairs":{"addresses":1,"waiting":0,"inFlight":0,"concurrency":2,"requests":3,"failures":0,"lastRoundTripMs":180}}' ;;
@@ -286,7 +313,7 @@ for bad in '{"seed.env": {"mode": "0644", "content": "SEED_NAME=evil\n"}}' '{"..
   if "$SEEDCTL" install-files "$T/bad.json" 2>/dev/null; then fail "install-files accepted $bad"; fi
 done
 cmp -s "$O/seed.env" "$T/seed.env.before" && [ ! -e "$SEEDCTL_ROOT/opt/x" ] && [ ! -e "$O/setup.sh" ] && ! grep -qx x "$O/frame.py" || fail "a refused host file was written"
-ok "install-files: the module's five names only, modes 0644 or 0755, nothing written on a refusal"
+ok "install-files: the module's names only (the allow-list), modes 0644 or 0755, nothing written on a refusal"
 printf 'ycash-local/inzyght:000000000000-000000000000\n' > "$FAKE_IMAGES"   # a stale build
 EXPL=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c --arg s "$CTXSHA" '.insight = true | .zmq_port = 28332 | .extra_args += " -disablewallet" | .explorer = {
   hostname: "explorer.example.org", acme_email: "ops@example.org", tls: true, image: null,
@@ -493,6 +520,102 @@ ok "refuses a lightwallet with a bad origin, a tag, a bad name or level, no inde
 "$SEEDCTL" apply yb-fast "$FAST" 2>/dev/null
 grep -q 'network_mode: host' "$c" && ! grep -q lwproxy "$c" && grep -q 'docker rm -f lightwalletd-yb-fast grpcweb-yb-fast lwproxy-yb-fast' "$LOG" && [ "$("$SEEDCTL" status yb-fast | jq 'has("lightwallet")')" = false ] || fail "a lightwallet removed from the config"
 ok "a lightwallet removed from the config is removed from the host"
+# 15. an x402 host beside fast: the node on the x402 networks with its wallet and indexes, RPC for
+#     the three services only; the TLS proxy alone during the import, on 443 only; the facilitator,
+#     the API and the faucet after it, once the faucet's addresses exist; the secrets private;
+#     status; a reset keeps the wallet; the backup; refusals; removed from the config
+: > "$LOG"; rm -rf "$D/yb-fast" "$O/net/yb-fast"
+jq -cn --rawfile l "$here/../files/seedctl-x402" '{"seedctl-x402": {mode: "0644", content: $l}}' > "$T/hfx.json"
+"$SEEDCTL" install-files "$T/hfx.json" 2>/dev/null && cmp -s "$O/seedctl-x402" "$here/../files/seedctl-x402" || fail "install-files: seedctl-x402"
+X4C=$(conf yb-fast fast 18833 18832 f77962d3 | jq -c '.insight = true | .extra_args += " -listen=0 -exportdir=/var/lib/ycash/export -rpcthreads=8 -rpcworkqueue=64" | .x402 = {
+  hostname: "x402.example.org", acme_email: "ops@example.org", tls: true, explorer_url: "https://explorer.example.org", lightwalletd: "lightwallet.example.org:443",
+  api_image: "ghcr.io/example/x402-ycash-chain-api@sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  facilitator_image: "ghcr.io/example/x402-ycash-facilitator@sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  faucet_image: "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  proxy_image: "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  price_exact_zat: 10000, price_broadcast_zat: 10000, zero_conf_cap_zat: 100000,
+  paid_per_minute: 120, unpaid_per_minute: 30, free_per_minute: 120, conn_rate_limit: 60,
+  faucet: {amount_zat: 10000000, daily_cap_zat: 1000000000, per_ip: 1, per_address: 1, window_seconds: 86400, pow_bits: 16, sweep_min_zat: 1000000},
+  node_mem_limit_mb: 1536, api_mem_limit_mb: 256, facilitator_mem_limit_mb: 192, faucet_mem_limit_mb: 96}')
+X4=$(echo "$X4C" | b64)
+"$SEEDCTL" apply yb-fast "$X4" 2>"$T/err" || { cat "$T/err"; fail "apply with an x402"; }
+c="$O/net/yb-fast/compose.yaml"; e="$O/net/yb-fast/node.env"; X="$D/yb-fast/x402"; cf="$O/net/yb-fast/Caddyfile"
+grep -qx 'YCASHD_INSIGHT=1' "$e" && grep -qx 'YCASHD_RPC_BIND=172.31.254.11' "$e" && grep -q '^YCASHD_EXTRA_ARGS=.* -rpcbind=127.0.0.1 ' "$e" && grep -qx 'YCASHD_RPC_ALLOWIP=172.31.254.12 172.31.254.13 172.31.254.14' "$e" && ! grep -q -- '-disablewallet' "$e" && grep -q -- '-exportdir=/var/lib/ycash/export -rpcthreads=8' "$e" && grep -q -- '-loadblock=' "$e" || fail "the x402 node while importing: indexes, its wallet, RPC on its backend address for the three services only: $(cat "$e")"
+grep -q 'ipv4_address: "172.31.254.11"' "$c" && grep -q 'container_name: x402proxy-yb-fast' "$c" && ! grep -q -e 'container_name: facilitator-' -e 'container_name: x402api-' -e 'container_name: faucet-' "$c" && grep -q 'mem_limit: 1536m' "$c" && grep -q 'memswap_limit: 3584m' "$c" && ! grep -q YCASHD_MNEMONIC_FILE "$c" || fail "while importing: the node and the TLS proxy only: $(cat "$c")"
+grep -qF 'ports: ["443:443"]' "$c" && [ "$(grep -c 'ports:' "$c")" = 1 ] && [ "$(awk '/^  [a-z0-9]+:$/ { s = $1 } /ports:/ { print s }' "$c")" = "x402proxy:" ] && grep -q 'edge: { ipv4_address: "172.31.255.10" }' "$c" || fail "only the TLS proxy publishes a port, 443 alone, at its fixed edge address"
+grep -qx 'x402.example.org {' "$cf" && grep -q 'disable_http_challenge' "$cf" && grep -qx '		email ops@example.org' "$cf" && grep -q 'auto_https disable_redirects' "$cf" && grep -q 'max_header_size 64KB' "$cf" && grep -q 'reverse_proxy 172.31.254.14:8080 {' "$cf" && grep -q 'reverse_proxy 172.31.254.12:4021 {' "$cf" && grep -q '@faucet path /faucet /faucet/ /faucet/index.html /faucet/testnet.js /faucet/info /faucet/challenge /faucet/send$' "$cf" && ! grep -q metrics "$cf" && grep -q 'header_up X-Forwarded-For {remote_host}' "$cf" || fail "the Caddyfile: TLS-ALPN only, the contact, the faucet's own paths (never /metrics), the API for the rest, the client's address"
+pw=$(sed -n 's/^YCASHD_RPC_PASSWORD=//p' "$D/yb-fast/rpc.env")
+[ "$(stat -c %a "$X/facilitator.json")" = 400 ] && [ "$(jq -r .rpc.password "$X/facilitator.json")" = "$pw" ] && [ "$(jq -c '[.rpc.url, .testnetProfile, .confirmations, .network]' "$X/facilitator.json")" = '["http://172.31.254.11:18832/","fast",{"minimum":-1,"maximum":1},"ycash:testnet"]' ] && [ "$(jq -r .apiKey "$X/facilitator.json")" = "$(cat "$X/secrets/api-key")" ] && ! grep -rqF -e "$pw" "$O/net/yb-fast" && [ "$(stat -c %a "$X/secrets")" = 700 ] && [ "$(stat -c %a "$X/secrets/api-key")" = 600 ] && [[ "$(cat "$X/secrets/api-key")" =~ ^[0-9a-f]{64}$ ]] && [ "$(stat -c %a "$D/yb-fast/applied.json")" = 600 ] || fail "the facilitator's 0400 config holds the credential and the API key; the generated secrets private; nothing in the rendered files"
+grep -qx 'iptables -I DOCKER-USER 1 -s 172.31.254.0/23 -d 169.254.169.254/32 -j REJECT' "$LOG" && grep -qx 'iptables -I DOCKER-USER 1 -p tcp -d 172.31.255.10/32 --dport 443 -m conntrack --ctstate NEW -m hashlimit --hashlimit-above 60/minute --hashlimit-burst 120 --hashlimit-mode srcip --hashlimit-name x402-yb-fast -j DROP' "$LOG" || fail "the metadata rule and the per-address connection limit: $(grep iptables "$LOG")"
+s=$(FAKE_HEIGHT=255123 "$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -r .x402.phase)" = "prefix import: 255123 of 510247 (49 %)" ] && [ "$(echo "$s" | jq -c '[.x402.payTo, .x402.restarts]')" = '[null,{"ycashd":0,"facilitator":0,"api":0,"faucet":0,"proxy":0}]' ] || fail "status during the import: $s"
+ok "an x402 host while the prefix imports: the node with its wallet on its networks, the TLS proxy on 443 alone, secrets private, the connection limit"
+"$SEEDCTL" prefix-check 2>"$T/err" || { cat "$T/err"; fail "prefix-check on the x402 host"; }
+[ "$(cat "$X/payto" 2>/dev/null)" = smFakePayToAddress123456789abcdefg ] && [[ "$(cat "$X/zaddr")" == ytestsapling1fake* ]] || fail "the faucet's addresses after the import: $(cat "$T/err")"
+grep -q 'container_name: facilitator-yb-fast' "$c" && grep -q 'container_name: x402api-yb-fast' "$c" && grep -q 'container_name: faucet-yb-fast' "$c" && grep -q 'X402_FACILITATOR_CONFIG: /etc/x402/facilitator.json' "$c" && grep -q 'user: "2008:2008"' "$c" && grep -q 'user: "2009:2009"' "$c" && grep -q 'user: "2010:2010"' "$c" && [ "$(grep -c 'read_only: true' "$c")" = 5 ] && [ "$(grep -c 'cap_drop: \[ALL\]' "$c")" = 5 ] && [ "$(grep -c 'healthcheck:' "$c")" = 3 ] && ! grep -q loadblock "$e" || fail "after the import: the three services, each its own uid, read-only, no capabilities, a healthcheck: $(cat "$c")"
+awk '/^  (api|facilitator|faucet):$/ { s = 1 } /^  x402proxy:$/ { s = 0 } s && /edge/ { bad = 1 } END { exit bad }' "$c" || fail "the three services are on the internal network only"
+[ "$(stat -c %a "$X/api.env")" = 400 ] && grep -qx 'API_PAY_TO=smFakePayToAddress123456789abcdefg' "$X/api.env" && grep -qx 'API_PRICE_ZAT=10000' "$X/api.env" && grep -qx 'API_PRICE_BROADCAST_ZAT=10000' "$X/api.env" && grep -qx 'API_ZERO_CONF_CAP_ZAT=100000' "$X/api.env" && grep -qx 'API_PAID_PER_MINUTE=120' "$X/api.env" && grep -qx 'API_UNPAID_PER_MINUTE=30' "$X/api.env" && grep -qx 'X402_NETWORK=ycash:testnet' "$X/api.env" && grep -qx "API_RPC_PASSWORD=$pw" "$X/api.env" && grep -qx 'API_RPC_URL=http://172.31.254.11:18832/' "$X/api.env" && grep -qx "FACILITATOR_API_KEY=$(cat "$X/secrets/api-key")" "$X/api.env" && grep -qx 'FACILITATOR_URL=http://172.31.254.13:4022' "$X/api.env" && grep -qx 'API_TRUST_PROXY=1' "$X/api.env" && grep -qx 'API_LINK_FAUCET=https://x402.example.org/faucet/' "$X/api.env" && grep -qx 'API_LINK_EXPLORER=https://explorer.example.org' "$X/api.env" && grep -qx 'API_LINK_LIGHTWALLETD=lightwallet.example.org:443' "$X/api.env" && ! grep -q MERCHANT_ "$X/api.env" || fail "the API's environment: $(sed 's/=.*//' "$X/api.env" | tr '\n' ' ')"
+[ "$(stat -c %a "$X/faucet.env")" = 400 ] && grep -qx 'FAUCET_MODE=testnet' "$X/faucet.env" && grep -qx 'FAUCET_PROFILE=fast' "$X/faucet.env" && grep -qx "FAUCET_FROM=$(cat "$X/zaddr")" "$X/faucet.env" && grep -qx 'SWEEP_FROM=smFakePayToAddress123456789abcdefg' "$X/faucet.env" && grep -qx 'AMOUNT_ZAT=10000000' "$X/faucet.env" && grep -qx 'DAILY_CAP_ZAT=1000000000' "$X/faucet.env" && grep -qx 'POW_BITS=16' "$X/faucet.env" && grep -qx 'TRUSTED_PROXY_HOPS=1' "$X/faucet.env" && grep -qx 'PARAMS_ENABLED=0' "$X/faucet.env" && grep -qx 'SWEEP_MIN_CONF=2' "$X/faucet.env" || fail "the faucet's environment"
+s=$("$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -c '[.x402.phase, .x402.payTo, .x402.faucetBalance, .x402.payToBalance, .x402.faucetInfo.available, .x402.freeOnHost, .x402.paidOnHost, .x402.freePublic, .x402.paidPublic, .x402.url, .x402.api, .x402.node]')" = '["serving","smFakePayToAddress123456789abcdefg","12.5","0.0003",true,"200","402 payment-required","200","402 payment-required","https://x402.example.org","healthy",{"blocks":600000,"headers":600000,"connections":2}]' ] || fail "status serving: $s"
+grep -q -- "--resolve x402.example.org:443:127.0.0.1 https://x402.example.org/v1/address/smFakePayToAddress123456789abcdefg" "$LOG" || fail "the paid probe on this host, for the name, at payTo"
+[ "$(FAKE_X4=starting "$SEEDCTL" status yb-fast | jq -r .x402.phase)" = "starting (the TLS proxy answers 503 on the free route, 503 on the paid route, on this host)" ] || fail "status with the proxy not through"
+[ "$(FAKE_CONNS=0 "$SEEDCTL" status yb-fast | jq -r .x402.phase)" = "the node has no peers (height 600000): it cannot know the network's tip" ] || fail "status with a node without peers"
+ok "after the import: the faucet's addresses, the facilitator, the API and the faucet on the internal network, their environments; status serving with balances and both routes"
+mkdir -p "$D/yb-fast/node/testnet-yb-fast" && echo keys > "$D/yb-fast/node/testnet-yb-fast/wallet.dat" && touch "$X/caddy/data/cert"
+"$SEEDCTL" reset yb-fast "$X4" 2>"$T/err" || { cat "$T/err"; fail "reset on the x402 host"; }
+[ "$(cat "$D/yb-fast/node/testnet-yb-fast/wallet.dat")" = keys ] && [ -e "$D/yb-fast/node/prefix/FRAMED" ] && [ -e "$X/caddy/data/cert" ] && [ -s "$X/payto" ] && [ ! -e "$X/keep" ] && grep -q 'docker rm -f .* facilitator-yb-fast x402api-yb-fast faucet-yb-fast x402proxy-yb-fast' "$LOG" || fail "reset: the chain goes, the faucet's wallet, the addresses and the certificate stay (and the prefix still frames)"
+ok "reset: the chain goes; the faucet's wallet comes back after the bootstrap; the certificate and the addresses stay"
+# a reset whose datadir already holds a wallet when the kept one returns (and a keep left by an
+# interrupted reset): neither wallet is deleted, the kept one is set aside with a timestamp, and said so
+mkdir -p "$X/keep/testnet-yb-fast" && echo stale > "$X/keep/testnet-yb-fast/wallet.dat"
+echo keys2 > "$D/yb-fast/node/testnet-yb-fast/wallet.dat"
+"$SEEDCTL" reset yb-fast "$X4" 2>"$T/err" || { cat "$T/err"; fail "reset with a keep left behind"; }
+grep -q 'an earlier reset left a wallet aside that never returned: the wallet in .*/x402/keep is kept at .*/x402/keep\.[0-9]\{14\}' "$T/err" && [ "$(cat "$X"/keep.*/testnet-yb-fast/wallet.dat)" = stale ] && [ "$(cat "$D/yb-fast/node/testnet-yb-fast/wallet.dat")" = keys2 ] && [ ! -e "$X/keep" ] || fail "an old keep is set aside, never overwritten: $(cat "$T/err"; ls "$X")"
+rm -rf "$X"/keep.*
+"$SEEDCTL" reset yb-fast "$X4" 2>/dev/null; mkdir -p "$X/keep/testnet-yb-fast" && echo kept > "$X/keep/testnet-yb-fast/wallet.dat"   # a reset interrupted after the move
+echo other > "$D/yb-fast/node/testnet-yb-fast/wallet.dat"
+"$SEEDCTL" apply yb-fast "$X4" 2>"$T/err" || { cat "$T/err"; fail "apply over a datadir that holds a wallet"; }
+grep -q 'the datadir already holds a wallet, so the kept one did not replace it: the wallet in .*/x402/keep is kept at .*/x402/keep\.[0-9]\{14\} (nothing was deleted' "$T/err" && [ "$(cat "$X"/keep.*/testnet-yb-fast/wallet.dat)" = kept ] && [ "$(cat "$D/yb-fast/node/testnet-yb-fast/wallet.dat")" = other ] && [ ! -e "$X/keep" ] || fail "a kept wallet that cannot return is set aside, never deleted: $(cat "$T/err")"
+rm -rf "$X"/keep.*
+ok "a kept wallet that cannot return, or a keep an interrupted reset left, moves to keep.<time>, with a message; nothing is deleted"
+"$SEEDCTL" prefix-check 2>/dev/null; [ -e "$D/yb-fast/node/prefix/IMPORTED" ] || fail "prefix-check after the reset"
+"$SEEDCTL" x402-backup yb-fast 2>/dev/null | grep -q "^the faucet wallet's export: $D/yb-fast/node/export/faucet[0-9]\{14\} " || fail "x402-backup prints the export's path"
+echo "a phrase" > "$X/mnemonic"; "$SEEDCTL" apply yb-fast "$X4" 2>/dev/null
+grep -q 'environment: { YCASHD_MNEMONIC_FILE: /run/ycash/mnemonic }' "$c" && grep -qF "$X/mnemonic:/run/ycash/mnemonic:ro" "$c" || fail "an operator's recovery phrase is mounted read-only for the wallet's creation"
+rm -f "$X/mnemonic"
+ok "x402-backup names the export; a placed recovery phrase reaches the node read-only"
+# the cached addresses are re-checked against the wallet on every x402_up: one it cannot spend stops
+# the API and the faucet with what to do, and they are not rendered again until the wallet holds both
+for which in t z; do
+  : > "$LOG"
+  if FAKE_NOTMINE=$which "$SEEDCTL" apply yb-fast "$X4" 2>"$T/err"; then fail "the API kept a payTo the wallet cannot spend ($which)"; fi
+  grep -q 'does not hold the spending key of .*so the API and the faucet are stopped' "$T/err" && grep -q 'docker rm -f x402api-yb-fast faucet-yb-fast' "$LOG" && ! grep -q -e 'container_name: x402api-' -e 'container_name: faucet-' "$c" && grep -q 'container_name: facilitator-yb-fast' "$c" && [ ! -e "$X/owned" ] || fail "a cached address not the wallet's ($which): $(cat "$T/err")"
+  if [ "$which" = t ]; then grep -q "the API's payTo smFakePayToAddress123456789abcdefg (NET/x402/payto)" "$T/err" || fail "names payTo"; else grep -q "the faucet's Sapling address ytestsapling1fake.* (NET/x402/zaddr)" "$T/err" || fail "names the Sapling address"; fi
+done
+"$SEEDCTL" boot 2>/dev/null || true; ! grep -q 'container_name: x402api-' "$c" || fail "boot re-rendered the API before the wallet was checked again"
+"$SEEDCTL" apply yb-fast "$X4" 2>"$T/err" || { cat "$T/err"; fail "apply once the wallet holds both again"; }
+grep -q 'container_name: x402api-yb-fast' "$c" && [ "$(cat "$X/owned")" = "$(cat "$X/payto") $(cat "$X/zaddr")" ] || fail "the API returns once the wallet holds both addresses"
+ok "a cached payTo or Sapling address the wallet cannot spend stops the API and the faucet, with what to do; they return once it can"
+PLAINX=$(echo "$X4C" | jq -c '.x402.tls = false | .x402.conn_rate_limit = 30' | b64)
+: > "$LOG"; "$SEEDCTL" apply yb-fast "$PLAINX" 2>/dev/null || fail "apply plain HTTP"
+grep -qx ':80 {' "$cf" && grep -q 'auto_https off' "$cf" && grep -qF 'ports: ["80:80"]' "$c" && grep -q -- '--dport 80 .*--hashlimit-above 30/minute' "$LOG" && grep -q -- '^iptables -D DOCKER-USER\|^iptables -I DOCKER-USER 1 -p tcp' "$LOG" || fail "plain HTTP: port 80, the limit replaced"
+ok "plain HTTP (no name): port 80 alone; a changed connection limit replaces the rule"
+for bad in '.x402.api_image = "ghcr.io/example/a:latest"' '.x402.hostname = "x\nemail evil"' '.insight = false' '.x402.faucet.daily_cap_zat = 1' \
+           '.x402.faucet.pow_bits = 40' '.x402.price_exact_zat = 0' '.x402.explorer_url = "javascript:alert(1)"' '.x402.paid_per_minute = 0' \
+           '.lightwallet = {"hostname": "lw.example.org"}' '.network = "mainnet"' '.x402.node_mem_limit_mb = 100'; do
+  BADX=$(echo "$X4C" | jq -c "$bad" | b64)
+  if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "an x402 accepted $bad"; fi
+done
+ok "refuses an x402 with an image by tag, a bad name, no indexes, a cap below a payment, bad limits, prices or link, a lightwallet beside it, on mainnet"
+rm -f "$X/payto"
+if FAKE_PQ=1 "$SEEDCTL" apply yb-fast "$X4" 2>"$T/err"; then fail "a post-quantum payTo accepted"; fi
+grep -q 'is not a plain transparent address' "$T/err" || fail "a post-quantum payTo: $(cat "$T/err")"
+ok "refuses a payTo the wallet made post-quantum"
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$FAST" 2>/dev/null
+grep -q 'network_mode: host' "$c" && ! grep -q x402proxy "$c" && grep -q 'docker rm -f facilitator-yb-fast x402api-yb-fast faucet-yb-fast x402proxy-yb-fast' "$LOG" && [ "$("$SEEDCTL" status yb-fast | jq 'has("x402")')" = false ] && [ -s "$X/zaddr" ] || fail "an x402 removed from the config"
+ok "an x402 removed from the config: its containers go, its files stay"
 # 13. a host without the prefix tools (an instance made by this module revision, its root without
 #     the host_files output): an empty datadir refuses at once, nothing is fetched
 rm -f "$O/prefix-restore.sh"; rm -rf "$D/yb-slow" "$D/prefix-cache"; : > "$LOG"

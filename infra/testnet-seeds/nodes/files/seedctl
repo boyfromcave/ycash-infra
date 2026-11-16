@@ -23,9 +23,11 @@
 #                              and the framed copies (a systemd timer runs it every 10 minutes)
 #   seedctl install-files F    put the module's host_files (F: the decoded JSON) into /opt/ycash-seed:
 #                              the prefix tools, seedctl-explorer, the Inzyght build context,
-#                              seedctl-lightwallet; nothing
+#                              seedctl-lightwallet, seedctl-x402; nothing
 #                              else (an allow-list); the workflow runs it before each change (never
 #                              for status); refused at once while a detached run holds the lock
+#   seedctl x402-backup NET    export NET's x402 faucet wallet (z_exportwallet) into its node's
+#                              export directory on the data volume; prints the path, never the keys
 #   seedctl detach CMD ARGS    run `seedctl CMD ARGS` (apply, reset or sync) in the background, as
 #                              the transient systemd unit ycash-seedctl-job, and return at once;
 #                              status then reports it (a `job` field: running, its phase, the result)
@@ -38,7 +40,9 @@
 # A network whose config has an `explorer` also runs the explorer (PostgreSQL, Inzyght, a TLS proxy)
 # in the same project; that half is seedctl-explorer, beside this file (its header). One whose
 # config has a `lightwallet` runs a light-wallet server (lightwalletd, a gRPC-web proxy, a TLS proxy)
-# the same way: seedctl-lightwallet.
+# the same way: seedctl-lightwallet. One whose config has an `x402` runs the x402 demonstration (the
+# paid chain-data API, the facilitator, the faucet with its wallet in the node, a TLS proxy):
+# seedctl-x402.
 #
 # Layout: /srv/ycash-data (the data volume) holds per network NET/node (the datadir, mounted at
 # /var/lib/ycash), NET/rpc.env (its RPC credential, made here, never leaves the host) and
@@ -91,13 +95,15 @@ check_config() { # file name
   ' "$1" >/dev/null || die "config for $2 is not valid"
   if ex_of "$1"; then need_explorer; explorer_check "$1" "$2"; fi
   if lw_of "$1"; then need_lightwallet; lightwallet_check "$1" "$2"; fi
+  if x4_of "$1"; then need_x402; x402_check "$1" "$2"; fi
 }
 
-# seedctl-explorer and seedctl-lightwallet: from the deploy workflow (install-files; user_data has no
-# room), kept on the data volume for boot.
+# seedctl-explorer, seedctl-lightwallet and seedctl-x402: from the deploy workflow (install-files;
+# user_data has no room), kept on the data volume for boot.
 ex_of() { [ "$(cfg "$1" '.explorer != null' 2>/dev/null)" = true ]; }   # config file
 lw_of() { [ "$(cfg "$1" '.lightwallet != null' 2>/dev/null)" = true ]; }   # config file
-need_half() { # explorer | lightwallet
+x4_of() { [ "$(cfg "$1" '.x402 != null' 2>/dev/null)" = true ]; }   # config file
+need_half() { # explorer | lightwallet | x402
   local p
   case " ${HALVES:-} " in *" $1 "*) return 0 ;; esac
   for p in "$O/seedctl-$1" "$D/seedctl-$1"; do
@@ -112,6 +118,7 @@ need_half() { # explorer | lightwallet
 }
 need_explorer() { need_half explorer; }
 need_lightwallet() { need_half lightwallet; }
+need_x402() { need_half x402; }
 
 decode_to() { # base64 file
   printf '%s' "$1" | base64 -d > "$2" 2>/dev/null || die "config is not base64"
@@ -140,19 +147,22 @@ dinspect() { # format container default
 # Write /opt/ycash-seed/net/NET/{node.env,compose.yaml} from a config file. The -loadblock flags
 # are added while a framed prefix waits to be imported; ZMQ (zmq_port) only after that. An
 # explorer's node: RPC for its backend network, ZMQ on its backend address (seedctl-explorer); a
-# lightwallet's likewise (seedctl-lightwallet).
+# lightwallet's likewise (seedctl-lightwallet), and an x402 host's (seedctl-x402).
 render() { # net file
   local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1"
-  local p2p rpc args p lb="" zmq="" zp ex lw insight=0 bind=127.0.0.1 allow=127.0.0.1 zb=127.0.0.1
+  local p2p rpc args p lb="" zmq="" zp ex lw x4 insight=0 bind=127.0.0.1 allow=127.0.0.1 zb=127.0.0.1
   p2p=$(cfg "$f" .p2p_port); rpc=$(cfg "$f" .rpc_port)
-  ex=$(cfg "$f" '.explorer != null'); lw=$(cfg "$f" '.lightwallet != null')
+  ex=$(cfg "$f" '.explorer != null'); lw=$(cfg "$f" '.lightwallet != null'); x4=$(cfg "$f" '.x402 != null')
   [ "$(cfg "$f" '.insight // false')" = true ] && insight=1
   if [ "$ex" = true ]; then need_explorer; bind=0.0.0.0; allow=$EX_INZYGHT; zb=$EX_BACKEND.11; fi
   if [ "$lw" = true ]; then need_lightwallet; bind=$LW_BACKEND.11; allow=$LW_LWD; zb=$LW_BACKEND.11; fi
+  # an x402 host's node: RPC for the API, the facilitator and the faucet (three addresses), never the proxy
+  if [ "$x4" = true ]; then need_x402; bind=$X4_BACKEND.11; allow=$X4_RPC_ALLOW; zb=$X4_BACKEND.11; fi
   args="-port=$p2p -externalip=$EXTERNAL_IP $(cfg "$f" .node_args)"
-  # a lightwallet's node binds its RPC to its backend address (rpcbind in ycash.conf) and to loopback
-  # (ycash-cli in the container, status), never 0.0.0.0: ycashd adds this -rpcbind to the conf's
-  if [ "$lw" = true ]; then args="$args -rpcbind=127.0.0.1"; fi
+  # a lightwallet's or an x402 host's node binds its RPC to its backend address (rpcbind in
+  # ycash.conf) and to loopback (ycash-cli in the container, status), never 0.0.0.0: ycashd adds this
+  # -rpcbind to the conf's
+  if [ "$lw" = true ] || [ "$x4" = true ]; then args="$args -rpcbind=127.0.0.1"; fi
   [ "$(cfg "$f" .dnsseed)" = true ] || args="$args -dnsseed=0"
   for p in $(cfg "$f" '.peers[]'); do
     [ "$p" = "$EXTERNAL_IP:$p2p" ] || args="$args -addnode=$p"
@@ -182,6 +192,8 @@ ENV
     render_explorer_node "$net" "$f" "$lb"
   elif [ "$lw" = true ]; then
     render_lightwallet "$net" "$f" "$lb"
+  elif [ "$x4" = true ]; then
+    render_x402 "$net" "$f" "$lb"
   else
     cat > "$R/compose.yaml" <<YAML
 name: ycash-$net
@@ -338,15 +350,18 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   tmp="$D/$net/desired.json"
   [ "$2" = - ] || decode_to "$2" "$tmp"
   check_config "$tmp" "$net"
-  # an explorer's or a lightwallet's config carries the certificate contact: root only (applied.json
-  # keeps the mode)
-  if ex_of "$tmp" || lw_of "$tmp"; then chmod 0600 "$tmp"; fi
+  # an explorer's, a lightwallet's or an x402 host's config carries the certificate contact: root
+  # only (applied.json keeps the mode)
+  if ex_of "$tmp" || lw_of "$tmp" || x4_of "$tmp"; then chmod 0600 "$tmp"; fi
   mkdir -p "$N"
   if [ ! -s "$D/$net/rpc.env" ]; then
     (umask 077; printf 'YCASHD_RPC_USER=seed\nYCASHD_RPC_PASSWORD=%s\n' "$(openssl rand -hex 24)" > "$D/$net/rpc.env")
   fi
   job_phase "preparing the chain (prefix download and framing when the datadir is empty)"
   bootstrap "$net" "$tmp"
+  # an x402 host's faucet wallet, moved aside by a reset, returns once the bootstrap has seen the
+  # empty datadir (seedctl-x402)
+  if x4_of "$tmp"; then need_x402; x402_restore_wallet "$net"; fi
   # An Inzyght image that does not build keeps Inzyght down, never the node: the rest starts and
   # apply fails at the end, naming the reason (status shows it too).
   xb=0
@@ -380,6 +395,12 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   elif [ -d "$D/$net/lightwallet" ]; then
     docker rm -f "lightwalletd-$net" "grpcweb-$net" "lwproxy-$net" >/dev/null 2>&1 || true   # a lightwallet removed from the config
   fi
+  if x4_of "$D/$net/applied.json"; then job_phase "waiting for the x402 services"; x402_up "$net"
+  elif [ -d "$D/$net/x402" ]; then
+    # an x402 removed from the config: its containers go; its files (the faucet's addresses, the
+    # secrets, the stores) and the wallet in the datadir stay
+    docker rm -f "facilitator-$net" "x402api-$net" "faucet-$net" "x402proxy-$net" >/dev/null 2>&1 || true
+  fi
   [ "$xb" = 0 ] || die "$net: the node, PostgreSQL and the proxy are up but Inzyght is not: $(explorer_build_reason "$net") (seedctl status shows it; a deploy retries the build)"
 }
 
@@ -388,9 +409,12 @@ reset() { # net config-b64
   valid_name "$net"
   log "$net: RESET: stopping and deleting its chain"
   if [ -e "$O/net/$net/compose.yaml" ]; then compose "$net" down --timeout 180 || true; fi
-  docker rm -f "ycashd-$net" "yolo-$net" "postgres-$net" "inzyght-$net" "proxy-$net" "lightwalletd-$net" "grpcweb-$net" "lwproxy-$net" >/dev/null 2>&1 || true
+  docker rm -f "ycashd-$net" "yolo-$net" "postgres-$net" "inzyght-$net" "proxy-$net" "lightwalletd-$net" "grpcweb-$net" "lwproxy-$net" \
+    "facilitator-$net" "x402api-$net" "faucet-$net" "x402proxy-$net" >/dev/null 2>&1 || true
+  # an x402 host's faucet wallet is not the chain: it moves aside and comes back (apply)
+  if [ -e "$D/$net/applied.json" ] && x4_of "$D/$net/applied.json"; then need_x402; x402_keep_wallet "$net"; fi
   # the chain, and what was built from it (the explorer's index, lightwalletd's block cache); the
-  # certificates and the secrets stay
+  # certificates, the secrets and an x402 host's wallet stay
   rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json" "$D/$net/explorer/pg" "$D/$net/lightwallet/cache"
   apply "$net" "$2"
 }
@@ -472,7 +496,7 @@ node_oom_kills() { # started-at (Docker's StartedAt, UTC)
 }
 
 status() { # [net]
-  local nets net st img info peers pool ex lw job
+  local nets net st img info peers pool ex lw x4 job
   nets=${1:-$(applied_nets || true)}   # (applied_nets fails when there is none)
   # before a host's first applied.json (a detached first deploy still going, or interrupted by a
   # reboot): one line with the job, so its phase and state show from the start
@@ -497,12 +521,15 @@ status() { # [net]
     if ex_of "$D/$net/applied.json"; then ex=$( (need_explorer && explorer_status "$net") 2>/dev/null || echo '{"error": "seedctl-explorer is not on this host"}'); fi
     lw=null
     if lw_of "$D/$net/applied.json"; then lw=$( (need_lightwallet && lightwallet_status "$net") 2>/dev/null || echo '{"error": "seedctl-lightwallet is not on this host"}'); fi
+    x4=null
+    if x4_of "$D/$net/applied.json"; then x4=$( (need_x402 && x402_status "$net") 2>/dev/null || echo '{"error": "seedctl-x402 is not on this host"}'); fi
     job=$(job_json)
     jq -cn --arg host "$SEED_NAME" --arg ip "$EXTERNAL_IP" --arg net "$net" --arg st "$st" --arg img "$img" \
-      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" --argjson ex "$ex" --argjson lw "$lw" --argjson job "$job" \
+      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" --argjson ex "$ex" --argjson lw "$lw" --argjson x4 "$x4" --argjson job "$job" \
       '{host: $host, ip: $ip, network: $net, container: $st, image: $img} + $info + $peers
        + (if $pool == null then {} else {pool: $pool} end) + (if $ex == null then {} else {explorer: $ex} end)
-       + (if $lw == null then {} else {lightwallet: $lw} end) + (if $job == null then {} else {job: $job} end)'
+       + (if $lw == null then {} else {lightwallet: $lw} end) + (if $x4 == null then {} else {x402: $x4} end)
+       + (if $job == null then {} else {job: $job} end)'
   done
 }
 
@@ -519,13 +546,16 @@ prefix_check() {
     compose "$net" up -d
     rm -rf "$N/prefix/load"
     log "$net: prefix imported (height $h); -loadblock retired"
+    # an x402 host: the faucet's addresses, then the faucet and the API (a failure is retried at the
+    # next check; status shows it)
+    if x4_of "$D/$net/applied.json"; then (need_x402 && x402_up "$net") || log "$net: the x402 services did not start; the next check retries"; fi
   done
 }
 
 # The module's host files only (main.tf local.host_files): an allow-list of names, so a payload can
 # never write seed.env, setup.sh, seedctl or anything outside /opt/ycash-seed. Checked whole before
 # anything is written; one file or several per call (the workflow may split them across commands).
-HOST_FILES='["prefix-restore.sh", "frame.py", "seedctl-explorer", "inzyght-build.json", "seedctl-lightwallet"]'
+HOST_FILES='["prefix-restore.sh", "frame.py", "seedctl-explorer", "inzyght-build.json", "seedctl-lightwallet", "seedctl-x402"]'
 install_files() { # json: { name: { mode, content } }
   local k m
   jq -e --argjson ok "$HOST_FILES" 'type == "object" and length > 0
@@ -631,6 +661,7 @@ case "$cmd" in
   boot)         boot ;;
   prefix-check) prefix_check ;;
   install-files) [ $# -eq 1 ] || die "usage: seedctl install-files FILE"; install_files "$1" ;;
+  x402-backup)  [ $# -eq 1 ] || die "usage: seedctl x402-backup NET"; valid_name "$1"; need_x402; x402_backup "$1" ;;
   detach)       detach "$@" ;;
   job)          job ;;
   *)            die "unknown command $cmd" ;;

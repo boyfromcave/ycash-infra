@@ -49,7 +49,7 @@ output "explorers" {
 }
 
 output "host_files" {
-  description = "The files seedctl needs for an apply or a reset beyond itself (the prefix tools; for an explorer, seedctl-explorer and in build mode the Inzyght build context; for a lightwallet, seedctl-lightwallet), as one JSON map of name to { mode, content }, gzip + base64: the deploy workflow hands it to `seedctl install-files` before every run, as it installs seedctl. Empty when there are none. No secret."
+  description = "The files seedctl needs for an apply or a reset beyond itself (the prefix tools; for an explorer, seedctl-explorer and in build mode the Inzyght build context; for a lightwallet, seedctl-lightwallet; for an x402 host, seedctl-x402), as one JSON map of name to { mode, content }, gzip + base64: the deploy workflow hands it to `seedctl install-files` before every run, as it installs seedctl. Empty when there are none. No secret."
   value       = length(local.host_files) == 0 ? "" : base64gzip(jsonencode(local.host_files))
 }
 
@@ -62,4 +62,16 @@ output "lightwallets" {
     tls          = n.lightwallet.tls
     lightwalletd = n.lightwallet.image
   } if n.lightwallet != null }
+}
+
+output "x402s" {
+  description = "Per enabled network with an x402: its public name, its URL and the images it runs; no e-mail address, no secret (the faucet's addresses are made on the host: seedctl status)."
+  value = { for k, n in local.enabled : k => {
+    hostname    = n.x402.hostname
+    url         = "${n.x402.tls ? "https" : "http"}://${n.x402.hostname}"
+    faucet      = "${n.x402.tls ? "https" : "http"}://${n.x402.hostname}/faucet/"
+    api         = n.x402.api_image
+    facilitator = n.x402.facilitator_image
+    faucet_img  = n.x402.faucet_image
+  } if n.x402 != null }
 }
