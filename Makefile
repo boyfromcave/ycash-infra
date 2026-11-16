@@ -23,8 +23,9 @@ else ifneq ($(LINE),)
 $(error LINE=$(LINE): quantum or vault, or set BRANCH)
 endif
 BRANCH      ?= upgrade/vault
-# The rpcversion the trees must speak (ycashd YELLOWBACK_RPC_VERSION = lightwalletd-dd KnownRPCVersion);
-# empty = they only have to agree. Deploy with --set ycashd.rpcVersion=<it> (the chart's default is 8).
+# The rpcversion the node trees must speak (ycashd YELLOWBACK_RPC_VERSION; lightwalletd-dd accepts
+# MinRPCVersion..KnownRPCVersion, 9..10 from beta3); empty = the node trees only have to agree and
+# lightwalletd-dd has to accept their number. The chart's arming Job accepts ycashd.rpcVersion..rpcVersionMax (9..10).
 RPC_VERSION ?=
 # the node image's Dockerfile (contrib/docker/ycashd/, K0a); it COPYs its entrypoint from the build context
 YCASHD_DOCKERFILE ?= $(YCASH6)/contrib/docker/ycashd/Dockerfile
@@ -76,19 +77,21 @@ STAMP_inzyght       = images/inzyght/Dockerfile images/inzyght/entrypoint.sh
 # image instead of failing (e.g. a node image built before stamps from an unchanged Dockerfile)
 ALLOW_STALE_IMAGES ?=
 
-line: ## check the source trees: on BRANCH (or a branch containing it), one rpcversion across ycashd and lightwalletd-dd (RPC_VERSION= to require one)
-	@set -e; vs=""; for t in $(YCASH6) $(YCASH_DD) $(LWD); do \
+line: ## check the source trees: on BRANCH (or a branch containing it), one rpcversion across the ycashd trees, inside lightwalletd-dd's range (RPC_VERSION= to require one)
+	@set -e; vs=""; lmin=""; lmax=""; for t in $(YCASH6) $(YCASH_DD) $(LWD); do \
 	  b=$$(git -C $$t rev-parse --abbrev-ref HEAD 2>/dev/null) || { echo "  $$t: not a git tree"; exit 1; }; \
-	  if [ -f $$t/src/rpc/yellowback.cpp ]; then v=$$(sed -n 's/.*YELLOWBACK_RPC_VERSION = \([0-9]*\);.*/\1/p' $$t/src/rpc/yellowback.cpp | head -1); \
-	  else v=$$(sed -n 's/^const KnownRPCVersion = \([0-9]*\).*/\1/p' $$t/common/yellowback.go | head -1); fi; \
-	  printf '  %-16s %-26s %-10s rpcversion %s\n' "$$(basename $$t)" "$$b" "$$(git -C $$t rev-parse --short HEAD)" "$${v:-?}"; \
+	  if [ -f $$t/src/rpc/yellowback.cpp ]; then v=$$(sed -n 's/.*YELLOWBACK_RPC_VERSION = \([0-9]*\);.*/\1/p' $$t/src/rpc/yellowback.cpp | head -1); r="$${v:-?}"; \
+	  else lmax=$$(sed -n 's/^const KnownRPCVersion = \([0-9]*\).*/\1/p' $$t/common/yellowback.go | head -1); \
+	    lmin=$$(sed -n 's/^const MinRPCVersion = \([0-9]*\).*/\1/p' $$t/common/yellowback.go | head -1); lmin=$${lmin:-$$lmax}; v=""; r="$${lmin:-?}..$${lmax:-?}"; fi; \
+	  printf '  %-16s %-26s %-10s rpcversion %s\n' "$$(basename $$t)" "$$b" "$$(git -C $$t rev-parse --short HEAD)" "$$r"; \
 	  git -C $$t rev-parse -q --verify "$(BRANCH)^{commit}" >/dev/null || { echo "  $$t has no branch $(BRANCH)"; exit 1; }; \
 	  git -C $$t merge-base --is-ancestor "$(BRANCH)" HEAD || { echo "  $$t: HEAD ($$b) does not contain $(BRANCH)"; exit 1; }; \
-	  vs="$$vs $${v:-?}"; \
+	  [ -f $$t/src/rpc/yellowback.cpp ] || continue; vs="$$vs $${v:-?}"; \
 	done; \
-	set -- $$vs; for v in "$$@"; do [ "$$v" = "$$1" ] || { echo "  rpcversion differs between the trees:$$vs"; exit 1; }; done; \
+	set -- $$vs; for v in "$$@"; do [ "$$v" = "$$1" ] || { echo "  rpcversion differs between the node trees:$$vs"; exit 1; }; done; \
+	[ -n "$$lmax" ] && [ "$$1" -ge "$$lmin" ] 2>/dev/null && [ "$$1" -le "$$lmax" ] || { echo "  the node trees speak rpcversion $$1, lightwalletd-dd accepts $${lmin:-?}..$${lmax:-?}"; exit 1; }; \
 	if [ -n "$(RPC_VERSION)" ] && [ "$$1" != "$(RPC_VERSION)" ]; then echo "  the trees speak rpcversion $$1, RPC_VERSION=$(RPC_VERSION)"; exit 1; fi; \
-	echo "  line $(BRANCH): rpcversion $$1 (deploy with --set ycashd.rpcVersion=$$1)"
+	echo "  line $(BRANCH): rpcversion $$1, lightwalletd-dd $$lmin..$$lmax (the chart accepts ycashd.rpcVersion..rpcVersionMax, default 9..10)"
 
 image-ycashd: line ## ycashd from YCASH6 (BRANCH) and its contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
 	@test -f $(YCASHD_DOCKERFILE) || { echo "$(YCASHD_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH6) yet"; exit 1; }
@@ -105,7 +108,7 @@ image-ycashd-legacy: line ## the v4.5.0 tree YCASH_DD (BRANCH), same Dockerfile 
 proto-sync: ## refresh yindex/walletrpc from lightwalletd-dd (generated code, never edited here)
 	cp $(LWD)/walletrpc/{service.pb.go,service_grpc.pb.go,compact_formats.pb.go,service.proto,compact_formats.proto} yindex/walletrpc/
 
-image-lightwalletd: line ## lightwalletd-dd from LWD (BRANCH), its own Dockerfile; it speaks exactly the node's rpcversion
+image-lightwalletd: line ## lightwalletd-dd from LWD (BRANCH), its own Dockerfile; it accepts the node rpcversions MinRPCVersion..KnownRPCVersion
 	s=$$(scripts/image-stamp.sh hash $(STAMP_lightwalletd)) && docker build --platform $(PLATFORM) --build-arg LWD_VERSION=$(LWD_REV) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/lightwalletd:$(LWD_REV) -t $(REGISTRY)/lightwalletd:local $(LWD)
 
 image-yindex: ## the address index
