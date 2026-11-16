@@ -87,10 +87,19 @@ indent, one trailing newline:
 | `vault_statehash` | `vault_getinfo`.`statehash` (its `dbtip.hash` must be `blockhash`), `null` when the node has no vault database |
 | `yed_statehash` | `yed_getstatehash H_B`.`statehash` (its `blockhash` must be `blockhash`), `null` while the node has no YED module (no attestor set, testnet-legacy) |
 
-Every statement of one bundle is **byte-identical**; the producer refuses to finish otherwise. A
-deployment may drop fields from all statements alike (the chart's `snapshotter.statementFields`, for a
-field the two lines turn out to compute differently); the remaining ones stay byte-identical, and
-`network`, `height` and `blockhash` are always present.
+Every statement of one bundle is **byte-identical**; the producer refuses to finish otherwise.
+
+**Required fields.** A `ycash-state/1` statement carries **exactly** the seven fields above: none may be
+left out and none added. A field whose row allows `null` is present with the value `null`, never omitted.
+A statement that lacks a field leaves that part of the state unchecked, so the restorer refuses the
+bundle (ycash6 `contrib/bootstrap/ycash-bootstrap`, `STATEMENT_FIELDS_BY_FORMAT`: "a … statement must
+carry every field the format defines"), and so do `verify.py` (`STATEMENT_FIELDS_BY_FORMAT`) and the
+snapshotter, which has no setting to drop one. Every bundle published so far carries all of them.
+
+| Format | Required statement fields |
+|---|---|
+| `ycash-state/1` | `network`, `height`, `blockhash`, `chainwork`, `utxo_hash_serialized`, `vault_statehash`, `yed_statehash` (7) |
+| `ycash-state/2`, `ycash-state/3` | the seven above, plus `finalsaplingroot`, `chainsupply_zat` (9) |
 
 **`manifest.json`.** Canonical as the statement. The statement's fields, plus:
 
@@ -154,7 +163,7 @@ v2 adds those anchors instead:
 - every compiled ycash6 checkpoint at or below the height;
 - a tree hash that ties the tarball, file by file, to the datadir the statement was taken from.
 
-It also adds two optional statement fields that a different node implementation (kogany) can
+It also adds two statement fields that a different node implementation (kogany) can
 reproduce. Producer: `bundles/state/mainnet/` (`supervise.py`, `snapshot.py`; procedure in its README).
 
 ## Contract
@@ -179,8 +188,9 @@ holding `blocks/insight-index/` is packed `full-insight` and never `full` (its `
 holds at least one file under `main/blocks/insight-index/`. The `ycash6` statement for it is taken by
 an offline node with `-experimentalfeatures -insightexplorer -txindex`; its fields are v2's.
 
-**Statements.** At least one statement, and `statement-ycash6.json` is required. A v2 statement may
-add two fields to v1's:
+**Statements.** At least one statement, and `statement-ycash6.json` is required. A v2 statement
+carries v1's seven fields and these two, all nine required (v1's "Required fields"; `chainsupply_zat`
+present as `null` when not monitored):
 
 | Field | From the node at `H` |
 |---|---|
@@ -193,7 +203,7 @@ no peers, no listening, its own RPC port. Any block above `H` is rolled back on 
 and the fields are read.
 
 Further verifiers (`ycash-dd`, `kogany`) may be added. As in v1, every statement in a bundle is
-byte-identical over the fields the bundle keeps.
+byte-identical.
 
 **`manifest.json`.** v1's fields with `format: "ycash-state/2"` and
 `producer: "ycash-infra/mainnet-snapshot"`, plus:

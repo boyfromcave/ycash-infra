@@ -100,7 +100,9 @@ entrypoint settings for this network and files/snapshot.sh's. */ -}}
 - { name: YCASHD_EXTRA_ARGS, value: "-dnsseed=0" }
 - { name: YCASHD_CONF_EXTRA, value: {{ join "\n" .conf | quote }} }
 - { name: FLAVOUR, value: {{ .sn.flavour | quote }} }
-- { name: STATEMENT_FIELDS, value: {{ join " " .sn.statementFields | quote }} }
+{{- if hasKey .sn "statementFields" }}
+{{- fail "snapshotter.statementFields is no longer supported: a statement carries every field of its format, or ycash-bootstrap refuses the bundle (bundles/state/FORMAT.md \"Statement\")" }}
+{{- end }}
 - name: YCASHD_RPC_USER
   valueFrom: { secretKeyRef: { name: {{ include "yt.rpcSecret" .root }}, key: rpcuser } }
 - name: YCASHD_RPC_PASSWORD

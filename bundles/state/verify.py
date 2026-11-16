@@ -39,6 +39,11 @@ NETWORKS = ("testnet-yb-fast", "testnet-yb-slow", "testnet-legacy", "testnet", "
 STATEMENT_FIELDS = ("network", "height", "blockhash", "chainwork", "utxo_hash_serialized", "vault_statehash", "yed_statehash")
 MANIFEST_FIELDS = ("format", "line", "version", "flavour", "profile", "tarball", "sha256", "bytes", "created", "producer", "verifiers")
 V2_STATEMENT_FIELDS = STATEMENT_FIELDS + ("finalsaplingroot", "chainsupply_zat")
+# The exact field set of a statement per format (FORMAT.md "Statement"): every field present, none
+# other; a field may be null where its row says so. The restorer refuses a statement that lacks one
+# (ycash6 contrib/bootstrap/ycash-bootstrap STATEMENT_FIELDS_BY_FORMAT, at 19254db01), so the
+# publisher refuses it first.
+STATEMENT_FIELDS_BY_FORMAT = {FORMAT: STATEMENT_FIELDS, FORMAT_V2: V2_STATEMENT_FIELDS, FORMAT_V3: V2_STATEMENT_FIELDS}
 V2_MANIFEST_FIELDS = MANIFEST_FIELDS + ("commit", "tree_sha256", "pins")
 V3_MANIFEST_FIELDS = V2_MANIFEST_FIELDS + ("part_bytes", "parts", "unpacked_bytes")
 # ycash-state/3: at most 1,000 parts, named `<tarball>.000` ... `<tarball>.999`
@@ -367,6 +372,21 @@ def verify_kogany(d, m, raw, tree, errors):
     return errors
 
 
+def check_statement_fields(name, s, fmt):
+    """A statement carries exactly its format's fields (STATEMENT_FIELDS_BY_FORMAT); errors, or []."""
+    fields = STATEMENT_FIELDS_BY_FORMAT.get(fmt)
+    if fields is None or not isinstance(s, dict):
+        return [f"{name}: no statement field set for format {fmt!r}" if fields is None else f"{name} is not a JSON object"]
+    errors = []
+    missing, extra = sorted(set(fields) - set(s)), sorted(set(s) - set(fields))
+    if missing:
+        errors.append(f"{name} lacks {', '.join(missing)}: a {fmt} statement carries every field the format "
+                      f"defines ({', '.join(fields)})")
+    if extra:
+        errors.append(f"{name} has {', '.join(extra)}, which {fmt} does not define")
+    return errors
+
+
 def verify(d, tree=False):
     errors = []
     try:
@@ -480,8 +500,7 @@ def verify(d, tree=False):
         s = json.loads(raw)
         if raw != canonical(s):
             errors.append(f"{n} is not canonical")
-        if not set(s) <= set(V2_STATEMENT_FIELDS if v2 else STATEMENT_FIELDS) or not {"network", "height", "blockhash"} <= set(s):
-            errors.append(f"{n}: fields {sorted(s)}")
+        errors += check_statement_fields(n, s, m.get("format"))
         if any(m.get(k) != v for k, v in s.items()):
             errors.append(f"{n} disagrees with the manifest")
         if first is None:

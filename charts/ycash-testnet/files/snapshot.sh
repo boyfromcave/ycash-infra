@@ -20,7 +20,9 @@
 # network's datadir name: testnet-yb-fast, testnet-yb-slow, testnet-legacy), LINE (ycash6 | ycash-dd),
 # STATE (where pick and finalize keep last-height; the producer's datadir), SNAP_EVERY, SNAP_DEPTH,
 # SNAP_MIN_HEIGHT, SNAP_HEIGHT, SNAP_FORCE, FLAVOUR (full | full-insight), VERSION, REF_RPC_URL,
-# YCASHD_RPC_USER / YCASHD_RPC_PASSWORD, STATEMENT_FIELDS, NODE_TIMEOUT (s), and the publish settings.
+# YCASHD_RPC_USER / YCASHD_RPC_PASSWORD, NODE_TIMEOUT (s), and the publish settings. A statement
+# always carries all seven fields of ycash-state/1 (FORMAT.md "Statement"); STATEMENT_FIELDS, which once
+# let a deployment drop some, is refused.
 set -eu
 
 WORK="${WORK:-/work}"
@@ -29,7 +31,6 @@ DATADIR="${DATADIR:-/var/lib/ycash}"
 NETDIR="${NETDIR:?NETDIR is required (testnet-yb-fast, testnet-yb-slow or testnet-legacy)}"
 STATE="${STATE:-$DATADIR}/.snapshotter"
 FLAVOUR="${FLAVOUR:-full}"
-STATEMENT_FIELDS="${STATEMENT_FIELDS:-network height blockhash chainwork utxo_hash_serialized vault_statehash yed_statehash}"
 NODE_TIMEOUT="${NODE_TIMEOUT:-3600}"
 LINE="${LINE:-ycash6}"
 
@@ -38,6 +39,9 @@ die() { echo "snapshot: $*" >&2; exit 1; }
 height() { cat "$WORK/HEIGHT"; }
 skipped() { [ -e "$WORK/SKIP" ]; }
 tarball_name() { echo "ycash6-$NETDIR-$(height)-$FLAVOUR.tar.gz"; }
+
+# a statement lacking a field leaves that part of the state unchecked, and ycash-bootstrap refuses it
+[ -z "${STATEMENT_FIELDS:-}" ] || die "STATEMENT_FIELDS is no longer supported: a statement carries every field of its format (FORMAT.md \"Statement\")"
 
 # JSON-RPC to the reference node with the credential on curl's stdin config, never on its command line.
 ref_rpc() {
@@ -192,10 +196,9 @@ statement() {
   fi
   jq -n -S --arg network "$NETDIR" --argjson height "$h" --arg blockhash "$bh" \
      --arg chainwork "$(echo "$hdr" | jq -r '.chainwork')" --arg utxo "$utxo" \
-     --argjson vault "$vault" --argjson yed "$yed" --arg fields "$STATEMENT_FIELDS" \
+     --argjson vault "$vault" --argjson yed "$yed" \
      '{network: $network, height: $height, blockhash: $blockhash, chainwork: $chainwork,
-       utxo_hash_serialized: $utxo, vault_statehash: $vault, yed_statehash: $yed}
-      | with_entries(select(.key as $k | ($fields | split(" ")) | index($k)))' > "$OUT/statement-$name.json"
+       utxo_hash_serialized: $utxo, vault_statehash: $vault, yed_statehash: $yed}' > "$OUT/statement-$name.json"
   if [ "$name" = ycash6 ]; then
     # facts for the manifest (not part of the statement): the block's time and the node's version
     jq -n -S --argjson time "$(echo "$hdr" | jq '.time')" --arg subversion "$(cli getnetworkinfo | jq -r '.subversion')" \

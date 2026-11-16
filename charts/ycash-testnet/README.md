@@ -209,7 +209,10 @@ A CronJob (`snapshotter.schedule`, daily) that makes a state bundle per [bundles
    `H_B` is the ycash6 statement.
 4. `verify-dd`: a ycash-dd node on its own volume (`<release>-snapshot-dd`) syncs to `H_B` the same way:
    the independent statement (plan §4.2; `snapshotter.verifierDd`).
-5. `finalize`: the statements must be byte-identical, then `manifest.json` and `SHA256SUMS`.
+5. `finalize`: the statements must be byte-identical, then `manifest.json` and `SHA256SUMS`. A
+   statement carries every field of `ycash-state/1` (`bundles/state/FORMAT.md` "Statement"); there is no
+   setting to drop one (the chart refuses a `snapshotter.statementFields` key, `snapshot.sh` a
+   `STATEMENT_FIELDS` variable), because `ycash-bootstrap` refuses a bundle whose statement lacks one.
 6. publish, both off by default: `snapshotter.publish.s3` (bucket, prefix, an IRSA role, no secret) and
    `snapshotter.publish.github` (a draft release with the manifest, `SHA256SUMS` and the statements;
    a token from a Secret, under T-9).
