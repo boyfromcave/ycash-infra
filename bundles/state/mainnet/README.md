@@ -1,4 +1,4 @@
-# Mainnet snapshots (`ycash-state/2`, `kogany-state/1`, `kogany-state/2`)
+# Mainnet snapshots (`ycash-state/3`, `ycash-state/2`, `kogany-state/1`, `kogany-state/2`)
 
 ## In plain words
 
@@ -14,9 +14,9 @@ Nothing here changes the node. It uses `-stopatheight`, the `stop` RPC and the r
 
 | What | Where |
 |---|---|
-| The format | [../FORMAT.md](../FORMAT.md), "format v2", "kogany-state/1" and "kogany-state/2" (archive or pruned) |
+| The format | [../FORMAT.md](../FORMAT.md), "format v2", "format v3" (the tarball in parts), "kogany-state/1" and "kogany-state/2" (archive or pruned) |
 | Pause the node at each height, clone its files | `supervise.py` |
-| Statement, tarball, manifest, verify | `snapshot.py` (`all`, or `statement`, `pack`, `finalize`; `kogany`) |
+| Statement, tarball parts, manifest, verify | `snapshot.py` (`all`, or `statement`, `pack`, `finalize`; `kogany`) |
 | Check a bundle | `python3 -I ../verify.py --tree DIR` |
 | Upload one bundle to S3 | `publish-s3.sh DIR s3://bucket/prefix` |
 | The manifests of the snapshots taken so far (no tarballs) | `records/<H>/` (`manifest.json`, `statement-ycash6.json`, `SHA256SUMS`, `capture.json`) |
@@ -73,15 +73,18 @@ periodic: every snapshot here is either an epoch boundary another tool compares 
      back with `invalidateblock` on that throwaway copy only. The step reads the hash, chainwork,
      `gettxoutsetinfo`, `vault_getinfo`, `yed_getstatehash`, the Sapling root and the chain supply at
      H, checks every compiled pin at or below H, and writes `z_gettreestate H`.
-   - `pack`: the tarball from the untouched clone, and its tree hash.
-   - `finalize`: `manifest.json` and `SHA256SUMS`.
+   - `pack`: the tarball from the untouched clone, cut into parts of 1 GiB as it is written
+     (`<tarball>.000`, `.001`, ...; `--part-bytes` for another size), and its tree hash. From beta3
+     the producer writes only `ycash-state/3`, a bundle of one part included; the parts joined in
+     order are byte for byte the one-file `ycash-state/2` tarball of the same clone.
+   - `finalize`: `manifest.json` (with `parts`, `part_bytes`, `unpacked_bytes`) and `SHA256SUMS`.
    - Then `verify.py --tree`.
 3. **Record** `manifest.json`, `statement-ycash6.json`, `SHA256SUMS` and `capture.json` under
    `records/<H>/`. Never the tarball.
-4. **Disk.** The clones cost little; a tarball costs about the datadir's size at H. Keep at least 40
-   GB free. Once a bundle is verified and recorded, its tarball may be deleted locally: the clone
-   stays, and it reproduces the tarball byte for byte (`snapshot.py pack`, same tools), which the
-   recorded `sha256` then confirms.
+4. **Disk.** The clones cost little; the parts cost about the datadir's size at H, as one tarball did
+   (no whole tarball is ever written beside them). Keep at least 40 GB free. Once a bundle is
+   verified and recorded, its parts may be deleted locally: the clone stays, and it reproduces them
+   byte for byte (`snapshot.py pack`, same tools), which the recorded `sha256` then confirms.
 
 ### `full-insight`: explorers and light-wallet backends
 
@@ -111,9 +114,10 @@ python3 -I snapshot.py all --capture $WS/wt/.snapshots/ycash-mainnet-insight/tip
 **Restoring** (the same as `full`, plus the three flags):
 
 ```bash
-# from <base>/main-insight/<H>/ (or main-insight/latest), after checking SHA256SUMS as for full
-mkdir -p <datadir> && tar -xzf ycash6-main-<H>-full-insight.tar.gz -C <datadir> --strip-components=1
+# from <base>/main-insight/<H>/ (the height main-insight/latest names), as for full below
 printf 'experimentalfeatures=1\ninsightexplorer=1\ntxindex=1\n' >> <datadir>/ycash.conf
+ycash-bootstrap --network main --datadir <datadir> --source <base>/main-insight/latest/ \
+  --ycashd "$(command -v ycashd)" --cli "$(command -v ycash-cli)"
 ycashd -datadir=<datadir>        # no -reindex: it starts at H and syncs the rest from peers
 ```
 
@@ -159,33 +163,55 @@ Restore a pruned bundle only into a kogany configured `[state.storage_mode.prune
 ## Publishing (for the chart's snapshotter and the restore)
 
 `publish-s3.sh DIR s3://<bucket>/<prefix>` uploads one verified bundle:
-- `ycash-state/2`: to `<prefix>/main/<H>/`, then `<prefix>/main/latest/manifest.json` when H is the
-  newest;
-- `ycash-state/2` `full-insight`: to `<prefix>/main-insight/<H>/` and its own `main-insight/latest/`, so
+- `ycash-state/3` (and `/2`): to `<prefix>/main/<H>/`, then `<prefix>/main/latest/manifest.json` when
+  H is the newest;
+- `ycash-state/3` (and `/2`) `full-insight`: to `<prefix>/main-insight/<H>/` and its own `main-insight/latest/`, so
   `main/latest` never names a datadir that needs the index flags;
 - `kogany-state/1` and archive `kogany-state/2`: to `<prefix>/kogany-main/<H>/` and `latest-<state_format>/`;
 - pruned `kogany-state/2`: to `<prefix>/kogany-main-pruned/<H>/` and `latest-<state_format>/` there.
 
 This is the layout `charts/ycash-testnet` `snapshot.sh publish-s3` uses, with `main` as the network.
-The script refuses to overwrite a published height and uploads the manifest and `SHA256SUMS` last.
+The script refuses to overwrite a published height, uploads a `/3` bundle's parts first in manifest
+order and the manifest and `SHA256SUMS` last, and refuses any object over 49 GiB (the CDN serves none
+over 50 GB; `verify.py` refuses one too). Each part is uploaded with its SHA-256 in the object's
+metadata (`sha256`). A re-run after an interrupted upload skips a part only when `head-object` reports
+both its size and that hash (every part but the last has the same size, so size alone would keep a
+stale part). After the parts, every one is checked again by `head-object`, and the script stops,
+writing neither `manifest.json`, `SHA256SUMS` nor `latest/`, if one is missing or differs.
 Credentials come from the caller (the private deployment's role); nothing is uploaded from this
 machine.
 
 Before publishing, sign `SHA256SUMS` with the release key (`SHA256SUMS.minisig`, ycash-ops
-`sign-release`, plan T-6), as for every bundle. `DRY=1` prints the commands.
+`sign-release`, plan T-6), as for every bundle. `DRY=1` prints the uploads and makes no call at all
+(no existence check, no `head-object`, no read of `latest/`).
 
 ## Restoring a node from a mainnet bundle
 
+The low-disk way is `ycash-bootstrap` (ycash6 `contrib/bootstrap`, in the release and the image). It
+reads `latest/` for the height only, checks the signature (required on mainnet), the manifest, the
+pins and every part before a byte of it is extracted, streams the parts into one extraction with one
+part (1 GiB) of extra disk, resumes a broken download, and has the node check the statement at H
+offline before it finishes:
+
 ```bash
-B=https://<cdn>/<prefix>/main/latest            # or .../main/<H>
-curl -fsSO $B/manifest.json; curl -fsSO $B/SHA256SUMS; curl -fsSO $B/SHA256SUMS.minisig
+ycash-bootstrap --network main --datadir ~/.ycash \
+  --source https://<cdn>/<prefix>/main/latest/ --ycashd "$(command -v ycashd)" --cli "$(command -v ycash-cli)"
+```
+
+By hand, with the bundle plus the datadir on disk (a `/3` bundle names its parts in the manifest; the
+whole tarball is never published):
+
+```bash
+B=https://<cdn>/<prefix>/main
+H=$(curl -fsS $B/latest/manifest.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["height"])')
+curl -fsS --remote-name-all $B/$H/{manifest.json,SHA256SUMS,SHA256SUMS.minisig,treestate.json,statement-ycash6.json}
 minisign -Vm SHA256SUMS -p ycash-release.pub      # the release key (ycash-ops keys/ycash-release.pub)
-T=$(python3 -c 'import json; print(json.load(open("manifest.json"))["tarball"])')
-curl -fsSO $B/$T; curl -fsSO $B/treestate.json; curl -fsSO $B/statement-ycash6.json
-sha256sum -c SHA256SUMS                           # every file, the tarball included
-python3 -I verify.py --tree .                     # optional: entries, headers, pins, tree hash
+P=$(python3 -c 'import json; m=json.load(open("manifest.json")); print(" ".join(p["name"] for p in m.get("parts", [{"name": m["tarball"]}])))')
+for p in $P; do curl -fL -C - -O $B/$H/$p; done  # -C -: an interrupted part resumes
+sha256sum -c SHA256SUMS                           # every file, each part included
+python3 -I verify.py --tree .                     # optional: entries, headers, pins, the whole stream, tree hash
 ycash-cli stop                                    # if a node runs on the datadir
-mkdir -p ~/.ycash && tar -xzf $T -C ~/.ycash --strip-components=1
+mkdir -p ~/.ycash && cat $P | tar -xzf - -C ~/.ycash --strip-components=1
 ycashd -datadir=$HOME/.ycash                      # with your own ycash.conf
 ycash-cli getblockhash <H>                        # must equal the manifest's blockhash
 ```

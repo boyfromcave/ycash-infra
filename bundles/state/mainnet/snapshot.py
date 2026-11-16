@@ -2,11 +2,12 @@
 # Copyright (c) 2026 The Ycash developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://www.opensource.org/licenses/mit-license.php .
-"""Turn a captured mainnet datadir (supervise.py) into a `ycash-state/2` bundle, or a stopped kogany
-state cache into a `kogany-state/2` bundle, archive or pruned (bundles/state/FORMAT.md).
+"""Turn a captured mainnet datadir (supervise.py) into a `ycash-state/3` bundle (the tarball stored in
+parts), or a stopped kogany state cache into a `kogany-state/2` bundle, archive or pruned
+(bundles/state/FORMAT.md).
 
   snapshot.py statement  --capture S/H --bin BINDIR [--height H]   statement-ycash6.json, treestate.json
-  snapshot.py pack       --capture S/H                              the tarball, its tree hash
+  snapshot.py pack       --capture S/H [--part-bytes N]             the tarball's parts, its tree hash
   snapshot.py finalize   --capture S/H [--version V]                manifest.json, SHA256SUMS
   snapshot.py all        --capture S/H --bin BINDIR                 the three, then verify.py
   snapshot.py kogany     --cache DIR --height H --blockhash HASH --out DIR [--ycash-statement FILE]
@@ -30,7 +31,10 @@ never touched), and writes the statement at H plus the pins it checked. `pack` w
 from the capture with the fixed headers of the format, and the capture's tree hash (the SHA-256 of
 `<sha256>  <path>` lines of every packed file, in tar order) in the same pass; verify.py recomputes
 the tree hash from the tarball, which proves the tarball holds exactly the files the statement was
-taken from. Stdlib only (Python >= 3.9).
+taken from. The gzip stream is cut into parts of `--part-bytes` (default 1 GiB) as it is written
+(`<tarball>.000`, `.001`, ...): no whole tarball and no second copy is ever on disk, and the parts
+joined in order are byte for byte the tarball a `ycash-state/2` producer writes. Stdlib only
+(Python >= 3.9).
 """
 
 import argparse
@@ -42,9 +46,11 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 
-FORMAT = "ycash-state/2"
+FORMAT = "ycash-state/3"
+PART_BYTES = 1 << 30            # 1 GiB: FORMAT.md v3 "Part size"
 KOGANY_FORMAT = "kogany-state/2"
 TOP_DIRS = ("blocks", "chainstate", "vaults", "yellowback")
 FLAVOURS = ("full", "full-insight")
@@ -321,11 +327,84 @@ class HashingReader:
         return b
 
 
-def pack_tree(root, network, entries, tarball):
-    """Write the tarball (GNU tar, fixed headers, `gzip -n -6`); return the tree hash."""
+class PartWriter:
+    """Cuts a stream into `<tarball>.000`, `.001`, ... of exactly `part_bytes` each (the last 1..part_bytes),
+    written as `<name>.part` and renamed into place when complete; hashes each part and the whole stream."""
+
+    def __init__(self, tarball, part_bytes):
+        if part_bytes < 1:
+            raise ValueError("part_bytes must be positive")
+        self.tarball, self.part_bytes = tarball, part_bytes
+        self.parts, self.whole, self.total = [], hashlib.sha256(), 0
+        self.f = self.h = None
+        self.n = 0
+
+    def _close_part(self):
+        self.f.close()
+        name = "%s.%03d" % (os.path.basename(self.tarball), len(self.parts))
+        os.replace(self.tarball + ".%03d.part" % len(self.parts), self.tarball + ".%03d" % len(self.parts))
+        self.parts.append({"name": name, "bytes": self.n, "sha256": self.h.hexdigest()})
+        self.f = self.h = None
+
+    def write(self, b):
+        b = memoryview(b)
+        while len(b):
+            if self.f is None:
+                if len(self.parts) >= 1000:
+                    raise ValueError("more than 1,000 parts: raise --part-bytes")
+                self.f = open(self.tarball + ".%03d.part" % len(self.parts), "wb")
+                self.h, self.n = hashlib.sha256(), 0
+            take = b[:self.part_bytes - self.n]
+            self.f.write(take)
+            self.h.update(take)
+            self.whole.update(take)
+            self.n += len(take)
+            self.total += len(take)
+            b = b[len(take):]
+            if self.n == self.part_bytes:
+                self._close_part()
+
+    def close(self):
+        """Finish the last part; return the part list."""
+        if self.f is not None:
+            self._close_part()
+        return self.parts
+
+
+def remove_stale(out, tarball):
+    """An earlier pack's tarball or parts (finished or not) in the bundle directory."""
+    base = os.path.basename(tarball)
+    for n in os.listdir(out):
+        if n in (base, base + ".part") or re.fullmatch(re.escape(base) + r"\.\d{3}(\.part)?", n):
+            os.remove(os.path.join(out, n))
+
+
+def pack_tree(root, network, entries, tarball, part_bytes=None):
+    """Write the tarball (GNU tar, fixed headers, `gzip -n -6`); return the tree hash. With part_bytes,
+    the gzip stream is cut into parts as it is written (PartWriter) and a dict is returned: tree_sha256,
+    sha256 and bytes of the whole stream, parts, part_bytes, unpacked_bytes."""
     tree = hashlib.sha256()
-    with open(tarball + ".part", "wb") as out:
-        gz = subprocess.Popen(["gzip", "-n", "-6"], stdin=subprocess.PIPE, stdout=out)
+    unpacked = 0
+    writer, reader, failure = None, None, []
+    with open(os.devnull if part_bytes else tarball + ".part", "wb") as out:
+        if part_bytes:
+            writer = PartWriter(tarball, part_bytes)
+            gz = subprocess.Popen(["gzip", "-n", "-6"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+
+            def drain():
+                try:
+                    while True:
+                        b = gz.stdout.read(1 << 20)
+                        if not b:
+                            break
+                        writer.write(b)
+                except Exception as e:          # noqa: BLE001 (reported by the packing thread)
+                    failure.append(e)
+                    gz.stdout.close()
+            reader = threading.Thread(target=drain, daemon=True)
+            reader.start()
+        else:
+            gz = subprocess.Popen(["gzip", "-n", "-6"], stdin=subprocess.PIPE, stdout=out)
         with tarfile.open(fileobj=gz.stdin, mode="w|", format=tarfile.GNU_FORMAT) as t:
             for p, is_dir in entries:
                 full = os.path.join(root, p)
@@ -339,6 +418,7 @@ def pack_tree(root, network, entries, tarball):
                     t.addfile(ti)
                     continue
                 ti.size = st.st_size
+                unpacked += st.st_size
                 with open(full, "rb") as f:
                     r = HashingReader(f)
                     t.addfile(ti, r)
@@ -346,10 +426,17 @@ def pack_tree(root, network, entries, tarball):
                         die("%s changed while packing" % full)
                 tree.update(tree_line(r.h.hexdigest(), p))
         gz.stdin.close()
-        if gz.wait() != 0:
-            die("gzip failed")
-    os.replace(tarball + ".part", tarball)
-    return tree.hexdigest()
+        if reader is not None:
+            reader.join()
+            gz.stdout.close()
+        if gz.wait() != 0 or failure:
+            die("gzip failed" + (": %s" % failure[0] if failure else ""))
+    if writer is None:
+        os.replace(tarball + ".part", tarball)
+        return tree.hexdigest()
+    parts = writer.close()
+    return {"tree_sha256": tree.hexdigest(), "sha256": writer.whole.hexdigest(), "bytes": writer.total,
+            "parts": parts, "part_bytes": part_bytes, "unpacked_bytes": unpacked}
 
 
 def tarball_name(network, height, flavour="full"):
@@ -367,12 +454,17 @@ def pack(a):
     if not any(p == "main/chainstate" for p, _ in entries):
         die("no main/chainstate in %s" % root)
     t = os.path.join(out, tarball_name("main", h, flavour))
+    part_bytes = getattr(a, "part_bytes", None) or PART_BYTES
+    if part_bytes < 1:
+        die("--part-bytes must be positive")
+    remove_stale(out, t)
     t0 = time.time()
-    log("packing %d entries (%s) into %s" % (len(entries), flavour, t))
-    tree = pack_tree(root, "main", entries, t)
-    dump(os.path.join(cap, "pack.json"), {"tree_sha256": tree, "entries": len(entries), "flavour": flavour,
-                                           "pack_seconds": round(time.time() - t0)})
-    log("packed %d bytes in %.0f s, tree %s" % (os.path.getsize(t), time.time() - t0, tree))
+    log("packing %d entries (%s) into %s.NNN (parts of %d bytes)" % (len(entries), flavour, t, part_bytes))
+    pk = pack_tree(root, "main", entries, t, part_bytes=part_bytes)
+    pk.update({"entries": len(entries), "flavour": flavour, "pack_seconds": round(time.time() - t0)})
+    dump(os.path.join(cap, "pack.json"), pk)
+    log("packed %d bytes in %d part(s) in %.0f s, tree %s" % (pk["bytes"], len(pk["parts"]), time.time() - t0,
+                                                            pk["tree_sha256"]))
 
 
 def write_sums(out):
@@ -395,14 +487,18 @@ def finalize(a):
     if getattr(a, "flavour", None) and a.flavour != flavour:
         die("--flavour %s, but the tarball was packed as %s" % (a.flavour, flavour))
     t = tarball_name("main", st["height"], flavour)
-    tp = os.path.join(out, t)
+    if "parts" not in pk:
+        die("pack.json has no parts (an earlier ycash-state/2 pack): run pack again")
+    if [p["name"] for p in pk["parts"]] != ["%s.%03d" % (t, i) for i in range(len(pk["parts"]))]:
+        die("pack.json's parts are not %s.000 ..." % t)
     verifiers = sorted(n[len("statement-"):-len(".json")] for n in os.listdir(out)
                        if n.startswith("statement-") and n.endswith(".json"))
     m = dict(st)
     m.update({
         "format": FORMAT, "line": "ycash6", "profile": "", "flavour": flavour,
         "version": a.version or meta["version"], "commit": meta["commit"],
-        "tarball": t, "sha256": sha256_file(tp), "bytes": os.path.getsize(tp),
+        "tarball": t, "sha256": pk["sha256"], "bytes": pk["bytes"], "parts": pk["parts"],
+        "part_bytes": pk["part_bytes"], "unpacked_bytes": pk["unpacked_bytes"],
         "tree_sha256": pk["tree_sha256"],
         "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(meta["time"])),
         "producer": "ycash-infra/mainnet-snapshot", "verifiers": verifiers, "pins": meta["pins"],
@@ -514,6 +610,8 @@ def main(argv=None):
         sp.add_argument("--purpose", help="why this height (manifest `purpose`)")
         sp.add_argument("--flavour", choices=FLAVOURS,
                         help="full | full-insight (default: the capture's; refused when the capture differs)")
+        sp.add_argument("--part-bytes", type=int, default=PART_BYTES,
+                        help="the size of every part but the last (default 1 GiB; FORMAT.md v3)")
     sp = sub.add_parser("kogany")
     sp.add_argument("--cache", required=True, help="kogany's cache dir (holds state/v<major>/mainnet)")
     sp.add_argument("--height", type=int, required=True)
