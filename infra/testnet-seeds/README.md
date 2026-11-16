@@ -592,7 +592,7 @@ What a `lightwallet` adds, per host (`files/seedctl-lightwallet`, seedctl's ligh
 - **The Yellowback service** (`YellowbackStreamer`) starts only where the node serves `yed_*` (the
   vault upgrade and an attestor set for the network); without them lightwalletd serves
   `CompactTxStreamer` alone and logs "Yellowback service not started", and its calls
-  (`GetChainInfo` among them) answer `Unimplemented`. That is the fast testnet's case in beta2 (it
+  (`GetChainInfo` among them) answer `Unimplemented`. That is the fast testnet's case in beta2 and beta3 (it
   has no attestor set), and not a fault: `status` and its probes check `GetLightdInfo` only, so a
   server without the Yellowback service still reads `serving`.
 - **The certificate contact** (`lightwallet_acme_email`, optional) is handled as the explorer's

@@ -106,7 +106,7 @@ field the two lines turn out to compute differently); the remaining ones stay by
 | `producer` | `"ycash-infra/snapshotter"` |
 | `verifiers` | the statement names, sorted (`["ycash-dd", "ycash6"]`) |
 
-**Signatures.** `SHA256SUMS` is what gets signed (plan §4.2 anchor 3, T-6: the owner's minisign key,
+**Signatures.** `SHA256SUMS` is what gets signed (plan §4.2 anchor 3, T-6: the Ycash release minisign key,
 from the private deployment's signing workflow; the verifiers' statement keys come with T-9). Signatures
 sit beside it as `SHA256SUMS.minisig` and `statement-<verifier>.json.minisig`, and are not listed in
 `SHA256SUMS`. v1 bundles may be published unsigned to a staging location first.

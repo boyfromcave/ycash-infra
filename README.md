@@ -27,7 +27,7 @@ settings live in a separate, private deployment repository that uses these recip
 | The three testnets: testnet-yb-fast, testnet-yb-slow, testnet-legacy | [The testnets](#the-testnets) below | testers, operators |
 | The light-wallet backend on Kubernetes (kind on a laptop, EKS on AWS) | [Quick start (kind)](#quick-start-kind), [Promotion to AWS (EKS)](#promotion-to-aws-eks) | developers, operators |
 | Published bundles: the Zcash testnet history (`testnet-prefix-v1`) and the Zcash parameters (`zcash-params-v1`) | [Releases](https://github.com/boyfromcave/ycash-infra/releases), `bundles/` | node operators |
-| The owner's public signing key for release checksums | [keys/README.md](keys/README.md) | anyone verifying a download |
+| The Ycash release key, the public key that signs release checksums | [keys/README.md](keys/README.md) | anyone verifying a download |
 
 ## The testnets
 
@@ -55,18 +55,23 @@ where Ycash itself forked:
 - **Services** (light-wallet backend per network, on demand): `infra/eks/module` plus
   `charts/ycash-lightwallet` and `charts/ycash-testnet`, one namespace per network. The testnet chart
   also carries, per network and behind values flags, the **faucet** (`images/faucet`, testnet mode;
-  needs the owner's T-9), the **probe and status page** (`images/testnet-status`), the **snapshotter
+  needs the Yellowback lead architect's T-9), the **probe and status page** (`images/testnet-status`), the **snapshotter
   and bundle verifier** (state bundles, `bundles/state/FORMAT.md`) and the **alerts**
   (kube-prometheus-stack): [charts/ycash-testnet/README.md](charts/ycash-testnet/README.md#the-services).
 - **Miners** (block production): GPU miners rented by the hour on Vast.ai, mining Equihash 192,7
   through yolo pools; the image is `images/miner` (no miner binary: it downloads lolMiner at start and checks its pinned SHA-256) and
-  `scripts/vast-fleet.py` keeps the fleet at the size a private fleet file asks for:
+  `scripts/vast-fleet.py` keeps the fleet at the size a private fleet file asks for, each miner
+  paid at its own address from the file's `payouts` (transparent, Sapling or post-quantum):
   [infra/vast-miners/README.md](infra/vast-miners/README.md). No node mines with `-gen` on AWS.
 - **Block explorer** (local stack first, then the `fastnet-explorer.ycash.team` host): `explorer/`,
   a Compose stack of ycashd with the explorer indexes and ZMQ, PostgreSQL, the Inzyght explorer
   (unmodified, built locally: it has no licence file yet) and a proxy that switches to automatic
   HTTPS with one variable. `make explorer-up`: [explorer/README.md](explorer/README.md); plan:
   workspace `docs/plans/explorer/explorer-plan.md`.
+- **Light-wallet server for the fast testnet** (`fastnet-lightwallet.ycash.team`, for beta3): a
+  seeds-module host with its own node (insight indexes), `lightwalletd-dd`, a gRPC-web proxy and a
+  TLS proxy on port 443, serving the mobile app (native gRPC) and the web wallet (gRPC-web) at one
+  name: [infra/testnet-seeds/README.md](infra/testnet-seeds/README.md#the-lightwallet-a-networks-lightwallet).
 - **The plan:** workspace `docs/plans/yellowback-testnet-plan.md`.
 
 ## Node line: `upgrade/vault`, post-quantum
@@ -74,10 +79,11 @@ where Ycash itself forked:
 The `ycashd` image is built from the workspace's `ycash6` tree as checked out, which is
 `upgrade/vault` (`make images`; `YCASH6=` points elsewhere). The post-quantum line
 (`upgrade/quantum-vaults`) has been merged into `upgrade/vault`, so those nodes answer
-`yed_getinfo` with `rpcversion` 8 (post-quantum owners and the fee rules), and so does
-`lightwalletd-dd` built from its `upgrade/vault`. The chart assumes that line:
-`ycashd.rpcVersion` defaults to 8 and the arming Job refuses any other node (`--set
-ycashd.rpcVersion=6` for an `upgrade/vault` tree from before the merge). `yindex` indexes the
+`yed_getinfo` with `rpcversion` 9 (beta2: the scheme-visible post-quantum addresses) or 10
+(beta3), and `lightwalletd-dd` built from the same `upgrade/vault` matches it. **The chart's
+`ycashd.rpcVersion` still defaults to 8** and the arming Job refuses any other node, so deploy
+with the number `make line` prints (`--set ycashd.rpcVersion=9`, or 10 for beta3 trees; 6 for an
+`upgrade/vault` tree from before the post-quantum merge). `yindex` indexes the
 post-quantum address forms (below), and the regtest arming Job creates the attestor set at the
 YED module's `BOND_MATURITY` (8 on regtest), above the post-quantum line's floor of 2.
 
@@ -131,8 +137,9 @@ main repo dirs `../ycash6`, `../ycash-dd` and `../lightwalletd-dd` (override `YC
 tree's HEAD contains `BRANCH` and that ycashd and lightwalletd-dd speak one rpcversion
 (`RPC_VERSION=8` requires it), and prints it. lightwalletd-dd matches the node's
 `yed_getinfo.rpcversion` exactly, and the chart's arming Job refuses a node whose rpcversion is not
-`ycashd.rpcVersion` (default 8, the post-quantum line; `--set ycashd.rpcVersion=6` for an
-`upgrade/vault` tree from before the post-quantum merge). The node image needs
+`ycashd.rpcVersion` (default 8; today's `upgrade/vault` trees speak 9, or 10 from beta3, so pass
+`--set ycashd.rpcVersion=<make line's number>`; 6 for an `upgrade/vault` tree from before the
+post-quantum merge). The node image needs
 `contrib/docker/ycashd/` (K0a) in the node tree; the first build is a full `zcutil/build.sh` and
 takes 1–2 h on a laptop (depends are cached in a Docker build-cache mount afterwards).
 
@@ -278,8 +285,8 @@ node flags; the Envoy Gateway behind an NLB with a Route53 record and a cert-man
 Let's Encrypt issuer; `rpcuser`/`rpcpassword` and the RDS url from AWS Secrets Manager through External Secrets;
 HPA 3–50 on `lightwalletd-dd`; the plaintext listener off; client-supplied forwarding headers
 dropped at the edge (plan §5 A-3); kube-prometheus-stack required. The public
-`lite.ycash.xyz` endpoint stays where it is (owner decision I-8, 2026-10-08); this chart is for a
-second endpoint until the owner says otherwise.
+`lite.ycash.xyz` endpoint stays where it is (the Yellowback lead architect's decision I-8,
+2026-10-08); this chart is for a second endpoint until the Yellowback lead architect says otherwise.
 
 ## Layout
 
@@ -299,14 +306,14 @@ kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host); 
 scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), kind-personas.py (K0c), wait-for.sh, vast-fleet.py (the Vast.ai miner fleet; tests/ with a stand-in Vast API)
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: module/ (VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons as helm_release; one namespace per network) and a thin example root
-infra/testnet-seeds/  Terraform: the seed hosts on EC2 + Elastic IPs (ips/, nodes/), every testnet on each host, seedctl (its README)
+infra/testnet-seeds/  Terraform: the seed hosts on EC2 + Elastic IPs (ips/, nodes/), every testnet on each host, seedctl; the same module makes the pool, explorer and lightwallet hosts (its README)
 infra/mainnet-harvest/ Terraform: the mainnet history harvest on a one-shot EC2 instance (results bucket, launch template; its README)
 infra/vast-miners/    the testnet GPU miner fleet on Vast.ai: fleet.example.json and its README; scripts/vast-fleet.py reconciles it
 bundles/prefix/       the Zcash testnet history bundle: format (FORMAT.md), harvest, import checks (testnet-prefix*.yml)
-bundles/state/        the testnet state bundle: format (FORMAT.md, ycash-state/1), verify.py, the snapshotter's offline tests
+bundles/state/        the state bundles: format (FORMAT.md: ycash-state/1 testnet, /2 and /3 mainnet, /3 in 1 GiB parts; kogany-state), verify.py, mainnet/ (the snapshot tools), the offline tests
 bundles/zcash-params/ the mirrored Zcash parameter files' checksums (zcash-params.yml)
-.github/workflows/    ci, the security scans, node-image (the ycashd image), miner-image (the testnet GPU miner), testnet-prefix(-import), zcash-params
-keys/                 public keys only: ycash-release.pub, the owner's minisign key for release SHA256SUMS (its README)
+.github/workflows/    ci, the security scans, node-image (the ycashd image), lightwalletd-image, yolo-image, miner-image (the testnet GPU miner), prefix-frame-image, testnet-prefix(-import), mainnet-prefix(-import), zcash-params
+keys/                 public keys only: ycash-release.pub, the Ycash release minisign key for release SHA256SUMS (its README)
 docs/eks-runbook.md   EKS: empty account → smoke green, cost, rollback, open decisions
 docs/try-it.md        the tester's guide to the demo kit (the wallet's screens, the walk, troubleshooting)
 docs/plans/           ycash-infra-plan.md (phases K0–K4, decisions, status)

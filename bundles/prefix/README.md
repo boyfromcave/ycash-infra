@@ -114,9 +114,9 @@ For a published release, also check where the files came from:
 `gh attestation verify <file> -R boyfromcave/ycash-infra` (GitHub build provenance, made by the
 workflow's `publish` job).
 
-### Check the owner's signature
+### Check the release signature
 
-In plain words: the signature proves the release owner published this exact checksum file; the
+In plain words: the signature proves the holder of the Ycash release key published this exact checksum file; the
 checksum file then vouches for every chunk.
 
 ```bash
@@ -124,8 +124,8 @@ minisign -Vm SHA256SUMS -P RWQYr5PFpiPJAigk86vf89bPYrJCXj5tskgRAPRYFsEXyciZo8dve
 sha256sum -c SHA256SUMS
 ```
 
-`keys/ycash-release.pub` (key id `02C923A6C593AF18`, `keys/README.md`) is the owner's minisign key
-(T-6). The signature is added after the release is published, by the owner's signing workflow.
+`keys/ycash-release.pub` (key id `02C923A6C593AF18`, `keys/README.md`) is the Ycash release minisign key
+(T-6). The signature is added after the release is published, by the release key's signing workflow.
 
 ## The anchors
 
@@ -249,7 +249,7 @@ bundles/prefix/fetch_addnodes.py --out peers.txt`, then `ADDNODES_FILE=peers.txt
 
 ### Sizes (estimates, to be replaced by the first run's numbers)
 
-The owner's estimate for the mainnet datadir is 60 to 90 GB. The blocks themselves are a part of
+The Yellowback lead architect's estimate for the mainnet datadir is 60 to 90 GB. The blocks themselves are a part of
 that: Zcash's history up to the 2019 fork is the bulk, and Ycash's blocks since are mostly small.
 Expect 309 chunk files for H_S = 3,089,999, each well under the 2 GiB limit, and gzip to
 save little (proofs and ciphertexts do not compress). Disk at the peak: two node datadirs plus the
