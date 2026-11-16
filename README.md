@@ -80,10 +80,12 @@ The `ycashd` image is built from the workspace's `ycash6` tree as checked out, w
 `upgrade/vault` (`make images`; `YCASH6=` points elsewhere). The post-quantum line
 (`upgrade/quantum-vaults`) has been merged into `upgrade/vault`, so those nodes answer
 `yed_getinfo` with `rpcversion` 9 (beta2: the scheme-visible post-quantum addresses) or 10
-(beta3), and `lightwalletd-dd` built from the same `upgrade/vault` matches it. **The chart's
-`ycashd.rpcVersion` still defaults to 8** and the arming Job refuses any other node, so deploy
-with the number `make line` prints (`--set ycashd.rpcVersion=9`, or 10 for beta3 trees; 6 for an
-`upgrade/vault` tree from before the post-quantum merge). `yindex` indexes the
+(beta3), and `lightwalletd-dd` built from the same `upgrade/vault` accepts it (from beta3 it
+accepts 9 and 10, `MinRPCVersion..KnownRPCVersion`; before, exactly 9). The chart's arming Job
+accepts a node whose `rpcversion` is in `ycashd.rpcVersion..ycashd.rpcVersionMax`, by default
+9..10, so no `--set` is needed for these trees. For a lightwalletd-dd from before beta3 set
+`ycashd.rpcVersionMax=9`; for an older line, both values to the number `make line` prints.
+`yindex` indexes the
 post-quantum address forms (below), and the regtest arming Job creates the attestor set at the
 YED module's `BOND_MATURITY` (8 on regtest), above the post-quantum line's floor of 2.
 
@@ -134,12 +136,12 @@ Prerequisites: Docker Desktop, `kind`, `kubectl`, `helm` (`brew install kind kub
 main repo dirs `../ycash6`, `../ycash-dd` and `../lightwalletd-dd` (override `YCASH6=`, `YCASH_DD=`,
 `LWD=`), on the branch `BRANCH` names (default `upgrade/vault`; `LINE=quantum` is shorthand for
 `BRANCH=upgrade/quantum-vaults`, `LINE=vault` for `upgrade/vault`). `make line` checks that each
-tree's HEAD contains `BRANCH` and that ycashd and lightwalletd-dd speak one rpcversion
-(`RPC_VERSION=8` requires it), and prints it. lightwalletd-dd matches the node's
-`yed_getinfo.rpcversion` exactly, and the chart's arming Job refuses a node whose rpcversion is not
-`ycashd.rpcVersion` (default 8; today's `upgrade/vault` trees speak 9, or 10 from beta3, so pass
-`--set ycashd.rpcVersion=<make line's number>`; 6 for an `upgrade/vault` tree from before the
-post-quantum merge). The node image needs
+tree's HEAD contains `BRANCH`, that the ycashd trees speak one rpcversion and that
+lightwalletd-dd accepts it (`RPC_VERSION=10` requires that number), and prints it. lightwalletd-dd
+accepts the node rpcversions `MinRPCVersion..KnownRPCVersion` (9..10 from beta3), and the chart's
+arming Job refuses a node whose rpcversion is outside `ycashd.rpcVersion..ycashd.rpcVersionMax`
+(default 9..10: today's `upgrade/vault` trees speak 9, or 10 from beta3; for an older line set both
+to `make line`'s number). The node image needs
 `contrib/docker/ycashd/` (K0a) in the node tree; the first build is a full `zcutil/build.sh` and
 takes 1–2 h on a laptop (depends are cached in a Docker build-cache mount afterwards).
 
@@ -171,7 +173,7 @@ the node's wallet (OPEN, 15 seats, maturity = the YED module's `BOND_MATURITY`: 
 network's minimum (2 on regtest), D-Q-31, and the module adopts only that value; `regtest.attestorSet.maturity` overrides and the render fails on
 either mistake), mine it, record its id in ConfigMap `ycash-yellowback-set` (the StatefulSet's
 `YCASHD_YELLOWBACK_ATTESTOR_SET`) and one attestor key in Secret `ycash-yellowback-attestor`,
-restart the node, wait for `yed_getinfo` and check its `rpcversion` against `ycashd.rpcVersion`, roll lightwalletd (it probes `yed_getinfo` at startup).
+restart the node, wait for `yed_getinfo` and check its `rpcversion` against `ycashd.rpcVersion..rpcVersionMax`, roll lightwalletd (it probes `yed_getinfo` at startup).
 After it, `GetYellowbackInfo` reports `upgrade.status: active` and `attest.status: UNARMED`
 (no attestors are registered yet). The Job is idempotent, and
 `kubectl -n ycash logs -l app.kubernetes.io/component=arm-yellowback --all-containers` shows what it did.
