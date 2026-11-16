@@ -8,8 +8,10 @@
 # refuses to overwrite a published height, uploads the tarball (a `ycash-state/3` bundle: its parts, in
 # order) first and the manifest and its sums last (a reader never sees a manifest that names a file not
 # yet there), and moves `latest/manifest.json` only forward. It refuses any object over 49 GiB (the CDN
-# serves none over 50 GB). A re-run after an interrupted upload skips a part already there with the
-# same size (`head-object`); verify.py has checked every part's hash before anything is sent.
+# serves none over 50 GB). Each `ycash-state/3` part is uploaded with its SHA-256 in the object's
+# metadata (`sha256`); a re-run after an interrupted upload skips a part only when `head-object` reports
+# its size and that hash, and after the parts every one is checked again by `head-object` before
+# `manifest.json`, `SHA256SUMS` and `latest/` are written. `DRY=1` prints the uploads and calls nothing.
 # The bucket and the credentials come from the caller; nothing account-specific is here.
 #
 # Usage:  publish-s3.sh DIR s3://bucket/prefix
@@ -24,7 +26,8 @@
 #                    <prefix>/kogany-<network>-pruned/<H>/<file>  and  .../kogany-<network>-pruned/latest-<state_format>/manifest.json
 # The same <prefix>/<network>/<H>/ layout as the testnet snapshotter (bundles/state/FORMAT.md
 # "Where it is published", charts/ycash-testnet/files/snapshot.sh publish-s3).
-# Env:    AWS_REGION and credentials as the AWS CLI reads them; AWS=<cli> (default aws); DRY=1 prints only;
+# Env:    AWS_REGION and credentials as the AWS CLI reads them; AWS=<cli> (default aws); DRY=1 prints the
+#         uploads and makes no call at all (no existence, head-object or latest/ read);
 #         MAX_OBJECT_BYTES lowers the 49 GiB object guard (tests), never raises it.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -45,9 +48,12 @@ fi
 field() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$DIR/manifest.json" "$1"; }
 format=$(field format); network=$(field network); height=$(field height); tarball=$(field tarball)
 # what is uploaded first, in stream order: the tarball, or a ycash-state/3 bundle's parts
+# (for ycash-state/3, "<name> <sha256>" per part, from the manifest verify.py has just checked)
 if [ "$format" = ycash-state/3 ]; then
-  stored=$(python3 -I -c 'import json,sys; print("\n".join(p["name"] for p in json.load(open(sys.argv[1]))["parts"]))' "$DIR/manifest.json")
+  parts=$(python3 -I -c 'import json,sys; print("\n".join(p["name"] + " " + p["sha256"] for p in json.load(open(sys.argv[1]))["parts"]))' "$DIR/manifest.json")
+  stored=$(cut -d' ' -f1 <<< "$parts")
 else
+  parts=
   stored=$tarball
 fi
 case "$format" in
@@ -67,23 +73,41 @@ case "$format" in
   *) echo "$DIR: format $format is not a mainnet snapshot (ycash-state/2, ycash-state/3, kogany-state/1, kogany-state/2)" >&2; exit 2 ;;
 esac
 dest="$root/$height"
-run() { if [ "${DRY:-0}" = 1 ]; then echo "+ $*"; else "$@"; fi; }
+dry() { [ "${DRY:-0}" = 1 ]; }
+run() { if dry; then echo "+ $*"; else "$@"; fi; }
 
-if "$AWS" s3 ls "$dest/manifest.json" > /dev/null 2>&1; then
+if ! dry && "$AWS" s3 ls "$dest/manifest.json" > /dev/null 2>&1; then
   echo "$dest/manifest.json exists; a published snapshot is never overwritten" >&2; exit 1
 fi
-# the size of an object already at the destination, empty when there is none
-remote_size() {
+# "<size> <sha256 metadata>" of an object already at the destination, empty when there is none
+# (an object uploaded without the metadata reads "<size> None": never taken for a part)
+remote_part() {
   local uri=${1#s3://}
-  "$AWS" s3api head-object --bucket "${uri%%/*}" --key "${uri#*/}" --query ContentLength --output text 2>/dev/null || true
+  "$AWS" s3api head-object --bucket "${uri%%/*}" --key "${uri#*/}" \
+    --query '[ContentLength, Metadata.sha256]' --output text 2>/dev/null | tr -s ' \t' '  ' || true
 }
-while IFS= read -r f; do
-  size=$(wc -c < "$DIR/$f" | tr -d ' ')
-  if [ "$format" = ycash-state/3 ] && [ "$(remote_size "$dest/$f")" = "$size" ]; then
-    echo "$f: already uploaded ($size bytes)"; continue
+if [ -n "$parts" ]; then
+  while read -r f sha; do
+    size=$(wc -c < "$DIR/$f" | tr -d ' ')
+    if ! dry && [ "$(remote_part "$dest/$f")" = "$size $sha" ]; then
+      echo "$f: already uploaded ($size bytes, sha256 $sha)"; continue
+    fi
+    run "$AWS" s3 cp --only-show-errors --metadata "sha256=$sha" "$DIR/$f" "$dest/$f"
+  done <<< "$parts"
+  # every part is at the destination with its size and hash before anything names it
+  if ! dry; then
+    while read -r f sha; do
+      size=$(wc -c < "$DIR/$f" | tr -d ' ')
+      got=$(remote_part "$dest/$f")
+      if [ "$got" != "$size $sha" ]; then
+        echo "refusing to publish: $dest/$f reads '${got:-missing}', expected '$size $sha'; manifest.json, SHA256SUMS and latest/ are not written" >&2
+        exit 1
+      fi
+    done <<< "$parts"
   fi
-  run "$AWS" s3 cp --only-show-errors "$DIR/$f" "$dest/$f"
-done <<< "$stored"
+else
+  run "$AWS" s3 cp --only-show-errors "$DIR/$stored" "$dest/$stored"
+fi
 for f in "$DIR"/*; do
   f=$(basename "$f")
   if [ "$f" = manifest.json ] || [ "$f" = SHA256SUMS ] || grep -qxF -- "$f" <<< "$stored"; then continue; fi
@@ -93,6 +117,10 @@ run "$AWS" s3 cp --only-show-errors "$DIR/manifest.json" "$dest/manifest.json"
 run "$AWS" s3 cp --only-show-errors "$DIR/SHA256SUMS" "$dest/SHA256SUMS"
 
 # latest/ only moves forward: a checkpoint height published after the tip leaves it alone
+if dry; then
+  echo "+ $AWS s3 cp --only-show-errors $DIR/manifest.json $latest   (only when $height is above the height there)"
+  echo "dry run: nothing was read or written"; exit 0
+fi
 cur=$("$AWS" s3 cp --only-show-errors "$latest" - 2>/dev/null |
       python3 -I -c 'import json,sys; print(json.load(sys.stdin)["height"])' 2>/dev/null || echo -1)
 if [ "$height" -gt "$cur" ]; then

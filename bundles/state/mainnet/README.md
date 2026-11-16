@@ -173,14 +173,17 @@ Restore a pruned bundle only into a kogany configured `[state.storage_mode.prune
 This is the layout `charts/ycash-testnet` `snapshot.sh publish-s3` uses, with `main` as the network.
 The script refuses to overwrite a published height, uploads a `/3` bundle's parts first in manifest
 order and the manifest and `SHA256SUMS` last, and refuses any object over 49 GiB (the CDN serves none
-over 50 GB; `verify.py` refuses one too). A re-run after an interrupted upload skips a part whose
-object is already there with the same size (`head-object`); its hash is covered by `verify.py`, which
-the script runs first, and by every reader.
+over 50 GB; `verify.py` refuses one too). Each part is uploaded with its SHA-256 in the object's
+metadata (`sha256`). A re-run after an interrupted upload skips a part only when `head-object` reports
+both its size and that hash (every part but the last has the same size, so size alone would keep a
+stale part). After the parts, every one is checked again by `head-object`, and the script stops,
+writing neither `manifest.json`, `SHA256SUMS` nor `latest/`, if one is missing or differs.
 Credentials come from the caller (the private deployment's role); nothing is uploaded from this
 machine.
 
 Before publishing, sign `SHA256SUMS` with the release key (`SHA256SUMS.minisig`, ycash-ops
-`sign-release`, plan T-6), as for every bundle. `DRY=1` prints the commands.
+`sign-release`, plan T-6), as for every bundle. `DRY=1` prints the uploads and makes no call at all
+(no existence check, no `head-object`, no read of `latest/`).
 
 ## Restoring a node from a mainnet bundle
 

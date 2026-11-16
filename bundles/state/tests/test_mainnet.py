@@ -202,28 +202,77 @@ class Mainnet(unittest.TestCase):
         self.rewrite_manifest(verifiers=["other"])
         self.assertTrue(any("statement-ycash6.json is required" in e for e in verify.verify(self.out)))
 
+    FAKE_AWS = r"""#!/usr/bin/env python3
+# A stand-in for the AWS CLI (publish-s3.sh's calls only): logs every call, keeps the bucket in a JSON
+# file {key: [size, sha256 metadata or null]}, answers `s3 ls` and `s3api head-object` from it, and
+# records what `s3 cp` uploads. MOCK_AWS_CORRUPT=<name> stores that object with a wrong hash.
+import json, os, sys
+log, state = sys.argv.pop(1), sys.argv.pop(1)
+a = sys.argv[1:]
+with open(log, "a") as f:
+    f.write(" ".join(a) + "\n")
+with open(state) as f:
+    bucket = json.load(f)
+def key(uri):
+    return uri[len("s3://"):].split("/", 1)[1]
+if a[:2] == ["s3", "ls"]:
+    sys.exit(0 if key(a[2]) in bucket else 1)
+if a[:2] == ["s3api", "head-object"]:
+    k = a[a.index("--key") + 1]
+    if k not in bucket:
+        sys.exit(255)
+    size, sha = bucket[k]
+    print("%d\t%s" % (size, sha or "None"))
+    sys.exit(0)
+if a[:2] == ["s3", "cp"]:
+    src, dst = a[-2], a[-1]
+    if dst == "-":
+        sys.exit(1)                                   # no latest/ yet
+    sha = None
+    if "--metadata" in a:
+        sha = a[a.index("--metadata") + 1].split("=", 1)[1]
+    if os.environ.get("MOCK_AWS_CORRUPT") and dst.endswith("/" + os.environ["MOCK_AWS_CORRUPT"]):
+        sha = "00" * 32
+    bucket[key(dst)] = [os.path.getsize(src), sha]
+    with open(state, "w") as f:
+        json.dump(bucket, f)
+    sys.exit(0)
+sys.exit(2)
+"""
+
     def published(self, have=None, code=0, **env):
-        """Run publish-s3.sh against a stand-in aws; `have` maps a key already in the bucket to its size
-        (head-object answers it). Returns the `s3 cp` destinations, in order."""
+        """Run publish-s3.sh against a stand-in aws; `have` maps an object already in the bucket (its name
+        under the height directory) to its size, or to (size, sha256 metadata). Returns the `s3 cp`
+        destinations, in order; self.aws_calls holds every call."""
         log = os.path.join(self.tmp.name, "aws.log")
         if os.path.exists(log):
             os.remove(log)
+        bucket = {}
+        for k, v in (have or {}).items():
+            size, sha = v if isinstance(v, tuple) else (v, None)
+            bucket["snap/%s/%d/%s" % (self.root_name(), H, k)] = [size, sha]
+        state = os.path.join(self.tmp.name, "bucket.json")
+        with open(state, "w") as f:
+            json.dump(bucket, f)
+        fake_py = os.path.join(self.tmp.name, "aws.py")
+        with open(fake_py, "w") as f:
+            f.write(self.FAKE_AWS)
         fake = os.path.join(self.tmp.name, "aws")
-        sizes = "".join("  *%s*) echo %d; exit 0 ;;\n" % (k, v) for k, v in (have or {}).items())
         with open(fake, "w") as f:
-            f.write("#!/bin/sh\necho \"$*\" >> %s\n"
-                    "case \"$2\" in ls) exit 1 ;; esac\n"
-                    "if [ \"$2\" = head-object ]; then case \"$*\" in\n%s  esac; exit 255; fi\n"
-                    "[ \"$4\" = - ] && exit 1\nexit 0\n" % (log, sizes))
+            f.write('#!/bin/sh\nexec "%s" -I "%s" "%s" "%s" "$@"\n' % (sys.executable, fake_py, log, state))
         os.chmod(fake, 0o700)
         r = subprocess.run(["bash", os.path.join(STATE, "mainnet", "publish-s3.sh"), self.out, "s3://bucket-x/snap"],
                            env=dict(os.environ, AWS=fake, **env), capture_output=True, text=True)
         self.assertEqual(r.returncode, code, r.stderr)
         self.publish_stderr, self.publish_stdout = r.stderr, r.stdout
-        if not os.path.exists(log):
-            return []
-        with open(log) as f:
-            return [l.split()[-1] for l in f.read().splitlines() if l.startswith("s3 cp") and not l.endswith(" -")]
+        self.aws_calls = []
+        if os.path.exists(log):
+            with open(log) as f:
+                self.aws_calls = f.read().splitlines()
+        return [l.split()[-1] for l in self.aws_calls if l.startswith("s3 cp") and not l.endswith(" -")]
+
+    def root_name(self):
+        return "main-insight" if self.manifest().get("flavour") == "full-insight" else "main"
 
     def test_publish_order(self):
         self.build()
@@ -405,10 +454,50 @@ class Parts(Mainnet):
         self.assertEqual(dests[:3], [base + n for n in names])
         self.assertEqual(dests[-3:], [base + "manifest.json", base + "SHA256SUMS", "s3://bucket-x/snap/main/latest/manifest.json"])
         self.assertEqual(sorted(dests[3:-3]), [base + "statement-ycash6.json", base + "treestate.json"])
-        dests = self.published(have={names[0]: self.pb, names[1]: 1})   # a re-run: part 0 is there, part 1 is short
+        shas = [p["sha256"] for p in self.manifest()["parts"]]
+        cps = [l for l in self.aws_calls if l.startswith("s3 cp") and names[0] in l]
+        self.assertIn("--metadata sha256=" + shas[0], cps[0])          # each part carries its hash
+        # a re-run: part 0 is there with its size and hash, part 1 is short
+        dests = self.published(have={names[0]: (self.pb, shas[0]), names[1]: (1, shas[1])})
         self.assertNotIn(base + names[0], dests)
         self.assertEqual(dests[:2], [base + names[1], base + names[2]])
         self.assertIn(names[0] + ": already uploaded", self.publish_stdout)
+
+    def test_publish_replaces_a_stale_part_of_the_same_size(self):
+        """Every part but the last has the same size: a part left by an aborted publish of another
+        bundle at this height is skipped only if its hash matches too (review M-1)."""
+        base = "s3://bucket-x/snap/main/570000/"
+        names = [p["name"] for p in self.manifest()["parts"]]
+        shas = [p["sha256"] for p in self.manifest()["parts"]]
+        dests = self.published(have={names[0]: (self.pb, "ab" * 32), names[1]: self.pb})  # wrong hash; none
+        self.assertEqual(dests[:3], [base + n for n in names])
+        self.assertNotIn("already uploaded", self.publish_stdout)
+        dests = self.published(have={names[0]: (self.pb, shas[0]), names[1]: (self.pb, shas[1])})
+        self.assertEqual(dests[:1], [base + names[2]])
+
+    def test_publish_checks_every_part_before_the_manifest(self):
+        """A part that reads back with the wrong hash stops the publish before manifest.json,
+        SHA256SUMS and latest/ are written."""
+        base = "s3://bucket-x/snap/main/570000/"
+        names = [p["name"] for p in self.manifest()["parts"]]
+        dests = self.published(code=1, MOCK_AWS_CORRUPT=names[1])
+        self.assertEqual(dests, [base + n for n in names])
+        self.assertIn("refusing to publish: %s%s reads" % (base, names[1]), self.publish_stderr)
+        heads = [l for l in self.aws_calls if l.startswith("s3api head-object")]
+        self.assertEqual(len(heads), 3 + 2)              # three before upload, then parts 0 and 1 checked
+
+    def test_publish_dry_run_calls_nothing(self):
+        names = [p["name"] for p in self.manifest()["parts"]]
+        dests = self.published(DRY="1")
+        self.assertEqual(self.aws_calls, [])
+        self.assertEqual(dests, [])
+        for n in names:
+            self.assertIn("--metadata sha256=", [l for l in self.publish_stdout.splitlines() if n in l][0])
+        self.assertIn("nothing was read or written", self.publish_stdout)
+
+    def test_publish_refuses_a_published_height(self):
+        self.published(code=1, have={"manifest.json": 10})
+        self.assertIn("never overwritten", self.publish_stderr)
 
     def test_publish_refuses_an_object_over_the_guard(self):
         self.assertEqual(self.published(code=1, MAX_OBJECT_BYTES=str(self.pb - 1)), [])

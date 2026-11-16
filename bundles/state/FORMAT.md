@@ -287,8 +287,9 @@ one, so the CDN limit is a checked rule.
 **Where it is published.** As v2 (`<base>/main/<H>/`, `<base>/main-insight/<H>/`, each with
 `latest/manifest.json`). Part names are relative to `<base>/<root>/<H>/` and never resolved against
 `latest/`: a reader takes `height` from `latest/manifest.json` and fetches everything from `<H>/`.
-`publish-s3.sh` uploads the parts first, in order, and `manifest.json` and `SHA256SUMS` last, so a
-reader that sees a manifest sees every part it names.
+`publish-s3.sh` uploads the parts first, in order, each with its SHA-256 in the object metadata, checks
+every part's size and hash by `head-object`, and only then uploads `manifest.json` and `SHA256SUMS`, so
+a reader that sees a manifest sees every part it names, as signed.
 
 **Restoring.** `ycash-bootstrap --network main --source <base>/main/latest/` (ycash6
 `contrib/bootstrap`): it checks the signature, the manifest and the pins, then fetches each part,
