@@ -63,7 +63,10 @@ case "$1" in
     # the x402 host's wallet calls (seedctl-x402): the faucet's addresses, balances and export
     case " $* " in
       *" getnewaddress "*) echo smFakePayToAddress123456789abcdefg; exit 0 ;;
-      *" validateaddress "*) if [ -n "${FAKE_PQ:-}" ]; then echo '{"isvalid":true,"isscript":false,"pqscheme":"falcon"}'; else echo '{"isvalid":true,"isscript":false}'; fi; exit 0 ;;
+      # FAKE_NOTMINE=t / z: the wallet no longer holds payTo's / the Sapling address's key
+      *" validateaddress "*) m=true; [ "${FAKE_NOTMINE:-}" != t ] || m=false
+        if [ -n "${FAKE_PQ:-}" ]; then echo '{"isvalid":true,"isscript":false,"pqscheme":"falcon","ismine":true}'; else echo "{\"isvalid\":true,\"isscript\":false,\"ismine\":$m}"; fi; exit 0 ;;
+      *" z_validateaddress "*) m=true; [ "${FAKE_NOTMINE:-}" != z ] || m=false; echo "{\"isvalid\":true,\"type\":\"sapling\",\"ismine\":$m}"; exit 0 ;;
       *" z_listaddresses "*) echo '[]'; exit 0 ;;
       *" z_getnewaddress sapling "*) echo ytestsapling1fakefaucetaddressqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq; exit 0 ;;
       *" z_getbalance ytestsapling1"*) echo 12.5; exit 0 ;;
@@ -552,7 +555,7 @@ ok "an x402 host while the prefix imports: the node with its wallet on its netwo
 grep -q 'container_name: facilitator-yb-fast' "$c" && grep -q 'container_name: x402api-yb-fast' "$c" && grep -q 'container_name: faucet-yb-fast' "$c" && grep -q 'X402_FACILITATOR_CONFIG: /etc/x402/facilitator.json' "$c" && grep -q 'user: "2008:2008"' "$c" && grep -q 'user: "2009:2009"' "$c" && grep -q 'user: "2010:2010"' "$c" && [ "$(grep -c 'read_only: true' "$c")" = 5 ] && [ "$(grep -c 'cap_drop: \[ALL\]' "$c")" = 5 ] && [ "$(grep -c 'healthcheck:' "$c")" = 3 ] && ! grep -q loadblock "$e" || fail "after the import: the three services, each its own uid, read-only, no capabilities, a healthcheck: $(cat "$c")"
 awk '/^  (api|facilitator|faucet):$/ { s = 1 } /^  x402proxy:$/ { s = 0 } s && /edge/ { bad = 1 } END { exit bad }' "$c" || fail "the three services are on the internal network only"
 [ "$(stat -c %a "$X/api.env")" = 400 ] && grep -qx 'API_PAY_TO=smFakePayToAddress123456789abcdefg' "$X/api.env" && grep -qx 'API_PRICE_ZAT=10000' "$X/api.env" && grep -qx 'API_PRICE_BROADCAST_ZAT=10000' "$X/api.env" && grep -qx 'API_ZERO_CONF_CAP_ZAT=100000' "$X/api.env" && grep -qx 'API_PAID_PER_MINUTE=120' "$X/api.env" && grep -qx 'API_UNPAID_PER_MINUTE=30' "$X/api.env" && grep -qx 'X402_NETWORK=ycash:testnet' "$X/api.env" && grep -qx "API_RPC_PASSWORD=$pw" "$X/api.env" && grep -qx 'API_RPC_URL=http://172.31.254.11:18832/' "$X/api.env" && grep -qx "FACILITATOR_API_KEY=$(cat "$X/secrets/api-key")" "$X/api.env" && grep -qx 'FACILITATOR_URL=http://172.31.254.13:4022' "$X/api.env" && grep -qx 'API_TRUST_PROXY=1' "$X/api.env" && grep -qx 'API_LINK_FAUCET=https://x402.example.org/faucet/' "$X/api.env" && grep -qx 'API_LINK_EXPLORER=https://explorer.example.org' "$X/api.env" && grep -qx 'API_LINK_LIGHTWALLETD=lightwallet.example.org:443' "$X/api.env" && ! grep -q MERCHANT_ "$X/api.env" || fail "the API's environment: $(sed 's/=.*//' "$X/api.env" | tr '\n' ' ')"
-[ "$(stat -c %a "$X/faucet.env")" = 400 ] && grep -qx 'FAUCET_MODE=testnet' "$X/faucet.env" && grep -qx 'FAUCET_PROFILE=fast' "$X/faucet.env" && grep -qx "FAUCET_FROM=$(cat "$X/zaddr")" "$X/faucet.env" && grep -qx 'SWEEP_FROM=smFakePayToAddress123456789abcdefg' "$X/faucet.env" && grep -qx 'AMOUNT_ZAT=10000000' "$X/faucet.env" && grep -qx 'DAILY_CAP_ZAT=1000000000' "$X/faucet.env" && grep -qx 'POW_BITS=16' "$X/faucet.env" && grep -qx 'TRUSTED_PROXY_HOPS=1' "$X/faucet.env" && grep -qx 'PARAMS_ENABLED=0' "$X/faucet.env" || fail "the faucet's environment"
+[ "$(stat -c %a "$X/faucet.env")" = 400 ] && grep -qx 'FAUCET_MODE=testnet' "$X/faucet.env" && grep -qx 'FAUCET_PROFILE=fast' "$X/faucet.env" && grep -qx "FAUCET_FROM=$(cat "$X/zaddr")" "$X/faucet.env" && grep -qx 'SWEEP_FROM=smFakePayToAddress123456789abcdefg' "$X/faucet.env" && grep -qx 'AMOUNT_ZAT=10000000' "$X/faucet.env" && grep -qx 'DAILY_CAP_ZAT=1000000000' "$X/faucet.env" && grep -qx 'POW_BITS=16' "$X/faucet.env" && grep -qx 'TRUSTED_PROXY_HOPS=1' "$X/faucet.env" && grep -qx 'PARAMS_ENABLED=0' "$X/faucet.env" && grep -qx 'SWEEP_MIN_CONF=2' "$X/faucet.env" || fail "the faucet's environment"
 s=$("$SEEDCTL" status yb-fast)
 [ "$(echo "$s" | jq -c '[.x402.phase, .x402.payTo, .x402.faucetBalance, .x402.payToBalance, .x402.faucetInfo.available, .x402.freeOnHost, .x402.paidOnHost, .x402.freePublic, .x402.paidPublic, .x402.url, .x402.api, .x402.node]')" = '["serving","smFakePayToAddress123456789abcdefg","12.5","0.0003",true,"200","402 payment-required","200","402 payment-required","https://x402.example.org","healthy",{"blocks":600000,"headers":600000,"connections":2}]' ] || fail "status serving: $s"
 grep -q -- "--resolve x402.example.org:443:127.0.0.1 https://x402.example.org/v1/address/smFakePayToAddress123456789abcdefg" "$LOG" || fail "the paid probe on this host, for the name, at payTo"
@@ -563,12 +566,37 @@ mkdir -p "$D/yb-fast/node/testnet-yb-fast" && echo keys > "$D/yb-fast/node/testn
 "$SEEDCTL" reset yb-fast "$X4" 2>"$T/err" || { cat "$T/err"; fail "reset on the x402 host"; }
 [ "$(cat "$D/yb-fast/node/testnet-yb-fast/wallet.dat")" = keys ] && [ -e "$D/yb-fast/node/prefix/FRAMED" ] && [ -e "$X/caddy/data/cert" ] && [ -s "$X/payto" ] && [ ! -e "$X/keep" ] && grep -q 'docker rm -f .* facilitator-yb-fast x402api-yb-fast faucet-yb-fast x402proxy-yb-fast' "$LOG" || fail "reset: the chain goes, the faucet's wallet, the addresses and the certificate stay (and the prefix still frames)"
 ok "reset: the chain goes; the faucet's wallet comes back after the bootstrap; the certificate and the addresses stay"
+# a reset whose datadir already holds a wallet when the kept one returns (and a keep left by an
+# interrupted reset): neither wallet is deleted, the kept one is set aside with a timestamp, and said so
+mkdir -p "$X/keep/testnet-yb-fast" && echo stale > "$X/keep/testnet-yb-fast/wallet.dat"
+echo keys2 > "$D/yb-fast/node/testnet-yb-fast/wallet.dat"
+"$SEEDCTL" reset yb-fast "$X4" 2>"$T/err" || { cat "$T/err"; fail "reset with a keep left behind"; }
+grep -q 'an earlier reset left a wallet aside that never returned: the wallet in .*/x402/keep is kept at .*/x402/keep\.[0-9]\{14\}' "$T/err" && [ "$(cat "$X"/keep.*/testnet-yb-fast/wallet.dat)" = stale ] && [ "$(cat "$D/yb-fast/node/testnet-yb-fast/wallet.dat")" = keys2 ] && [ ! -e "$X/keep" ] || fail "an old keep is set aside, never overwritten: $(cat "$T/err"; ls "$X")"
+rm -rf "$X"/keep.*
+"$SEEDCTL" reset yb-fast "$X4" 2>/dev/null; mkdir -p "$X/keep/testnet-yb-fast" && echo kept > "$X/keep/testnet-yb-fast/wallet.dat"   # a reset interrupted after the move
+echo other > "$D/yb-fast/node/testnet-yb-fast/wallet.dat"
+"$SEEDCTL" apply yb-fast "$X4" 2>"$T/err" || { cat "$T/err"; fail "apply over a datadir that holds a wallet"; }
+grep -q 'the datadir already holds a wallet, so the kept one did not replace it: the wallet in .*/x402/keep is kept at .*/x402/keep\.[0-9]\{14\} (nothing was deleted' "$T/err" && [ "$(cat "$X"/keep.*/testnet-yb-fast/wallet.dat)" = kept ] && [ "$(cat "$D/yb-fast/node/testnet-yb-fast/wallet.dat")" = other ] && [ ! -e "$X/keep" ] || fail "a kept wallet that cannot return is set aside, never deleted: $(cat "$T/err")"
+rm -rf "$X"/keep.*
+ok "a kept wallet that cannot return, or a keep an interrupted reset left, moves to keep.<time>, with a message; nothing is deleted"
 "$SEEDCTL" prefix-check 2>/dev/null; [ -e "$D/yb-fast/node/prefix/IMPORTED" ] || fail "prefix-check after the reset"
 "$SEEDCTL" x402-backup yb-fast 2>/dev/null | grep -q "^the faucet wallet's export: $D/yb-fast/node/export/faucet[0-9]\{14\} " || fail "x402-backup prints the export's path"
 echo "a phrase" > "$X/mnemonic"; "$SEEDCTL" apply yb-fast "$X4" 2>/dev/null
 grep -q 'environment: { YCASHD_MNEMONIC_FILE: /run/ycash/mnemonic }' "$c" && grep -qF "$X/mnemonic:/run/ycash/mnemonic:ro" "$c" || fail "an operator's recovery phrase is mounted read-only for the wallet's creation"
 rm -f "$X/mnemonic"
 ok "x402-backup names the export; a placed recovery phrase reaches the node read-only"
+# the cached addresses are re-checked against the wallet on every x402_up: one it cannot spend stops
+# the API and the faucet with what to do, and they are not rendered again until the wallet holds both
+for which in t z; do
+  : > "$LOG"
+  if FAKE_NOTMINE=$which "$SEEDCTL" apply yb-fast "$X4" 2>"$T/err"; then fail "the API kept a payTo the wallet cannot spend ($which)"; fi
+  grep -q 'does not hold the spending key of .*so the API and the faucet are stopped' "$T/err" && grep -q 'docker rm -f x402api-yb-fast faucet-yb-fast' "$LOG" && ! grep -q -e 'container_name: x402api-' -e 'container_name: faucet-' "$c" && grep -q 'container_name: facilitator-yb-fast' "$c" && [ ! -e "$X/owned" ] || fail "a cached address not the wallet's ($which): $(cat "$T/err")"
+  if [ "$which" = t ]; then grep -q "the API's payTo smFakePayToAddress123456789abcdefg (NET/x402/payto)" "$T/err" || fail "names payTo"; else grep -q "the faucet's Sapling address ytestsapling1fake.* (NET/x402/zaddr)" "$T/err" || fail "names the Sapling address"; fi
+done
+"$SEEDCTL" boot 2>/dev/null || true; ! grep -q 'container_name: x402api-' "$c" || fail "boot re-rendered the API before the wallet was checked again"
+"$SEEDCTL" apply yb-fast "$X4" 2>"$T/err" || { cat "$T/err"; fail "apply once the wallet holds both again"; }
+grep -q 'container_name: x402api-yb-fast' "$c" && [ "$(cat "$X/owned")" = "$(cat "$X/payto") $(cat "$X/zaddr")" ] || fail "the API returns once the wallet holds both addresses"
+ok "a cached payTo or Sapling address the wallet cannot spend stops the API and the faucet, with what to do; they return once it can"
 PLAINX=$(echo "$X4C" | jq -c '.x402.tls = false | .x402.conn_rate_limit = 30' | b64)
 : > "$LOG"; "$SEEDCTL" apply yb-fast "$PLAINX" 2>/dev/null || fail "apply plain HTTP"
 grep -qx ':80 {' "$cf" && grep -q 'auto_https off' "$cf" && grep -qF 'ports: ["80:80"]' "$c" && grep -q -- '--dport 80 .*--hashlimit-above 30/minute' "$LOG" && grep -q -- '^iptables -D DOCKER-USER\|^iptables -I DOCKER-USER 1 -p tcp' "$LOG" || fail "plain HTTP: port 80, the limit replaced"

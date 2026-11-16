@@ -34,6 +34,9 @@ class Node:
         self.chain = "test"
         self.profile = "fast"
         self.calls = []
+        # payTo's coins (listunspent): one 50 YEC payment, 3 deep
+        self.utxos = [{"txid": "aa" * 32, "vout": 0, "address": TADDR, "amount": 50.0, "amountZat": 5000000000,
+                       "confirmations": 3, "spendable": True}]
         node = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -54,6 +57,9 @@ class Node:
                     "generate": ["00" * 32],
                     "getnewaddress": TADDR,
                     "z_mergetoaddress": {"opid": "opid-2", "mergingTransparentValue": 50.0},
+                    "listunspent": [u for u in node.utxos if u["confirmations"] >= p[0]] if m == "listunspent" else None,
+                    "listlockunspent": [],
+                    "lockunspent": True,
                 }.get(m)
                 body = json.dumps({"result": res, "error": None if m in node.known else {"message": f"{m}?"}, "id": req["id"]}).encode()
                 self.send_response(200)
@@ -65,7 +71,8 @@ class Node:
                 pass
 
         self.known = {"getblockcount", "getrawmempool", "getblockchaininfo", "z_listaddresses", "z_getbalance",
-                      "validateaddress", "z_validateaddress", "z_sendmany", "z_getoperationstatus", "generate", "getnewaddress", "z_mergetoaddress"}
+                      "validateaddress", "z_validateaddress", "z_sendmany", "z_getoperationstatus", "generate", "getnewaddress", "z_mergetoaddress",
+                      "listunspent", "listlockunspent", "lockunspent"}
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/"
@@ -175,6 +182,108 @@ class Units(unittest.TestCase):
         self.assertIsNotNone(F.check_pow(ch2, "x" * 40, bits=8, now=now))
 
 
+class Sweep(unittest.TestCase):
+    """The sweep's coin rules in-process (maybe_sweep with a stand-in rpc): depth, dust, fee, locks."""
+
+    def setUp(self):
+        self.F = load_module(FAUCET_MODE="testnet", SWEEP_FROM=TADDR, SWEEP_SECONDS="0", SWEEP_MIN_ZAT="20000")
+        self.calls, self.coins, self.locked = [], [], []
+        self.F.check_chain = lambda: None
+        self.F.source_address = lambda: SOURCE
+        self.F.wait_opid = lambda opid: "cd" * 32
+        self.F.log = lambda msg: self.calls.append(("log", msg))
+
+        def rpc(method, *params, timeout=None):
+            self.calls.append((method, params))
+            if method == "listunspent":
+                return [c for c in self.coins if c["confirmations"] >= params[0]]
+            return {"listlockunspent": self.locked, "lockunspent": True,
+                    "z_mergetoaddress": {"opid": "opid-3", "mergingTransparentValue": 0.1, "mergingUTXOs": 1}}[method]
+        self.F.rpc = rpc
+
+    def coin(self, n, zat, conf):
+        c = {"txid": f"{n:064x}", "vout": 0, "address": TADDR, "amount": zat / 1e8, "amountZat": zat, "confirmations": conf, "spendable": True}
+        self.coins.append(c)
+        return {"txid": c["txid"], "vout": 0}
+
+    def merges(self):
+        return [p for m, p in self.calls if m == "z_mergetoaddress"]
+
+    def test_only_coins_two_deep_and_not_dust_are_swept_the_rest_locked_around_the_merge(self):
+        self.coin(1, 10000000, 2)                      # 0.1 YEC, 2 deep: swept
+        young = self.coin(2, 10000000, 1)              # 1 deep: the facilitator may still observe it
+        unconf = self.coin(3, 10000000, 0)             # in the mempool
+        dust = [self.coin(10 + i, 546, 50) for i in range(60)]   # dust on the public payTo
+        self.assertEqual(self.F.maybe_sweep(), "cd" * 32)
+        held = [young, unconf] + dust
+        locks = [(m, p) for m, p in self.calls if m == "lockunspent"]
+        self.assertEqual(len(locks), 2)
+        self.assertEqual(locks[0][1][0], False)
+        self.assertEqual(sorted(map(str, locks[0][1][1])), sorted(map(str, held)))
+        self.assertEqual(locks[1][1], (True, locks[0][1][1]))   # the same coins unlocked after
+        (merge,) = self.merges()
+        self.assertEqual(merge[3], 1)                  # exactly the one coin it may take
+        order = [m for m, _ in self.calls if m in ("lockunspent", "z_mergetoaddress")]
+        self.assertEqual(order, ["lockunspent", "z_mergetoaddress", "lockunspent"])
+
+    def test_dust_alone_is_a_quiet_no_op(self):
+        for i in range(200):
+            self.coin(i, 4999, 10)
+        self.assertIsNone(self.F.maybe_sweep())
+        self.assertEqual(self.merges(), [])
+        self.assertNotIn("lockunspent", [m for m, _ in self.calls])
+        self.assertFalse([c for c in self.calls if c[0] == "log"], "a no-op logs nothing")
+
+    def test_a_sweep_that_would_not_cover_its_fee_is_a_quiet_no_op(self):
+        self.F.SWEEP_MIN_ZAT = 1
+        self.coin(1, 6000, 5)                          # above the dust floor, below a merge's fee bound (20,000 for two inputs)
+        self.coin(2, 6000, 5)
+        self.assertIsNone(self.F.maybe_sweep())
+        self.assertEqual(self.merges(), [])
+        self.assertFalse([c for c in self.calls if c[0] == "log"])
+        self.coin(3, 20000, 5)                         # 32,000 > 25,000 for three inputs
+        self.assertEqual(self.F.maybe_sweep(), "cd" * 32)
+
+    def test_young_coins_alone_are_not_swept_and_the_depth_is_a_setting(self):
+        self.coin(1, 100000000, 1)
+        self.assertIsNone(self.F.maybe_sweep())
+        self.assertEqual(self.merges(), [])
+        self.F.SWEEP_MIN_CONF = 1
+        self.assertEqual(self.F.maybe_sweep(), "cd" * 32)
+
+    def test_coins_locked_by_someone_else_are_left_locked(self):
+        self.coin(1, 10000000, 5)
+        other = self.coin(2, 10000000, 0)
+        self.locked = [other]
+        self.F.maybe_sweep()
+        self.assertNotIn(True, [p[0] for m, p in self.calls if m == "lockunspent"] or [None])
+        self.assertEqual([m for m, _ in self.calls if m == "lockunspent"], [])
+
+    def test_at_most_fifty_largest_first(self):
+        for i in range(70):
+            self.coin(i, 100000 + i, 5)
+        self.F.maybe_sweep()
+        (merge,) = self.merges()
+        self.assertEqual(merge[3], 50)
+        (lock, _unlock) = [p for m, p in self.calls if m == "lockunspent"]
+        self.assertEqual(sorted(int(c["txid"], 16) for c in lock[1]), list(range(20)))   # the 20 smallest held back
+
+    def test_unlocks_even_when_the_merge_fails(self):
+        self.coin(1, 10000000, 5)
+        self.coin(2, 10000000, 1)
+        rpc = self.F.rpc
+
+        def failing(method, *params, timeout=None):
+            if method == "z_mergetoaddress":
+                self.calls.append((method, params))
+                raise self.F.RpcError("z_mergetoaddress: boom")
+            return rpc(method, *params, timeout=timeout)
+        self.F.rpc = failing
+        with self.assertRaises(self.F.RpcError):
+            self.F.maybe_sweep()
+        self.assertEqual([p[0] for m, p in self.calls if m == "lockunspent"], [False, True])
+
+
 class Testnet(unittest.TestCase):
     def setUp(self):
         self.node = Node()
@@ -267,8 +376,9 @@ class Testnet(unittest.TestCase):
         f = self.start(SWEEP_FROM=TADDR, SWEEP_SECONDS=0)
         self.assertTrue(self.wait_for("z_mergetoaddress"), "no sweep")
         (srcs, dest, fee, tlimit, _zlimit, _memo, policy), = [p for m, p in self.node.calls if m == "z_mergetoaddress"][:1]
-        self.assertEqual((srcs, dest, fee, tlimit, policy), ([TADDR], SOURCE, None, 50, "AllowRevealedSenders"))
-        self.assertIn(("z_getbalance", [TADDR, 1]), self.node.calls)
+        self.assertEqual((srcs, dest, fee, tlimit, policy), ([TADDR], SOURCE, None, 1, "AllowRevealedSenders"))
+        self.assertIn(("listunspent", [0, 9999999, [TADDR]]), self.node.calls)
+        self.assertNotIn("lockunspent", [m for m, _ in self.node.calls])   # nothing to hold back
         for _ in range(50):
             if "faucet_swept_zat_total 5000000000" in f.get("/metrics")[1]:
                 break
@@ -277,7 +387,7 @@ class Testnet(unittest.TestCase):
 
     def test_no_sweep_below_the_minimum_or_off_chain(self):
         self.start(SWEEP_FROM=TADDR, SWEEP_SECONDS=0, SWEEP_MIN_ZAT=10000000000)   # 100 YEC; it holds 50
-        self.assertTrue(self.wait_for("z_getbalance", TADDR), "the sweep never looked")
+        self.assertTrue(self.wait_for("listunspent"), "the sweep never looked")
         self.assertNotIn("z_mergetoaddress", [m for m, _ in self.node.calls])
         node2 = Node()
         self.addCleanup(node2.srv.shutdown)
@@ -286,7 +396,7 @@ class Testnet(unittest.TestCase):
         self.addCleanup(f.stop)
         time.sleep(1)
         self.assertNotIn("z_mergetoaddress", [m for m, _ in node2.calls])
-        self.assertNotIn(("z_getbalance", [TADDR, 1]), node2.calls)
+        self.assertNotIn("listunspent", [m for m, _ in node2.calls])
 
     def test_no_sweep_without_sweep_from(self):
         self.start(SWEEP_SECONDS=0)

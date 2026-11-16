@@ -33,6 +33,10 @@ X4_NODE_SWAP_MB=2048
 X4_API_PORT=4021
 X4_FAC_PORT=4022
 X4_FAUCET_PORT=8080
+# the deepest confirmation count a settle waits for (the facilitator's confirmations.maximum); the
+# faucet sweeps a payTo coin only once it is one block deeper (SWEEP_MIN_CONF), so it never spends an
+# output a settle may still be reading with gettxout (images/faucet README.md, "The sweep")
+X4_SETTLE_MAX_CONF=1
 
 x4_tls() { [ "$(cfg "$1" .x402.tls)" = true ]; }   # file
 x4_port() { if x4_tls "$1"; then echo 443; else echo 80; fi; }   # file: the one published port
@@ -134,11 +138,12 @@ x402_facilitator_json() { # net file
   # shellcheck source=/dev/null
   ( . "$D/$1/rpc.env"
     jq -n --arg url "http://$X4_BACKEND.11:$(cfg "$2" .rpc_port)/" --arg user "$YCASHD_RPC_USER" --arg pw "$YCASHD_RPC_PASSWORD" \
-      --arg key "$(cat "$D/$1/x402/secrets/api-key")" --arg profile "$(cfg "$2" .profile)" --argjson port "$X4_FAC_PORT" '
+      --arg key "$(cat "$D/$1/x402/secrets/api-key")" --arg profile "$(cfg "$2" .profile)" --argjson port "$X4_FAC_PORT" \
+      --argjson maxconf "$X4_SETTLE_MAX_CONF" '
       {network: "ycash:testnet", host: "0.0.0.0", port: $port,
        rpc: {url: $url, user: $user, password: $pw},
        apiKey: $key, testnetProfile: $profile,
-       confirmations: {minimum: -1, maximum: 1},
+       confirmations: {minimum: -1, maximum: $maxconf},
        settlementStorePath: "/data/settlements.json", channelStorePath: "/data/channels.json",
        trustProxy: 0, rateLimit: {windowMs: 60000, max: 1200}}' )
 }
@@ -203,6 +208,7 @@ TRUSTED_PROXY_HOPS=1
 PARAMS_ENABLED=0
 SWEEP_FROM=$(cat "$X/payto")
 SWEEP_MIN_ZAT=$(cfg "$f" .x402.faucet.sweep_min_zat)
+SWEEP_MIN_CONF=$((X4_SETTLE_MAX_CONF + 1))
 ENV
   )
 }
@@ -280,9 +286,22 @@ CADDY
 # The faucet's wallet across a reset: the reset deletes the chain (NET/node), and with it the
 # datadir's wallet.dat. It moves aside first (NET/x402/keep) and returns after the bootstrap (an
 # empty datadir is what lets the bootstrap frame the prefix), so a reset never loses the faucet's
-# keys; the node rescans the new chain for them.
+# keys; the node rescans the new chain for them. Nothing here ever deletes a wallet: one that cannot
+# return (the datadir already holds one) or a keep left by an earlier, interrupted reset moves to
+# NET/x402/keep.<UTC timestamp>, and the log says so (README.md, "The faucet's wallet").
+x4_set_aside() { # net dir why: move a directory holding a wallet out of the way, never delete it
+  local to
+  to="$D/$1/x402/keep.$(date -u +%Y%m%d%H%M%S)"
+  while [ -e "$to" ]; do to="$to.1"; done
+  mv "$2" "$to"
+  log "$1: $3: the wallet in $2 is kept at $to (nothing was deleted; restore it by hand if it is the one you want)"
+}
 x402_keep_wallet() { # net
   local N="$D/$1/node" K="$D/$1/x402/keep" w rel
+  rm -f "$D/$1/x402/owned"   # the wallet leaves the datadir: x4_owned checks it again after the reset
+  if [ -d "$K" ] && [ -n "$(find "$K" -mindepth 1 -print -quit)" ]; then
+    x4_set_aside "$1" "$K" "an earlier reset left a wallet aside that never returned"
+  fi
   mkdir -p "$K"
   for w in "$N"/*/wallet.dat "$N/wallet.dat" "$N/export"; do
     [ -e "$w" ] || continue
@@ -296,8 +315,13 @@ x402_restore_wallet() { # net (after the bootstrap)
     rel=${w#"$K"/}; mkdir -p "$N/$(dirname "$rel")"
     [ -e "$N/$rel" ] || mv -f "$w" "$N/$rel"
   done < <(find "$K" -mindepth 1 \( -name wallet.dat -o -name export \) -prune -print)
-  rm -rf "$K"
-  log "$1: the faucet's wallet is back in the datadir; the node rescans the chain for it"
+  # only empty directories go; anything left (a wallet the datadir already had one of) is set aside
+  find "$K" -depth -type d -empty -delete
+  if [ -e "$K" ]; then
+    x4_set_aside "$1" "$K" "the datadir already holds a wallet, so the kept one did not replace it"
+  else
+    log "$1: the faucet's wallet is back in the datadir; the node rescans the chain for it"
+  fi
 }
 
 # The faucet's two addresses, made once by the node's wallet and kept (NET/x402/payto, NET/x402/zaddr):
@@ -322,6 +346,29 @@ x402_addresses() { # net
     echo "$a" > "$X/zaddr"
     log "$1: the faucet wallet's Sapling address (the faucet pays from it; fund it here): $a"
   fi
+}
+
+# The cached addresses are only a record: the wallet in the datadir may since have been replaced (a
+# restored backup, a wallet set aside by a reset, a new recovery phrase). Before the API takes payTo
+# and the faucet its Sapling address, the node's wallet must hold the spending key of both
+# (validateaddress / z_validateaddress `ismine`); otherwise what agents pay would go to an address
+# nobody here can spend. Checked on every x402_up (apply, prefix-check); on success NET/x402/owned
+# records the pair, and render_x402 renders the API and the faucet only for that pair. On failure
+# the two go (the TLS proxy and the facilitator stay) and seedctl stops with what to do.
+x4_owned() { # net file
+  local X="$D/$1/x402" p z v bad=""
+  p=$(cat "$X/payto"); z=$(cat "$X/zaddr")
+  v=$(cli "$1" validateaddress "$p" 2>/dev/null) || die "$1: the node's wallet did not answer validateaddress (docker logs ycashd-$1)"
+  jq -e '.ismine == true' <<<"$v" >/dev/null || bad="the API's payTo $p (NET/x402/payto)"
+  v=$(cli "$1" z_validateaddress "$z" 2>/dev/null) || die "$1: the node's wallet did not answer z_validateaddress (docker logs ycashd-$1)"
+  jq -e '.ismine == true' <<<"$v" >/dev/null || bad="${bad:+$bad and }the faucet's Sapling address $z (NET/x402/zaddr)"
+  if [ -n "$bad" ]; then
+    rm -f "$X/owned"
+    docker rm -f "x402api-$1" "faucet-$1" >/dev/null 2>&1 || true
+    render "$1" "$2"
+    die "$1: the node's wallet does not hold the spending key of $bad, so the API and the faucet are stopped (never serve a payTo nobody here can spend). Put the faucet's wallet back (README.md, \"The faucet's wallet\"; a wallet set aside by a reset is in NET/x402/keep.<time>), or, to let this wallet make new addresses, delete NET/x402/payto and NET/x402/zaddr; then apply again"
+  fi
+  [ "$(cat "$X/owned" 2>/dev/null)" = "$p $z" ] || echo "$p $z" > "$X/owned"
 }
 
 # render's x402 branch: the node on the x402 host's networks instead of host networking, hardened
@@ -397,7 +444,9 @@ YAML
     logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
 YAML
   fi
-  if [ -z "$importing" ] && [ -s "$X/payto" ] && [ -s "$X/zaddr" ]; then
+  # the API and the faucet only once x402_up has seen the wallet hold both addresses' keys (x4_owned)
+  if [ -z "$importing" ] && [ -s "$X/payto" ] && [ -s "$X/zaddr" ] \
+     && [ "$(cat "$X/owned" 2>/dev/null)" = "$(cat "$X/payto") $(cat "$X/zaddr")" ]; then
     x402_api_env "$net" "$f" > "$X/api.env.new"; chmod 0400 "$X/api.env.new"; mv -f "$X/api.env.new" "$X/api.env"
     x402_faucet_env "$net" "$f" > "$X/faucet.env.new"; chmod 0400 "$X/faucet.env.new"; mv -f "$X/faucet.env.new" "$X/faucet.env"
     cat >> "$R/compose.yaml" <<YAML
@@ -494,8 +543,9 @@ x402_up() { # net
     log "$1 x402: the TLS proxy up; the facilitator, the faucet and the API start once the prefix is imported (prefix-check, every 10 minutes)"
     return 0
   fi
+  x402_addresses "$1" || die "$1: the node's wallet did not answer for the faucet's addresses (docker logs ycashd-$1)"
+  x4_owned "$1" "$f"
   if ! grep -q '^  api:' "$O/net/$1/compose.yaml"; then
-    x402_addresses "$1" || die "$1: the node's wallet did not answer for the faucet's addresses (docker logs ycashd-$1)"
     render "$1" "$f"
     compose "$1" up -d
   fi

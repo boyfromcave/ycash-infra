@@ -22,11 +22,17 @@ testnet. It never holds the wallet's secret words itself; the testnet node that 
 
 **The sweep (testnet mode, `SWEEP_FROM`).** On the x402 host the paid API's `payTo` is a
 transparent address of the faucet's own wallet, so what agents pay comes back to the faucet. Every
-`SWEEP_SECONDS` (600) the faucet checks those addresses (`SWEEP_FROM`, comma separated) and, when
-they hold at least `SWEEP_MIN_ZAT` (0.01 YEC) confirmed, merges them into the Sapling address it pays
-from (`z_mergetoaddress`, the node's fee, `AllowRevealedSenders`: the senders are the wallet's own
-addresses), never while a payment is in flight; `faucet_swept_zat_total` counts it. It sweeps
-nothing on any chain but the testnet profile it is set to. Empty `SWEEP_FROM` (the default) = off.
+`SWEEP_SECONDS` (600) the faucet checks those addresses (`SWEEP_FROM`, comma separated) and merges
+their coins into the Sapling address it pays from (`z_mergetoaddress`, the node's fee,
+`AllowRevealedSenders`: the senders are the wallet's own addresses), never while a payment is in
+flight; `faucet_swept_zat_total` counts it. It takes only coins at least `SWEEP_MIN_CONF` (2) deep,
+so it never spends a payment the x402 facilitator may still be observing with `gettxout`, and never a
+coin below `SWEEP_DUST_ZAT` (5,000 zat, the ZIP 317 marginal fee: `payTo` is public and anyone can
+send it dust), at most 50 per merge, the largest first; the others are locked (`lockunspent`) for the
+merge and unlocked after it. When what it may take is below `SWEEP_MIN_ZAT` (0.01 YEC), or would not
+cover the merge's fee (5,000 zat per input and per Sapling output), the cycle does nothing and logs
+nothing. It sweeps nothing on any chain but the testnet profile it is set to. Empty `SWEEP_FROM`
+(the default) = off.
 
 The testnet mode pays testnet YEC only, never YED (users mint YED themselves). Its limits live in
 memory, so the chart runs one replica; a restart forgets the per-IP and per-address windows, which the

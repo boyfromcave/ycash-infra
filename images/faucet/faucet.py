@@ -85,11 +85,25 @@ DAY = 86400.0
 # The x402 host (ycash-infra infra/testnet-seeds/README.md, "The x402 host"): what agents pay to the
 # paid API's payTo, a transparent address of this faucet's own wallet, is merged back into the
 # Sapling address the faucet pays from, so the coins go round. Comma-separated transparent addresses
-# of the wallet; empty = off. A sweep runs when they hold at least SWEEP_MIN_ZAT confirmed, at most
-# every SWEEP_SECONDS, never while a payment is in flight.
+# of the wallet; empty = off. A sweep runs when the coins it may take hold at least SWEEP_MIN_ZAT, at
+# most every SWEEP_SECONDS, never while a payment is in flight.
 SWEEP_FROM = [a for a in os.environ.get("SWEEP_FROM", "").split(",") if a]
 SWEEP_MIN_ZAT = int(os.environ.get("SWEEP_MIN_ZAT", "1000000"))      # 0.01 YEC
 SWEEP_SECONDS = float(os.environ.get("SWEEP_SECONDS", "600"))
+# Only coins at least this deep are swept. The x402 facilitator proves a payment by reading its payTo
+# output with gettxout (x402-ycash packages/ycash/src/exact/facilitator/scheme.ts, observe/evidence):
+# once the sweep spends that output, a settle still observing it, or resumed, sees nothing and reports
+# a paid payment as unseen. The facilitator here asks for at most 1 confirmation (seedctl-x402,
+# confirmations.maximum), so a coin 2 deep has already given every settle its answer.
+SWEEP_MIN_CONF = int(os.environ.get("SWEEP_MIN_CONF", "2"))
+# payTo is public, so anyone can send it dust. A coin worth less than this (the ZIP 317 marginal fee:
+# it costs more to spend than it carries) is never swept, so dust cannot make every merge cost more
+# than it moves and stall the sweep; dust simply stays on payTo.
+SWEEP_DUST_ZAT = int(os.environ.get("SWEEP_DUST_ZAT", "5000"))
+SWEEP_MAX_INPUTS = 50
+# A bound on the merge's fee, high enough for either -feepolicy: ZIP 317's 5,000 zat per logical action
+# (each input, and the two Sapling outputs the builder pads to). A sweep worth no more is not made.
+SWEEP_FEE_PER_ACTION_ZAT = 5000
 
 
 def param_path(requested):
@@ -420,10 +434,29 @@ def classify(addr):
     raise ValueError(f"not a transparent or Sapling address of {NETWORK_NAME}")
 
 
+def sweep_plan():
+    """The coins of SWEEP_FROM a sweep takes (at least SWEEP_MIN_CONF deep, not dust, not coinbase, not
+    locked by anyone, the largest SWEEP_MAX_INPUTS), and the others it must keep the merge from taking
+    (z_mergetoaddress takes every unlocked coin of an address, so they are locked around it)."""
+    coins = rpc("listunspent", 0, 9999999, SWEEP_FROM, timeout=30)
+    locked = {(c["txid"], c["vout"]) for c in rpc("listlockunspent", timeout=30)}
+
+    def zat(c):
+        return int(c["amountZat"]) if "amountZat" in c else round(float(c["amount"]) * 1e8)
+
+    free = [c for c in coins if (c["txid"], c["vout"]) not in locked and not c.get("generated")]
+    ripe = sorted((c for c in free if c.get("spendable", True) and int(c.get("confirmations", 0)) >= SWEEP_MIN_CONF
+                   and zat(c) >= SWEEP_DUST_ZAT), key=zat, reverse=True)[:SWEEP_MAX_INPUTS]
+    taken = {(c["txid"], c["vout"]) for c in ripe}
+    hold = [{"txid": c["txid"], "vout": c["vout"]} for c in free if (c["txid"], c["vout"]) not in taken]
+    return ripe, sum(zat(c) for c in ripe), hold
+
+
 def maybe_sweep(now=None):
-    """testnet with SWEEP_FROM: merge the confirmed coins on those transparent addresses (the x402 API's
-    payTo) into the faucet's Sapling address (z_mergetoaddress, the node's fee, the senders revealed:
-    they are this wallet's own). Returns the txid, or None when nothing was due."""
+    """testnet with SWEEP_FROM: merge the coins on those transparent addresses (the x402 API's payTo)
+    that are SWEEP_MIN_CONF deep and not dust into the faucet's Sapling address (z_mergetoaddress, the
+    node's fee, the senders revealed: they are this wallet's own). Nothing worth sweeping, or a sweep
+    that would not cover its fee, is a quiet no-op. Returns the txid, or None when nothing was due."""
     global _last_sweep, _swept_total
     if MODE != "testnet" or not SWEEP_FROM:
         return None
@@ -435,14 +468,25 @@ def maybe_sweep(now=None):
     try:
         _last_sweep = now
         check_chain()
-        held = sum(round(float(rpc("z_getbalance", a, 1, timeout=30)) * 1e8) for a in SWEEP_FROM)
-        if held < SWEEP_MIN_ZAT:
+        ripe, total, hold = sweep_plan()
+        if not ripe or total < SWEEP_MIN_ZAT or total <= SWEEP_FEE_PER_ACTION_ZAT * (len(ripe) + 2):
             return None
-        r = rpc("z_mergetoaddress", SWEEP_FROM, source_address(), None, 50, 0, "", "AllowRevealedSenders", timeout=60)
-        txid = wait_opid(r["opid"])
+        # the coins the sweep must not take (too young, dust, beyond the limit) are locked for the
+        # merge and unlocked after it; coins someone else locked are left as they are
+        try:
+            if hold:
+                rpc("lockunspent", False, hold, timeout=30)
+            r = rpc("z_mergetoaddress", SWEEP_FROM, source_address(), None, len(ripe), 0, "", "AllowRevealedSenders", timeout=60)
+            txid = wait_opid(r["opid"])
+        finally:
+            if hold:
+                try:
+                    rpc("lockunspent", True, hold, timeout=30)
+                except RpcError as e:
+                    log(f"sweep: could not unlock {len(hold)} coin(s) it held back: {e}")
         zat = round(float(r.get("mergingTransparentValue", 0)) * 1e8)
         _swept_total += zat
-        log(f"swept {zat / 1e8:.8f} YEC from {', '.join(SWEEP_FROM)} into the faucet in {txid}")
+        log(f"swept {zat / 1e8:.8f} YEC ({r.get('mergingUTXOs', len(ripe))} coins) from {', '.join(SWEEP_FROM)} into the faucet in {txid}")
         return txid
     finally:
         _lock.release()
