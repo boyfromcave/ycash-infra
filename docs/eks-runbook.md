@@ -11,7 +11,7 @@ by workflow buttons ([§10](#10-the-testnet-cluster-from-a-private-repository)).
 The chart on AWS (plan K2). Everything below is one `make` target or one command, in the order
 it has to happen: terraform → add-ons (terraform too) → ECR push → helm → DNS → smoke. Nothing
 here has been applied yet (no AWS credentials in the workspace, 2026-10-09): the terraform and
-the chart validate offline (`make eks-validate`, CI job `eks`), the apply is the owner's.
+the chart validate offline (`make eks-validate`, CI job `eks`), the apply is the Yellowback lead architect's.
 
 ## 0. Prerequisites
 
@@ -171,7 +171,7 @@ Variants: RDS multi-AZ (`rds_multi_az=true`) +26; three NAT gateways (`single_na
 of them. The two nodes beyond the StatefulSet's anti-affinity (one `ycashd` per node) are the
 floor: `node_min = 2` keeps the cluster alive but not the three-node pool.
 
-## 9. Open decisions (owner)
+## 9. Open decisions (the Yellowback lead architect)
 
 | # | Question | Default here | The alternative |
 |---|---|---|---|

@@ -7,7 +7,7 @@ start without three public files that Zcash published for its shielded (private)
 `sapling-spend.params`, `sapling-output.params` and `sprout-groth16.params`, about 777 MB together.
 They are the same files for every Zcash-family node and they never change. Zcash serves them from
 `download.z.cash`; this repository keeps a copy on a GitHub release so that the Ycash testnet does
-not depend on Zcash's server staying up (owner decision D3, 2026-10-28: on GitHub, under the
+not depend on Zcash's server staying up (the Yellowback lead architect's decision D3, 2026-10-28: on GitHub, under the
 `boyfromcave` account, not on ycash.xyz).
 
 Where the files come from does not matter for safety. Each file has a fingerprint (its SHA-256)
@@ -62,16 +62,16 @@ ycash-dd's `fetch-params.sh`), not only the files against it: the release's own 
 nothing on its own. Provenance (which workflow run built the release, from which commit):
 `gh attestation verify <file> -R boyfromcave/ycash-infra`.
 
-### Check the owner's signature
+### Check the release signature
 
-In plain words: the signature proves the release owner published this exact checksum file; the
+In plain words: the signature proves the holder of the Ycash release key published this exact checksum file; the
 checksum file then vouches for the three parameter files.
 
 ```sh
 minisign -Vm SHA256SUMS -P RWQYr5PFpiPJAigk86vf89bPYrJCXj5tskgRAPRYFsEXyciZo8dveOGQ    # SHA256SUMS.minisig beside it; or -p keys/ycash-release.pub
 ```
 
-`keys/ycash-release.pub` is the owner's minisign key (key id `02C923A6C593AF18`, `keys/README.md`).
+`keys/ycash-release.pub` is the Ycash release minisign key (key id `02C923A6C593AF18`, `keys/README.md`).
 
 ycashd 4.5 looks for the files in `~/.zcash-params` (`-paramsdir` to change it); with them in
 place, `fetch-params.sh` finds them and downloads nothing.

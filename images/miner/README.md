@@ -51,7 +51,7 @@ runs the container; read them before you do.
 | SHA-256 | `0b8078299654a12846e4967f1db3506409cfb8b1031687a910965d1a99c6f270` |
 | Command | `lolMiner --algo EQUI192_7 --pers ZcashPoW --pool <host:port> --user <worker or payout> --tls off --dns-over-https 0 --apiport 0 --watchdog exit --nocolor --timeprint on` |
 
-**Owner: confirm the SHA-256 once** against the digest GitHub shows next to
+**The Yellowback lead architect: confirm the SHA-256 once** against the digest GitHub shows next to
 `lolMiner_v1.98a_Lin64.tar.gz` on https://github.com/Lolliedieb/lolMiner-releases/releases/tag/1.98a.
 It was computed from the download on 2026-11-01; the release page could not be read from the
 machine that wrote this.

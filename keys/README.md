@@ -3,13 +3,13 @@
 ## In plain words
 
 A checksum file (`SHA256SUMS`) says what every downloaded file must look like, but anyone could
-publish a checksum file. A signature on it, made with a secret key only the release owner holds,
-proves the owner published it. This directory holds the matching **public** keys, so anyone can
+publish a checksum file. A signature on it, made with a secret key only the Yellowback lead architect holds,
+proves the release came from the project. This directory holds the matching **public** keys, so anyone can
 check those signatures. Nothing secret is ever here.
 
 | File | Key id | Signs |
 |---|---|---|
-| `ycash-release.pub` | `02C923A6C593AF18` | the owner's [minisign](https://jedisct1.github.io/minisign/) key (testnet plan decision T-6): `SHA256SUMS` of the release bundles (`bundles/prefix`, `bundles/zcash-params`) and of node release candidates, as `SHA256SUMS.minisig` beside it |
+| `ycash-release.pub` | `02C923A6C593AF18` | the Ycash release [minisign](https://jedisct1.github.io/minisign/) key (testnet plan decision T-6), held by the Yellowback lead architect: `SHA256SUMS` of the release bundles (`bundles/prefix`, `bundles/zcash-params`), of the mainnet state bundles (`bundles/state`) and of `ycashd` releases (ycash6), as `SHA256SUMS.minisig` beside it |
 
 Verify a release you downloaded (`minisign` 0.11 or later):
 
@@ -20,7 +20,7 @@ sha256sum -c SHA256SUMS                              # then every file against t
 
 The key's id is printed in the first line of this file and of every `.minisig` it made: compare
 them. A key change is a reviewed commit to this file; a `.minisig` from any other key is not the
-owner's.
+project's.
 
-Bundle statements on the testnet (plan §4) may be signed by two verifier keys run by the owner;
-on mainnet at least one verifier must be independent of the owner.
+Bundle statements on the testnet (plan §4) may be signed by two verifier keys run by the Yellowback lead architect;
+on mainnet at least one verifier must be independent of the Yellowback lead architect.

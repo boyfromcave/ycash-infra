@@ -187,7 +187,10 @@ Before publishing, sign `SHA256SUMS` with the release key (`SHA256SUMS.minisig`,
 
 ## Restoring a node from a mainnet bundle
 
-The low-disk way is `ycash-bootstrap` (ycash6 `contrib/bootstrap`, in the release and the image). It
+The low-disk way is `ycash-bootstrap` (ycash6 `contrib/bootstrap`, in the release and the image).
+Reading a bundle in parts (`ycash-state/3`) needs a `ycash-bootstrap` that knows the parts, which is
+being added to ycash6 for beta3; the one in the beta2 release reads one-file bundles only, so restore
+a `/3` bundle with it by hand (below) until then. It
 reads `latest/` for the height only, checks the signature (required on mainnet), the manifest, the
 pins and every part before a byte of it is extracted, streams the parts into one extraction with one
 part (1 GiB) of extra disk, resumes a broken download, and has the node check the statement at H
@@ -205,7 +208,7 @@ whole tarball is never published):
 B=https://<cdn>/<prefix>/main
 H=$(curl -fsS $B/latest/manifest.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["height"])')
 curl -fsS --remote-name-all $B/$H/{manifest.json,SHA256SUMS,SHA256SUMS.minisig,treestate.json,statement-ycash6.json}
-minisign -Vm SHA256SUMS -p ycash-release.pub      # the release key (ycash-ops keys/ycash-release.pub)
+minisign -Vm SHA256SUMS -p ycash-release.pub      # the release key (this repository's keys/ycash-release.pub)
 P=$(python3 -c 'import json; m=json.load(open("manifest.json")); print(" ".join(p["name"] for p in m.get("parts", [{"name": m["tarball"]}])))')
 for p in $P; do curl -fL -C - -O $B/$H/$p; done  # -C -: an interrupted part resumes
 sha256sum -c SHA256SUMS                           # every file, each part included

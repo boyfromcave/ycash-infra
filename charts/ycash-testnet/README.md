@@ -15,7 +15,7 @@ three since the testnet profiles merged (N1). Per network it can also run the se
 a faucet that hands out free testnet coins, a public status page, a "snapshotter" that packs a
 checked copy of the chain for fast starts, and alerts for the operators ([The services](#the-services)).
 The chart is checked and rendered in CI but has not yet run on a cluster. By default it holds no
-keys of any kind; the faucet, which spends a testnet wallet, is refused until the owner's T-9 rule
+keys of any kind; the faucet, which spends a testnet wallet, is refused until the Yellowback lead architect's T-9 rule
 change is in force.
 
 Plan: workspace `docs/plans/yellowback-testnet-plan.md` (§2.3 who runs what, §4.0 the prefix,
@@ -161,7 +161,7 @@ node takes no inbound P2P (`-listen=0`) and its RPC only from the faucet pod (Ne
 `<release>-faucet-node`). Fund it by sending testnet YEC to its first Sapling address
 (`z_listaddresses` on the node); the faucet shields the wallet's coinbase first if a miner pays to it.
 
-**T-9.** `AGENTS.md` rule 4 says nothing in the cluster holds a spending key. Decision T-9 (owner,
+**T-9.** `AGENTS.md` rule 4 says nothing in the cluster holds a spending key. Decision T-9 (the Yellowback lead architect,
 2026-10-29; plan §6.1, §8) amends it for this chart only: testnet-only keys (the faucet wallet's
 recovery phrase, the snapshotter's GitHub token), from External Secrets, never in a values file or
 git, never on mainnet. The faucet and the GitHub token still render only with
@@ -209,7 +209,7 @@ A CronJob (`snapshotter.schedule`, daily) that makes a state bundle per [bundles
    a token from a Secret, under T-9).
 
 A run before an rc: `helm upgrade … --set snapshotter.height=<H_B>`, then `kubectl -n <network> create
-job --from=cronjob/<release>-snapshotter rc-bundle`. Signing `SHA256SUMS` (T-6, the owner's key) happens
+job --from=cronjob/<release>-snapshotter rc-bundle`. Signing `SHA256SUMS` (T-6, the Ycash release key) happens
 in the private deployment, not here. The first run syncs the chain twice (both lines), within
 `snapshotter.activeDeadlineSeconds` (12 h); later runs sync only the new blocks.
 
@@ -254,7 +254,7 @@ helm upgrade --install testnet charts/ycash-testnet -n yb-fast -f values-eks.yam
 
 | Not here | Why | Waits for |
 |---|---|---|
-| `miner` (`-gen -mineraddress`) | not planned: the testnets' blocks come from GPU miners rented on Vast.ai (owner, 2026-11-01; `infra/vast-miners/README.md`); slow and legacy need about 109 Sol/s at Equihash 192,7, far beyond a CPU | — |
+| `miner` (`-gen -mineraddress`) | not planned: the testnets' blocks come from GPU miners rented on Vast.ai (the Yellowback lead architect, 2026-11-01; `infra/vast-miners/README.md`); slow and legacy need about 109 Sol/s at Equihash 192,7, far beyond a CPU | — |
 | `pool` (yolo), the stratum endpoint those miners use | a payout address; where the pools run (the seed hosts or this chart) is open | T-9 (the `AGENTS.md` rule 4 amendment for this chart) |
 | `attestor` (house seats), `bridge-persona` | hold signing keys | T-9, T-5 (the founding set) |
 | `dnsseed` | the testnets have fixed seeds only (D1) | — |
