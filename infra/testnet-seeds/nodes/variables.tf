@@ -129,6 +129,30 @@ variable "networks" {
     lightwalletd's fixed address on the host's internal network only; nothing but the proxy
     publishes a port. One lightwallet per host (it owns ports 80 and 443): never beside a pool or an
     explorer.
+
+    `x402` (default none) runs the x402 demonstration beside that network's node (README.md, "The
+    x402 host"; workspace docs/plans/x402-demonstrations.md §3.2): the paid chain-data API
+    (`api_image`, x402-ycash examples/chain-api), the x402 facilitator (`facilitator_image`), the
+    testnet faucet (`faucet_image`, images/faucet in testnet mode) and a TLS proxy (Caddy,
+    `proxy_image`), all by digest. It needs `insight = true` (the API reads the address index) and
+    a testnet profile. The node keeps its wallet: the faucet's, the only spending key on the host;
+    the API's payTo is one of its transparent addresses, and the faucet sweeps what agents pay
+    there back into its Sapling address. `hostname` is the public name the proxy obtains a Let's
+    Encrypt certificate for over the TLS-ALPN challenge on 443 (the only port opened; the optional
+    contact is var.x402_acme_email); `tls` false = plain HTTP on port 80, for a test without a name.
+    Prices in zatoshis (decision D-10: `price_exact_zat` 10000 = 0.0001 YEC a paid request,
+    `price_broadcast_zat` the paid broadcast route's, `zero_conf_cap_zat` 100000 = mempool
+    settlement up to 0.001 YEC). `faucet`: a
+    fixed `amount_zat` per payment, `daily_cap_zat` in any 24 h, `per_ip` and `per_address`
+    payments per `window_seconds`, `pow_bits` of proof of work, `sweep_min_zat` (payTo balance that
+    triggers a sweep). `paid_per_minute`, `unpaid_per_minute`, `free_per_minute`: the API's own
+    requests a minute per client address; `conn_rate_limit` new TCP connections a minute per client
+    address (the host's firewall). `explorer_url` and `lightwalletd` (host:port) the links the API's
+    page shows. Memory limits, MiB: `node_mem_limit_mb` (default
+    1536, with 2 GiB of swap beyond it), `api_mem_limit_mb`, `facilitator_mem_limit_mb`,
+    `faucet_mem_limit_mb`. The node's RPC is reachable from the API's, the facilitator's and the
+    faucet's fixed addresses on the host's internal network only; nothing but the proxy publishes a
+    port. One x402 per host: never beside a pool, an explorer or a lightwallet.
   EOT
   type = map(object({
     profile    = string
@@ -180,6 +204,39 @@ variable "networks" {
       node_mem_limit_mb = optional(number, 2304)
       # lightwalletd's --log-level (logrus: 4 = info)
       log_level = optional(number, 4)
+    }))
+    x402 = optional(object({
+      hostname          = string
+      tls               = optional(bool, true)
+      api_image         = string
+      facilitator_image = string
+      faucet_image      = string
+      proxy_image       = string
+      explorer_url      = optional(string, "")
+      lightwalletd      = optional(string, "") # the light-wallet server agents pay through, host:port
+      # prices and settlement, zatoshis (D-10)
+      price_exact_zat     = optional(number, 10000)
+      price_broadcast_zat = optional(number, 10000)
+      zero_conf_cap_zat   = optional(number, 100000)
+      # per client address: the API's requests a minute (paid, unpaid, free routes); new connections
+      # a minute (the host's firewall)
+      paid_per_minute   = optional(number, 120)
+      unpaid_per_minute = optional(number, 30)
+      free_per_minute   = optional(number, 120)
+      conn_rate_limit   = optional(number, 60)
+      faucet = optional(object({
+        amount_zat     = optional(number, 10000000)   # 0.1 testnet YEC a payment
+        daily_cap_zat  = optional(number, 1000000000) # 10 testnet YEC in any 24 h
+        per_ip         = optional(number, 1)
+        per_address    = optional(number, 1)
+        window_seconds = optional(number, 86400)
+        pow_bits       = optional(number, 16)
+        sweep_min_zat  = optional(number, 1000000) # sweep payTo into the faucet once it holds 0.01
+      }), {})
+      node_mem_limit_mb        = optional(number, 1536)
+      api_mem_limit_mb         = optional(number, 256)
+      facilitator_mem_limit_mb = optional(number, 192)
+      faucet_mem_limit_mb      = optional(number, 96)
     }))
   }))
   default = {
@@ -276,8 +333,32 @@ variable "networks" {
     error_message = "networks: a lightwallet needs insight = true, a testnet profile, no pool and no explorer; hostname a lowercase DNS name; image, grpcweb_image and proxy_image pinned by digest; grpcweb_origins one or more http(s)://host[:port], never \"*\"; mem_limit_mb 256-65536, node_mem_limit_mb 512-65536, log_level 1-6, whole numbers."
   }
   validation {
-    condition     = length([for k, n in var.networks : k if n.enabled && (n.explorer != null || n.lightwallet != null)]) <= 1
-    error_message = "networks: one explorer or lightwallet per host (each owns ports 80 and 443)."
+    condition = alltrue([for k, n in var.networks : n.x402 == null ? true : (
+      n.insight && n.pool == null && n.explorer == null && n.lightwallet == null && n.profile != "main" &&
+      can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", n.x402.hostname)) &&
+      alltrue([for i in [n.x402.api_image, n.x402.facilitator_image, n.x402.faucet_image, n.x402.proxy_image] :
+      can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", i))]) &&
+      can(regex("^(https://[a-z0-9.-]+(/[A-Za-z0-9._~/-]*)?)?$", n.x402.explorer_url)) &&
+      can(regex("^([a-z0-9.-]{1,253}(:[0-9]{1,5})?)?$", n.x402.lightwalletd)) &&
+      alltrue([for v in [n.x402.price_exact_zat, n.x402.price_broadcast_zat] : v >= 1 && v <= 100000000 && floor(v) == v]) &&
+      n.x402.zero_conf_cap_zat >= 1 && n.x402.zero_conf_cap_zat <= 100000000 && floor(n.x402.zero_conf_cap_zat) == n.x402.zero_conf_cap_zat &&
+      alltrue([for v in [n.x402.paid_per_minute, n.x402.unpaid_per_minute, n.x402.free_per_minute, n.x402.conn_rate_limit] : v >= 1 && v <= 100000 && floor(v) == v]) &&
+      n.x402.faucet.amount_zat >= 1 && n.x402.faucet.amount_zat <= 10000000000 && floor(n.x402.faucet.amount_zat) == n.x402.faucet.amount_zat &&
+      n.x402.faucet.daily_cap_zat >= n.x402.faucet.amount_zat && n.x402.faucet.daily_cap_zat <= 1000000000000 && floor(n.x402.faucet.daily_cap_zat) == n.x402.faucet.daily_cap_zat &&
+      alltrue([for v in [n.x402.faucet.per_ip, n.x402.faucet.per_address] : v >= 1 && v <= 1000 && floor(v) == v]) &&
+      n.x402.faucet.window_seconds >= 60 && n.x402.faucet.window_seconds <= 2592000 && floor(n.x402.faucet.window_seconds) == n.x402.faucet.window_seconds &&
+      n.x402.faucet.pow_bits >= 0 && n.x402.faucet.pow_bits <= 28 && floor(n.x402.faucet.pow_bits) == n.x402.faucet.pow_bits &&
+      n.x402.faucet.sweep_min_zat >= 1 && n.x402.faucet.sweep_min_zat <= 10000000000 && floor(n.x402.faucet.sweep_min_zat) == n.x402.faucet.sweep_min_zat &&
+      n.x402.node_mem_limit_mb >= 512 && n.x402.node_mem_limit_mb <= 65536 && floor(n.x402.node_mem_limit_mb) == n.x402.node_mem_limit_mb &&
+      n.x402.api_mem_limit_mb >= 64 && n.x402.api_mem_limit_mb <= 8192 && floor(n.x402.api_mem_limit_mb) == n.x402.api_mem_limit_mb &&
+      n.x402.facilitator_mem_limit_mb >= 64 && n.x402.facilitator_mem_limit_mb <= 8192 && floor(n.x402.facilitator_mem_limit_mb) == n.x402.facilitator_mem_limit_mb &&
+      n.x402.faucet_mem_limit_mb >= 32 && n.x402.faucet_mem_limit_mb <= 4096 && floor(n.x402.faucet_mem_limit_mb) == n.x402.faucet_mem_limit_mb
+    )])
+    error_message = "networks: an x402 needs insight = true, a testnet profile, no pool, explorer or lightwallet; hostname a lowercase DNS name; api_image, facilitator_image, faucet_image and proxy_image pinned by digest; explorer_url empty or https://host[/path]; lightwalletd empty or host[:port]; prices and zero_conf_cap_zat 1-100000000 zat; rate limits 1-100000; faucet: amount_zat 1-10000000000, daily_cap_zat at least amount_zat, per_ip and per_address 1-1000, window_seconds 60-2592000, pow_bits 0-28, sweep_min_zat 1-10000000000; node_mem_limit_mb 512-65536, api and facilitator 64-8192, faucet 32-4096; whole numbers."
+  }
+  validation {
+    condition     = length([for k, n in var.networks : k if n.enabled && (n.explorer != null || n.lightwallet != null || n.x402 != null)]) <= 1
+    error_message = "networks: one explorer, lightwallet or x402 per host (each owns the host's HTTPS port)."
   }
   validation {
     condition     = length([for k, n in var.networks : k if n.enabled]) >= 1
@@ -404,6 +485,27 @@ variable "lightwallet_acme_email" {
   validation {
     condition     = can(regex("^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+)?$", var.lightwallet_acme_email))
     error_message = "lightwallet_acme_email: empty or an e-mail address."
+  }
+}
+
+variable "x402_ingress_cidrs" {
+  description = "Who may reach a network's x402 host (networks.<key>.x402) on port 443 (80 with tls = false, the only port then). A public demonstration: everyone. Only used where a network has an x402; nothing is opened without one."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+  validation {
+    condition     = alltrue([for c in var.x402_ingress_cidrs : can(cidrhost(c, 0))])
+    error_message = "x402_ingress_cidrs: IPv4 CIDRs."
+  }
+}
+
+variable "x402_acme_email" {
+  description = "The contact an x402 host's proxy gives Let's Encrypt for its certificate (optional; empty = none). Pass it from a secret, never commit it. Sensitive: it reaches only the network configs (seedctl renders it into the host's Caddyfile), never a plan line or another output."
+  type        = string
+  default     = ""
+  sensitive   = true
+  validation {
+    condition     = can(regex("^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+)?$", var.x402_acme_email))
+    error_message = "x402_acme_email: empty or an e-mail address."
   }
 }
 

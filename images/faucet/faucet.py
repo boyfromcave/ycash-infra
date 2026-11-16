@@ -82,6 +82,14 @@ POW_TTL = 600
 # drops a client-supplied header, charts/ycash-lightwallet routes.yaml), 0 = use the TCP peer
 TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "1"))
 DAY = 86400.0
+# The x402 host (ycash-infra infra/testnet-seeds/README.md, "The x402 host"): what agents pay to the
+# paid API's payTo, a transparent address of this faucet's own wallet, is merged back into the
+# Sapling address the faucet pays from, so the coins go round. Comma-separated transparent addresses
+# of the wallet; empty = off. A sweep runs when they hold at least SWEEP_MIN_ZAT confirmed, at most
+# every SWEEP_SECONDS, never while a payment is in flight.
+SWEEP_FROM = [a for a in os.environ.get("SWEEP_FROM", "").split(",") if a]
+SWEEP_MIN_ZAT = int(os.environ.get("SWEEP_MIN_ZAT", "1000000"))      # 0.01 YEC
+SWEEP_SECONDS = float(os.environ.get("SWEEP_SECONDS", "600"))
 
 
 def param_path(requested):
@@ -226,6 +234,10 @@ def probe():
 def prober():
     while True:
         probe()
+        try:
+            maybe_sweep()
+        except Exception as e:  # noqa: BLE001
+            log(f"sweep failed: {e}")
         time.sleep(15)
 
 
@@ -361,6 +373,8 @@ _addr_windows = Windows(PER_ADDR_LIMIT, PER_ADDR_WINDOW)
 _cap = Cap(DAILY_CAP_ZAT)
 _paid_total = 0
 _source = None
+_last_sweep = 0.0
+_swept_total = 0
 
 
 def check_chain():
@@ -404,6 +418,34 @@ def classify(addr):
     if z.get("isvalid") and z.get("address_type", z.get("type")) == "sapling":
         return "sapling"
     raise ValueError(f"not a transparent or Sapling address of {NETWORK_NAME}")
+
+
+def maybe_sweep(now=None):
+    """testnet with SWEEP_FROM: merge the confirmed coins on those transparent addresses (the x402 API's
+    payTo) into the faucet's Sapling address (z_mergetoaddress, the node's fee, the senders revealed:
+    they are this wallet's own). Returns the txid, or None when nothing was due."""
+    global _last_sweep, _swept_total
+    if MODE != "testnet" or not SWEEP_FROM:
+        return None
+    now = time.time() if now is None else now
+    if now - _last_sweep < SWEEP_SECONDS:
+        return None
+    if not _lock.acquire(blocking=False):
+        return None
+    try:
+        _last_sweep = now
+        check_chain()
+        held = sum(round(float(rpc("z_getbalance", a, 1, timeout=30)) * 1e8) for a in SWEEP_FROM)
+        if held < SWEEP_MIN_ZAT:
+            return None
+        r = rpc("z_mergetoaddress", SWEEP_FROM, source_address(), None, 50, 0, "", "AllowRevealedSenders", timeout=60)
+        txid = wait_opid(r["opid"])
+        zat = round(float(r.get("mergingTransparentValue", 0)) * 1e8)
+        _swept_total += zat
+        log(f"swept {zat / 1e8:.8f} YEC from {', '.join(SWEEP_FROM)} into the faucet in {txid}")
+        return txid
+    finally:
+        _lock.release()
 
 
 def testnet_pay(addr, kind, zat):
@@ -566,7 +608,8 @@ class H(http.server.BaseHTTPRequestHandler):
                       "# TYPE faucet_paid_zat_total counter", f"faucet_paid_zat_total {_paid_total}",
                       "# TYPE faucet_paid_zat_24h gauge", f"faucet_paid_zat_24h {_cap.total(now)}",
                       "# TYPE faucet_daily_cap_zat gauge", f"faucet_daily_cap_zat {DAILY_CAP_ZAT}",
-                      "# TYPE faucet_amount_zat gauge", f"faucet_amount_zat {AMOUNT_ZAT}"]
+                      "# TYPE faucet_amount_zat gauge", f"faucet_amount_zat {AMOUNT_ZAT}",
+                      "# TYPE faucet_swept_zat_total counter", f"faucet_swept_zat_total {_swept_total}"]
             if _probe["balance"] is not None:
                 lines += ["# TYPE faucet_balance_zat gauge", f"faucet_balance_zat {_probe['balance']}"]
         return self._send(200, "\n".join(lines) + "\n", "text/plain; version=0.0.4")

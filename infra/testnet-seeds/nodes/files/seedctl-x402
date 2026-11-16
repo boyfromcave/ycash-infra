@@ -1,0 +1,614 @@
+#!/bin/bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
+# seedctl-x402: the x402 half of seedctl (sourced by seedctl, never run by itself). A network whose
+# config has an `x402` runs the x402 demonstration beside its node (README.md, "The x402 host";
+# workspace docs/plans/x402-demonstrations.md §3.2): the paid chain-data API (x402-ycash
+# examples/chain-api), the x402 facilitator (x402-ycash packages/facilitator), the testnet faucet
+# (images/faucet, FAUCET_MODE=testnet) and a TLS proxy (Caddy) on one public name. The node keeps a
+# wallet: the faucet's, the only spending key on the host, and the API's payTo is one of its
+# transparent addresses, so what agents pay flows back to the faucet (decision D-4). Installed beside
+# seedctl by the deploy workflow (the module's host_files, `seedctl install-files`), kept on the data
+# volume for `boot`.
+# shellcheck disable=SC2034  # variables used by seedctl, which sources this file
+# shellcheck disable=SC2154  # D, O, UID_NODE, cfg, die, log, dinspect, cli, job_json, node_oom_kills, compose: seedctl's
+
+X4_DIGEST_RE='^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$'
+UID_X4API=2008               # the chain API (the image's own user is node, uid 1000; this one owns its data)
+UID_X4FAC=2009               # the facilitator
+UID_X4FAUCET=2010            # the faucet (its image's user is 2004; nothing of it is writable)
+UID_X4PROXY=2006             # Caddy runs as this uid, not root (as the explorer's and the lightwallet's proxy)
+# The x402 host's compose networks, fixed so the metadata rule, the node's RPC allow list and the
+# connection limit can name them. One x402 per host (the module refuses two, and an explorer or a
+# lightwallet beside one).
+X4_BACKEND=172.31.254        # internal: .10 TLS proxy, .11 node, .12 API, .13 facilitator, .14 faucet
+X4_EDGE=172.31.255           # the node's P2P out and the TLS proxy's published port (.10)
+X4_API=$X4_BACKEND.12
+X4_FAC=$X4_BACKEND.13
+X4_FAUCET=$X4_BACKEND.14
+X4_RPC_ALLOW="$X4_API $X4_FAC $X4_FAUCET"   # the three RPC clients; never the proxy
+X4_NODE_SWAP_MB=2048
+X4_API_PORT=4021
+X4_FAC_PORT=4022
+X4_FAUCET_PORT=8080
+
+x4_tls() { [ "$(cfg "$1" .x402.tls)" = true ]; }   # file
+x4_port() { if x4_tls "$1"; then echo 443; else echo 80; fi; }   # file: the one published port
+
+# check_config's x402 half: every value lands in a compose file, an env file, a JSON file or a
+# Caddyfile.
+x402_check() { # file name
+  jq -e --arg digest "$X4_DIGEST_RE" '
+    def whole($lo; $hi): type == "number" and . >= $lo and . <= $hi and . == floor;
+    (.insight == true) and (.pool == null) and (.explorer == null) and (.lightwallet == null) and (.network == "testnet")
+    and (.profile | test("^(fast|slow|legacy)$"))
+    and (.x402.hostname | test("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$"))
+    and ((.x402.acme_email // "") | test("^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+)?$"))
+    and (.x402.tls | type == "boolean")
+    and ([.x402.api_image, .x402.facilitator_image, .x402.faucet_image, .x402.proxy_image] | all(type == "string" and test($digest)))
+    and ((.x402.explorer_url // "") | test("^(https://[a-z0-9.-]+(/[A-Za-z0-9._~/-]*)?)?$"))
+    and ((.x402.lightwalletd // "") | test("^([a-z0-9.-]{1,253}(:[0-9]{1,5})?)?$"))
+    and (.x402.price_exact_zat | whole(1; 100000000))
+    and (.x402.price_broadcast_zat | whole(1; 100000000))
+    and (.x402.zero_conf_cap_zat | whole(1; 100000000))
+    and ([.x402.paid_per_minute, .x402.unpaid_per_minute, .x402.free_per_minute, .x402.conn_rate_limit] | all(whole(1; 100000)))
+    and (.x402.faucet.amount_zat | whole(1; 10000000000))
+    and (.x402.faucet.daily_cap_zat | whole(1; 1000000000000))
+    and (.x402.faucet.daily_cap_zat >= .x402.faucet.amount_zat)
+    and (.x402.faucet.per_ip | whole(1; 1000)) and (.x402.faucet.per_address | whole(1; 1000))
+    and (.x402.faucet.window_seconds | whole(60; 2592000))
+    and (.x402.faucet.pow_bits | whole(0; 28))
+    and (.x402.faucet.sweep_min_zat | whole(1; 10000000000))
+    and (.x402.node_mem_limit_mb | whole(512; 65536))
+    and (.x402.api_mem_limit_mb | whole(64; 8192))
+    and (.x402.facilitator_mem_limit_mb | whole(64; 8192))
+    and (.x402.faucet_mem_limit_mb | whole(32; 4096))
+  ' "$1" >/dev/null || die "the x402 in the config for $2 is not valid"
+}
+
+# The containers sit on the x402 host's two compose networks, not in host networking, so the metadata
+# service's hop limit of 1 already keeps them from an IMDSv2 token; a forward rule refuses them the
+# metadata address as well (as the explorer's and the lightwallet's).
+x402_imds_guard() {
+  local c=DOCKER-USER
+  iptables -n -L DOCKER-USER >/dev/null 2>&1 || c=FORWARD
+  iptables -C "$c" -s "$X4_BACKEND.0/23" -d 169.254.169.254/32 -j REJECT 2>/dev/null \
+    || iptables -I "$c" 1 -s "$X4_BACKEND.0/23" -d 169.254.169.254/32 -j REJECT \
+    || die "could not install the metadata rule for the x402 host's networks"
+}
+
+# New TCP connections to the TLS proxy, per client address: above x402.conn_rate_limit a minute
+# (bursts of twice that) the SYN is dropped before it reaches Caddy, so one address cannot hold the
+# proxy's sockets or spin the 402 path through fresh connections. Requests inside a kept-alive
+# connection are the API's own per-client limits (x402.paid_per_minute and the others). A changed limit replaces the
+# rule (the old one is found by its name).
+x402_conn_limit() { # net file
+  local c=DOCKER-USER n port rule r
+  iptables -n -L DOCKER-USER >/dev/null 2>&1 || c=FORWARD
+  n=$(cfg "$2" .x402.conn_rate_limit); port=$(x4_port "$2")
+  rule="-p tcp -d $X4_EDGE.10/32 --dport $port -m conntrack --ctstate NEW -m hashlimit --hashlimit-above $n/minute --hashlimit-burst $((n * 2)) --hashlimit-mode srcip --hashlimit-name x402-$1 -j DROP"
+  # shellcheck disable=SC2086  # the rule is words
+  if ! iptables -C "$c" $rule 2>/dev/null; then
+    while IFS= read -r r; do
+      # shellcheck disable=SC2086
+      [ -z "$r" ] || iptables -D "$c" ${r#-A "$c" } 2>/dev/null || true
+    done < <(iptables -S "$c" 2>/dev/null | grep -F -- "--hashlimit-name x402-$1 " || true)
+    # shellcheck disable=SC2086
+    iptables -I "$c" 1 $rule || die "could not install the connection limit for the x402 host"
+  fi
+}
+
+# The x402 files on the data volume (NET/x402): the facilitator's state (its replay store: the
+# settlement and channel stores, which must survive restarts and redeploys), Caddy's certificate, the
+# generated secret (the facilitator's API key), the faucet's two addresses once made, and the
+# configuration files each service reads. Every secret is made here, never leaves the host, and is readable by root and its one
+# service only; none is ever on a command line.
+x402_files() { # net file
+  local X="$D/$1/x402" f=$2
+  mkdir -p "$X/facilitator" "$X/caddy/data" "$X/caddy/config" "$X/secrets"
+  chmod 0711 "$X"; chmod 0700 "$X/secrets"
+  ( umask 077
+    [ -s "$X/secrets/api-key" ] || openssl rand -hex 32 > "$X/secrets/api-key" )
+  # the node's wallet export directory (seedctl x402-backup): inside the datadir, the node's uid only
+  mkdir -p "$D/$1/node/export"; chmod 0700 "$D/$1/node/export"
+  if [ "$(id -u)" = 0 ]; then
+    chown -R "$UID_X4FAC:$UID_X4FAC" "$X/facilitator"
+    chown -R "$UID_X4PROXY:$UID_X4PROXY" "$X/caddy"
+    chown "$UID_NODE:$UID_NODE" "$D/$1/node/export"
+    if [ -e "$X/mnemonic" ]; then chown "$UID_NODE:$UID_NODE" "$X/mnemonic"; chmod 0400 "$X/mnemonic"; fi
+  fi
+  x402_facilitator_json "$1" "$f" > "$X/facilitator.json.new"
+  chmod 0400 "$X/facilitator.json.new"
+  if [ "$(id -u)" = 0 ]; then chown "$UID_X4FAC:$UID_X4FAC" "$X/facilitator.json.new"; fi
+  mv -f "$X/facilitator.json.new" "$X/facilitator.json"
+}
+
+# The facilitator's configuration file (X402_FACILITATOR_CONFIG): the node's RPC credential and the
+# API key in a 0400 file of its own uid, never an environment variable. Settles at the mempool
+# (confirmations -1, the fast testnet's burst block production; the merchant caps what it accepts
+# that way, API_ZERO_CONF_CAP_ZAT) and refuses to start unless the node reports the network's
+# testnet profile (decision D-6).
+x402_facilitator_json() { # net file
+  # shellcheck source=/dev/null
+  ( . "$D/$1/rpc.env"
+    jq -n --arg url "http://$X4_BACKEND.11:$(cfg "$2" .rpc_port)/" --arg user "$YCASHD_RPC_USER" --arg pw "$YCASHD_RPC_PASSWORD" \
+      --arg key "$(cat "$D/$1/x402/secrets/api-key")" --arg profile "$(cfg "$2" .profile)" --argjson port "$X4_FAC_PORT" '
+      {network: "ycash:testnet", host: "0.0.0.0", port: $port,
+       rpc: {url: $url, user: $user, password: $pw},
+       apiKey: $key, testnetProfile: $profile,
+       confirmations: {minimum: -1, maximum: 1},
+       settlementStorePath: "/data/settlements.json", channelStorePath: "/data/channels.json",
+       trustProxy: 0, rateLimit: {windowMs: 60000, max: 1200}}' )
+}
+
+# The API's environment (x402-ycash examples/chain-api, src/config.ts): written only once the
+# faucet's transparent address exists (API_PAY_TO). It trusts one proxy hop (API_TRUST_PROXY=1): the
+# TLS proxy overwrites X-Forwarded-For, and the API's port is on the internal network only.
+# Root-only; Docker reads it.
+x402_api_env() { # net file
+  local X="$D/$1/x402" f=$2
+  # shellcheck source=/dev/null
+  ( . "$D/$1/rpc.env"
+    cat <<ENV
+HOST=0.0.0.0
+PORT=$X4_API_PORT
+X402_NETWORK=ycash:testnet
+FACILITATOR_URL=http://$X4_FAC:$X4_FAC_PORT
+FACILITATOR_API_KEY=$(cat "$X/secrets/api-key")
+API_PAY_TO=$(cat "$X/payto")
+API_RPC_URL=http://$X4_BACKEND.11:$(cfg "$f" .rpc_port)/
+API_RPC_USER=$YCASHD_RPC_USER
+API_RPC_PASSWORD=$YCASHD_RPC_PASSWORD
+API_PRICE_ZAT=$(cfg "$f" .x402.price_exact_zat)
+API_PRICE_BROADCAST_ZAT=$(cfg "$f" .x402.price_broadcast_zat)
+API_ZERO_CONF_CAP_ZAT=$(cfg "$f" .x402.zero_conf_cap_zat)
+API_PAID_PER_MINUTE=$(cfg "$f" .x402.paid_per_minute)
+API_UNPAID_PER_MINUTE=$(cfg "$f" .x402.unpaid_per_minute)
+API_FREE_PER_MINUTE=$(cfg "$f" .x402.free_per_minute)
+API_TRUST_PROXY=1
+API_LINK_FAUCET=$(if x4_tls "$f"; then echo https; else echo http; fi)://$(cfg "$f" .x402.hostname)/faucet/
+ENV
+    [ -z "$(cfg "$f" '.x402.explorer_url // ""')" ] || echo "API_LINK_EXPLORER=$(cfg "$f" .x402.explorer_url)"
+    [ -z "$(cfg "$f" '.x402.lightwalletd // ""')" ] || echo "API_LINK_LIGHTWALLETD=$(cfg "$f" .x402.lightwalletd)"
+  )
+}
+
+# The faucet's environment (images/faucet, testnet mode): it pays from the wallet's Sapling address
+# (FAUCET_FROM), refuses unless the node is on this testnet profile, and sweeps what agents paid to
+# payTo back into that address (SWEEP_FROM). Root-only; Docker reads it.
+x402_faucet_env() { # net file
+  local X="$D/$1/x402" f=$2
+  # shellcheck source=/dev/null
+  ( . "$D/$1/rpc.env"
+    cat <<ENV
+FAUCET_MODE=testnet
+PORT=$X4_FAUCET_PORT
+RPC_URL=http://$X4_BACKEND.11:$(cfg "$f" .rpc_port)/
+RPC_USER=$YCASHD_RPC_USER
+RPC_PASSWORD=$YCASHD_RPC_PASSWORD
+NETWORK_NAME=testnet-yb-$(cfg "$f" .profile)
+FAUCET_PROFILE=$(cfg "$f" .profile)
+FAUCET_FROM=$(cat "$X/zaddr")
+AMOUNT_ZAT=$(cfg "$f" .x402.faucet.amount_zat)
+DAILY_CAP_ZAT=$(cfg "$f" .x402.faucet.daily_cap_zat)
+PER_IP_LIMIT=$(cfg "$f" .x402.faucet.per_ip)
+PER_IP_WINDOW=$(cfg "$f" .x402.faucet.window_seconds)
+PER_ADDR_LIMIT=$(cfg "$f" .x402.faucet.per_address)
+PER_ADDR_WINDOW=$(cfg "$f" .x402.faucet.window_seconds)
+POW_BITS=$(cfg "$f" .x402.faucet.pow_bits)
+RATE_SECONDS=5
+TRUSTED_PROXY_HOPS=1
+PARAMS_ENABLED=0
+SWEEP_FROM=$(cat "$X/payto")
+SWEEP_MIN_ZAT=$(cfg "$f" .x402.faucet.sweep_min_zat)
+ENV
+  )
+}
+
+# The Caddyfile: TLS for the public name (Let's Encrypt over the TLS-ALPN challenge on 443, the only
+# port the security group opens: no HTTP challenge, no port 80, no redirect), HTTP/1.1 and HTTP/2,
+# 64 KB of headers (a payment travels in one), 256 KB of body (the paid broadcast route takes a
+# transaction of up to 100,000 bytes as hex), header,
+# body and idle timeouts. The faucet's own paths (never its /metrics) go to the faucet, everything
+# else to the API. The client's address goes in X-Forwarded-For, which Caddy sets itself (a client's
+# own header is replaced), so the faucet's and the API's per-client limits count real clients. Plain
+# HTTP (tls false): port 80 only.
+x402_caddyfile() { # net file
+  local host email site
+  host=$(cfg "$2" .x402.hostname); email=$(cfg "$2" '.x402.acme_email // ""')
+  printf '# rendered by seedctl for %s: the x402 host (ycash-infra infra/testnet-seeds/README.md, "The x402 host")\n{\n\tadmin off\n' "$1"
+  if x4_tls "$2"; then
+    site=$host
+    printf '\tauto_https disable_redirects\n\tcert_issuer acme {\n\t\tdisable_http_challenge\n'
+    [ -z "$email" ] || printf '\t\temail %s\n' "$email"
+    printf '\t}\n'
+  else
+    site=:80
+    printf '\tauto_https off\n'
+  fi
+  cat <<CADDY
+	servers {
+		# HTTP/3 would need UDP 443, which the security group does not open
+		protocols h1 h2
+		max_header_size 64KB
+		timeouts {
+			read_header 10s
+			read_body 30s
+			write 60s
+			idle 2m
+		}
+	}
+}
+
+$site {
+	log {
+		output stdout
+		format json
+	}
+	request_body {
+		max_size 256KB
+	}
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+	}
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000"
+	@faucet path /faucet /faucet/ /faucet/index.html /faucet/testnet.js /faucet/info /faucet/challenge /faucet/send
+	handle @faucet {
+		reverse_proxy $X4_FAUCET:$X4_FAUCET_PORT {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+	handle /faucet/* {
+		respond 404
+	}
+	handle {
+		reverse_proxy $X4_API:$X4_API_PORT {
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+	handle_errors 502 503 504 {
+		respond "This x402 demonstration is starting: the node is importing the chain. Try again in a few minutes." 503
+	}
+}
+CADDY
+}
+
+# The faucet's wallet across a reset: the reset deletes the chain (NET/node), and with it the
+# datadir's wallet.dat. It moves aside first (NET/x402/keep) and returns after the bootstrap (an
+# empty datadir is what lets the bootstrap frame the prefix), so a reset never loses the faucet's
+# keys; the node rescans the new chain for them.
+x402_keep_wallet() { # net
+  local N="$D/$1/node" K="$D/$1/x402/keep" w rel
+  mkdir -p "$K"
+  for w in "$N"/*/wallet.dat "$N/wallet.dat" "$N/export"; do
+    [ -e "$w" ] || continue
+    rel=${w#"$N"/}; mkdir -p "$K/$(dirname "$rel")"; mv -f "$w" "$K/$rel"
+  done
+}
+x402_restore_wallet() { # net (after the bootstrap)
+  local N="$D/$1/node" K="$D/$1/x402/keep" w rel
+  [ -d "$K" ] || return 0
+  while IFS= read -r w; do
+    rel=${w#"$K"/}; mkdir -p "$N/$(dirname "$rel")"
+    [ -e "$N/$rel" ] || mv -f "$w" "$N/$rel"
+  done < <(find "$K" -mindepth 1 \( -name wallet.dat -o -name export \) -prune -print)
+  rm -rf "$K"
+  log "$1: the faucet's wallet is back in the datadir; the node rescans the chain for it"
+}
+
+# The faucet's two addresses, made once by the node's wallet and kept (NET/x402/payto, NET/x402/zaddr):
+# a transparent address, the API's payTo (API_PAY_TO must be a P2PKH address), and a Sapling address,
+# the faucet's source (FAUCET_FROM). A wallet restored from a recovery phrase (NET/x402/mnemonic) has
+# its first Sapling address already; otherwise one is made. Needs the node's RPC.
+x402_addresses() { # net
+  local X="$D/$1/x402" a v
+  if [ ! -s "$X/payto" ]; then
+    a=$(cli "$1" getnewaddress 2>/dev/null) || return 1
+    v=$(cli "$1" validateaddress "$a" 2>/dev/null) || return 1
+    jq -e '.isvalid == true and (has("pqscheme") | not) and (.isscript | not)' <<<"$v" >/dev/null \
+      || die "$1: the wallet's new address $a is not a plain transparent address: the API's payTo must be one"
+    [[ "$a" =~ ^[1-9A-HJ-NP-Za-km-z]{26,40}$ ]] || die "$1: unexpected address $a"
+    echo "$a" > "$X/payto"
+    log "$1: the faucet wallet's transparent address (the API's payTo): $a"
+  fi
+  if [ ! -s "$X/zaddr" ]; then
+    a=$(cli "$1" z_listaddresses 2>/dev/null | jq -r '[.[] | select(test("sapling1"))][0] // empty') || return 1
+    [ -n "$a" ] || a=$(cli "$1" z_getnewaddress sapling 2>/dev/null) || return 1
+    [[ "$a" =~ ^[a-z]+sapling1[02-9ac-hj-np-z]{20,120}$ ]] || die "$1: unexpected Sapling address $a"
+    echo "$a" > "$X/zaddr"
+    log "$1: the faucet wallet's Sapling address (the faucet pays from it; fund it here): $a"
+  fi
+}
+
+# render's x402 branch: the node on the x402 host's networks instead of host networking, hardened
+# as the lightwallet's and with its wallet (the faucet's; x402.node_mem_limit_mb of RAM and
+# X4_NODE_SWAP_MB of swap beyond it, README.md "The x402 host"), the TLS proxy at once, the
+# facilitator once the prefix is imported, the faucet and the API once the faucet's addresses exist
+# (x402_up, prefix-check). backend is internal (no route out): none of the three services can reach
+# anything but each other and the node. Only the TLS proxy publishes a port.
+render_x402() { # net file loadblock-flags
+  local net=$1 f=$2 importing=$3 N="$D/$1/node" R="$O/net/$1" X="$D/$1/x402" mem port mn=""
+  x402_imds_guard
+  x402_conn_limit "$net" "$f"
+  x402_files "$net" "$f"
+  mem=$(cfg "$f" .x402.node_mem_limit_mb); port=$(x4_port "$f")
+  x402_caddyfile "$net" "$f" > "$R/Caddyfile.new"
+  # it carries the certificate contact: root and Caddy's group only
+  chmod 0640 "$R/Caddyfile.new"
+  if [ "$(id -u)" = 0 ]; then chown "0:$UID_X4PROXY" "$R/Caddyfile.new"; fi
+  mv -f "$R/Caddyfile.new" "$R/Caddyfile"
+  # a recovery phrase placed by the operator (README.md, "The faucet's wallet"): read by ycashd only
+  # when it creates the wallet, ignored for an existing wallet with this seed
+  if [ -e "$X/mnemonic" ]; then
+    mn=$'\n    environment: { YCASHD_MNEMONIC_FILE: /run/ycash/mnemonic }'
+    mn="$mn"$'\n'"    volumes: [\"$N:/var/lib/ycash\", \"$X/mnemonic:/run/ycash/mnemonic:ro\"]"
+  else
+    mn=$'\n'"    volumes: [\"$N:/var/lib/ycash\"]"
+  fi
+  cat > "$R/compose.yaml" <<YAML
+name: ycash-$net
+services:
+  ycashd:
+    image: $(cfg "$f" .image)
+    container_name: ycashd-$net
+    restart: unless-stopped
+    user: "$UID_NODE:$UID_NODE"
+    read_only: true
+    tmpfs: ["/tmp", "/srv/ycash"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks:
+      backend: { ipv4_address: "$X4_BACKEND.11" }
+      edge: {}
+    env_file: [$D/$net/rpc.env, $R/node.env]$mn
+    mem_limit: ${mem}m
+    memswap_limit: $((mem + X4_NODE_SWAP_MB))m
+    stop_grace_period: 180s
+    logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
+YAML
+  if [ -z "$importing" ]; then
+    cat >> "$R/compose.yaml" <<YAML
+  facilitator:
+    image: $(cfg "$f" .x402.facilitator_image)
+    container_name: facilitator-$net
+    restart: unless-stopped
+    user: "$UID_X4FAC:$UID_X4FAC"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      X402_FACILITATOR_CONFIG: /etc/x402/facilitator.json
+      X402_HOST: 0.0.0.0
+      X402_PORT: "$X4_FAC_PORT"
+      X402_SETTLEMENT_STORE: /data/settlements.json
+      X402_CHANNEL_STORE: /data/channels.json
+    volumes: ["$X/facilitator.json:/etc/x402/facilitator.json:ro", "$X/facilitator:/data"]
+    networks:
+      backend: { ipv4_address: "$X4_FAC" }
+    depends_on: { ycashd: { condition: service_started } }
+    mem_limit: $(cfg "$f" .x402.facilitator_mem_limit_mb)m
+    healthcheck: { test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:$X4_FAC_PORT/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"], interval: 30s, timeout: 5s, retries: 3, start_period: 60s }
+    stop_grace_period: 35s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+YAML
+  fi
+  if [ -z "$importing" ] && [ -s "$X/payto" ] && [ -s "$X/zaddr" ]; then
+    x402_api_env "$net" "$f" > "$X/api.env.new"; chmod 0400 "$X/api.env.new"; mv -f "$X/api.env.new" "$X/api.env"
+    x402_faucet_env "$net" "$f" > "$X/faucet.env.new"; chmod 0400 "$X/faucet.env.new"; mv -f "$X/faucet.env.new" "$X/faucet.env"
+    cat >> "$R/compose.yaml" <<YAML
+  api:
+    image: $(cfg "$f" .x402.api_image)
+    container_name: x402api-$net
+    restart: unless-stopped
+    user: "$UID_X4API:$UID_X4API"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file: [$X/api.env]
+    networks:
+      backend: { ipv4_address: "$X4_API" }
+    depends_on: { facilitator: { condition: service_started } }
+    mem_limit: $(cfg "$f" .x402.api_mem_limit_mb)m
+    healthcheck: { test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:$X4_API_PORT/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"], interval: 30s, timeout: 5s, retries: 3, start_period: 60s }
+    stop_grace_period: 35s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+  faucet:
+    image: $(cfg "$f" .x402.faucet_image)
+    container_name: faucet-$net
+    restart: unless-stopped
+    user: "$UID_X4FAUCET:$UID_X4FAUCET"
+    read_only: true
+    tmpfs: ["/tmp:size=8m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file: [$X/faucet.env]
+    networks:
+      backend: { ipv4_address: "$X4_FAUCET" }
+    depends_on: { ycashd: { condition: service_started } }
+    mem_limit: $(cfg "$f" .x402.faucet_mem_limit_mb)m
+    healthcheck: { test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:$X4_FAUCET_PORT/info"], interval: 30s, timeout: 10s, retries: 3, start_period: 30s }
+    stop_grace_period: 10s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+YAML
+  fi
+  cat >> "$R/compose.yaml" <<YAML
+  x402proxy:
+    image: $(cfg "$f" .x402.proxy_image)
+    container_name: x402proxy-$net
+    restart: unless-stopped
+    # not root: the binary's file capability needs NET_BIND_SERVICE in the bounding set, the one kept
+    user: "$UID_X4PROXY:$UID_X4PROXY"
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    volumes: ["$R/Caddyfile:/etc/caddy/Caddyfile:ro", "$X/caddy/data:/data", "$X/caddy/config:/config"]
+    # TCP only (HTTP/3 is off); one port: 443 (80 without TLS)
+    ports: ["$port:$port"]
+    networks:
+      backend: { ipv4_address: "$X4_BACKEND.10" }
+      edge: { ipv4_address: "$X4_EDGE.10" }
+    mem_limit: 128m
+    stop_grace_period: 10s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+networks:
+  backend:
+    internal: true
+    # the fixed addresses (.10 to .14) below the dynamic range, so a recreated container can never take one
+    ipam: { config: [{ subnet: "$X4_BACKEND.0/24", ip_range: "$X4_BACKEND.128/25" }] }
+  edge:
+    ipam: { config: [{ subnet: "$X4_EDGE.0/24", ip_range: "$X4_EDGE.128/25" }] }
+YAML
+}
+
+# A container's health, or its state when it has no healthcheck; "absent" when it does not exist.
+x4_health() { dinspect '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" absent; }
+
+wait_x402() { # net seconds: every rendered service healthy (the proxy running)
+  local i=0 sc ok
+  while [ "$i" -lt "$2" ]; do
+    ok=1
+    for sc in facilitator:facilitator api:x402api faucet:faucet; do   # compose service:container prefix
+      grep -q "^  ${sc%%:*}:" "$O/net/$1/compose.yaml" || continue
+      [ "$(x4_health "${sc#*:}-$1")" = healthy ] || ok=0
+    done
+    [ "$(dinspect '{{.State.Status}}' "x402proxy-$1" absent)" = running ] || ok=0
+    [ "$ok" = 0 ] || return 0
+    sleep 5; i=$((i + 5))
+  done
+  return 1
+}
+
+# apply (after the node's RPC answers) and prefix-check (after the import): the faucet's addresses
+# once the chain is imported, then the services that need them.
+x402_up() { # net
+  local f="$D/$1/applied.json" N="$D/$1/node"
+  if [ -e "$N/prefix/FRAMED" ] && [ ! -e "$N/prefix/IMPORTED" ]; then
+    log "$1 x402: the TLS proxy up; the facilitator, the faucet and the API start once the prefix is imported (prefix-check, every 10 minutes)"
+    return 0
+  fi
+  if ! grep -q '^  api:' "$O/net/$1/compose.yaml"; then
+    x402_addresses "$1" || die "$1: the node's wallet did not answer for the faucet's addresses (docker logs ycashd-$1)"
+    render "$1" "$f"
+    compose "$1" up -d
+  fi
+  wait_x402 "$1" 600 || die "$1: the x402 services did not become healthy within 10 minutes (docker logs facilitator-$1 / x402api-$1 / faucet-$1 / x402proxy-$1)"
+  log "$1 x402 up: $(cfg "$f" .x402.hostname); payTo $(cat "$D/$1/x402/payto"), faucet $(cat "$D/$1/x402/zaddr")"
+}
+
+# seedctl x402-backup NET: the wallet's export (z_exportwallet: the recovery phrase and every key) into
+# the node's export directory on the data volume, root and the node's uid only. It prints the file's
+# path on the host, never its content: the operator copies the recovery phrase off the host in an
+# interactive SSM session (README.md, "The faucet's wallet"), not through Run Command, whose output
+# is kept by SSM.
+x402_backup() { # net
+  local f="$D/$1/applied.json" name out
+  if [ ! -e "$f" ] || ! x4_of "$f"; then die "$1 has no x402 on this host"; fi
+  name="faucet$(date -u +%Y%m%d%H%M%S)"
+  out=$(cli "$1" z_exportwallet "$name" 2>&1) || die "$1: z_exportwallet failed: $out"
+  echo "the faucet wallet's export: $D/$1/node/export/$name (read it as root in an SSM session; delete it once copied)"
+}
+
+# One HTTP request through the TLS proxy, as a client makes it: its status code, or "none" (no
+# connection). The paid route answers 402 with a PAYMENT-REQUIRED header (the x402 v2 transport).
+x4_probe() { # url [curl options...]
+  local url=$1 h code req=""; shift
+  h=$(mktemp)
+  code=$(curl -sS -o /dev/null -D "$h" -w '%{http_code}' --max-time 10 "$@" "$url" 2>/dev/null || true)
+  if grep -qi '^payment-required:' "$h" 2>/dev/null; then req=" payment-required"; fi
+  rm -f "$h"
+  if [ -n "$code" ] && [ "$code" != 000 ]; then echo "$code$req"; else echo none; fi
+}
+
+# status's `x402` field: the five containers (each state and health, the node's restarts and OOM kills
+# as the explorer's), the node's own view, the faucet's addresses and balances (the Sapling address
+# it pays from, confirmed; payTo, what agents paid and the faucet has not swept yet, including the
+# mempool), the claims the facilitator holds (one per settled payment, until pruned), the faucet's
+# /info, four probes (the free route /pricing and the paid route /v1/address/<payTo>, on this host for the name and through the
+# public name: DNS, the Elastic IP, the security group, the certificate), and `phase`. `serving`
+# needs the node within a block of its peers' headers with at least one peer, every service healthy,
+# and both routes answering on the host as they should (free 200, paid 402 with its header).
+x402_status() { # net
+  local f="$D/$1/applied.json" N="$D/$1/node" X="$D/$1/x402" host url kc k c st='{}' x r o rs='{}' oom='{}'
+  local started kills noom restarted="" blocks headers conns last phase job resolve=() payto zaddr
+  local zbal tbal claims finfo fh ph fp pp
+  [ "$(cfg "$f" '.x402 != null' 2>/dev/null)" = true ] || { echo null; return 0; }
+  host=$(cfg "$f" .x402.hostname)
+  for kc in ycashd:ycashd facilitator:facilitator api:x402api faucet:faucet proxy:x402proxy; do
+    k=${kc%%:*}; c=${kc#*:}
+    if [ "$c" != ycashd ]; then st=$(jq -c --arg k "$k" --arg v "$(dinspect '{{.State.Status}}{{if .State.Health}} {{.State.Health.Status}}{{end}}' "$c-$1" absent)" '. + {($k): $v}' <<<"$st"); fi
+    x=$(dinspect '{{.RestartCount}} {{.State.OOMKilled}}' "$c-$1" "")
+    r=${x%% *}; o=${x#* }
+    [[ "$r" =~ ^[0-9]+$ ]] || r=null
+    [[ "$o" =~ ^(true|false)$ ]] || o=null
+    rs=$(jq -c --arg k "$k" --argjson v "$r" '. + {($k): $v}' <<<"$rs")
+    oom=$(jq -c --arg k "$k" --argjson v "$o" '. + {($k): $v}' <<<"$oom")
+  done
+  started=$(dinspect '{{.State.StartedAt}}' "ycashd-$1" "")
+  kills=$(node_oom_kills "$started")
+  noom=$(jq -r --argjson docker "$(jq .ycashd <<<"$oom")" '.sinceStart as $s
+    | if $docker == true or ($s != null and $s.cgroup > 0) then "yes"
+      elif $s != null and $s.host > 0 then "yes, the host ran out of memory"
+      elif $s == null then "unknown" else "no" end' <<<"$kills")
+  r=$(jq -r '.ycashd // 0' <<<"$rs")
+  if [ "$r" -gt 0 ]; then restarted=", node restarted $r time$([ "$r" = 1 ] || echo s) (OOM: $noom)"; fi
+  payto=$(cat "$X/payto" 2>/dev/null || true); zaddr=$(cat "$X/zaddr" 2>/dev/null || true)
+  zbal=""; tbal=""
+  if [ -n "$zaddr" ]; then zbal=$(cli "$1" z_getbalance "$zaddr" 1 2>/dev/null || true); fi
+  if [ -n "$payto" ]; then tbal=$(cli "$1" z_getbalance "$payto" 0 2>/dev/null || true); fi
+  [[ "$zbal" =~ ^[0-9]+(\.[0-9]+)?$ ]] || zbal=""; [[ "$tbal" =~ ^[0-9]+(\.[0-9]+)?$ ]] || tbal=""
+  claims=$(jq '.claims | length' "$X/facilitator/settlements.json" 2>/dev/null || true); [[ "$claims" =~ ^[0-9]+$ ]] || claims=""
+  finfo=$(docker exec "faucet-$1" wget -q -O - "http://127.0.0.1:$X4_FAUCET_PORT/info" 2>/dev/null \
+    | jq -c '{available, tip, amountZat, powBits}' 2>/dev/null || true)
+  [ -n "$finfo" ] || finfo=null
+  if x4_tls "$f"; then
+    url="https://$host"; resolve=(--resolve "$host:443:127.0.0.1")
+    fh=$(x4_probe "$url/pricing" "${resolve[@]}"); ph=$(x4_probe "$url/v1/address/${payto:-none}" "${resolve[@]}")
+  else
+    url="http://$host"
+    fh=$(x4_probe "http://127.0.0.1/pricing"); ph=$(x4_probe "http://127.0.0.1/v1/address/${payto:-none}")
+  fi
+  fp=$(x4_probe "$url/pricing"); pp=$(x4_probe "$url/v1/address/${payto:-none}")
+  blocks=$(cli "$1" getblockcount 2>/dev/null || true); [[ "$blocks" =~ ^[0-9]+$ ]] || blocks=""
+  headers=$(cli "$1" getblockchaininfo 2>/dev/null | jq -r '.headers // empty' 2>/dev/null || true); [[ "$headers" =~ ^[0-9]+$ ]] || headers=""
+  conns=$(cli "$1" getconnectioncount 2>/dev/null || true); [[ "$conns" =~ ^[0-9]+$ ]] || conns=""
+  job=$(job_json)
+  if [ "$(jq -r '.state // ""' <<<"$job")" = running ]; then
+    phase="deploying: $(jq -r '.phase // "starting"' <<<"$job") (since $(jq -r '.phaseSince // .started' <<<"$job"))"
+  elif [ -e "$N/prefix/FRAMED" ] && [ ! -e "$N/prefix/IMPORTED" ]; then
+    last=$(cat "$N/prefix/LAST_HEIGHT" 2>/dev/null || echo 0)
+    if [ -z "$blocks" ] || [ "$last" -le 0 ]; then phase="prefix import: the node is starting$restarted"
+    elif [ "$blocks" -ge "$last" ]; then phase="prefix imported (height $blocks): the services start at the next prefix check (every 10 minutes)$restarted"
+    else phase="prefix import: $blocks of $last ($((blocks * 100 / last)) %)$restarted"; fi
+  elif [ "$(x4_health "x402api-$1")" != healthy ] || [ "$(x4_health "facilitator-$1")" != healthy ] || [ "$(x4_health "faucet-$1")" != healthy ]; then
+    phase="a service is not healthy: facilitator $(x4_health "facilitator-$1"), api $(x4_health "x402api-$1"), faucet $(x4_health "faucet-$1")$restarted"
+  elif [ -n "$blocks" ] && [ -n "$headers" ] && [ "$headers" -gt $((blocks + 1)) ]; then
+    phase="the node is catching up: $blocks of $headers headers"
+  elif [ "$conns" = 0 ]; then
+    phase="the node has no peers (height ${blocks:-?}): it cannot know the network's tip"
+  elif [ "$fh" = 200 ] && [ "$ph" = "402 payment-required" ]; then
+    phase=serving
+  else
+    phase="starting (the TLS proxy answers $fh on the free route, $ph on the paid route, on this host)"
+  fi
+  jq -cn --argjson c "$st" --arg url "$url" --arg phase "$phase" --arg payto "$payto" --arg zaddr "$zaddr" \
+    --arg zbal "$zbal" --arg tbal "$tbal" --arg claims "$claims" --argjson finfo "$finfo" \
+    --arg fh "$fh" --arg ph "$ph" --arg fp "$fp" --arg pp "$pp" \
+    --argjson rs "$rs" --argjson oom "$oom" --arg started "$started" --argjson kills "$kills" \
+    --arg blocks "$blocks" --arg headers "$headers" --arg conns "$conns" \
+    'def num: if . == "" then null else tonumber end;
+     def str: if . == "" then null else . end;
+     {phase: $phase, url: $url} + $c
+     + {payTo: ($payto | str), faucetAddress: ($zaddr | str),
+        faucetBalance: ($zbal | str), payToBalance: ($tbal | str), settlementClaims: ($claims | num), faucetInfo: $finfo}
+     + {node: {blocks: ($blocks | num), headers: ($headers | num), connections: ($conns | num)}}
+     + {freeOnHost: $fh, paidOnHost: $ph, freePublic: $fp, paidPublic: $pp}
+     + {restarts: $rs, oomKilled: $oom, nodeStartedAt: (if $started == "" then null else $started end), nodeOomKills: $kills.sinceStart, nodeOomKillsSinceBoot: $kills.sinceBoot}'
+}

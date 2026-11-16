@@ -308,15 +308,16 @@ kind/kind.yaml        the kind cluster (ports 443 and 9067 mapped to the host); 
 scripts/              kind-up.sh, demo.sh + kind-cert.sh (the demo kit), smoke.sh, parity.sh (K3), kind-personas.py (K0c), wait-for.sh, vast-fleet.py (the Vast.ai miner fleet; tests/ with a stand-in Vast API)
 load/                 ghz scenarios (plan K1)
 infra/eks/            Terraform: module/ (VPC, EKS, node group, IRSA, ECR, RDS, Secrets Manager, the add-ons as helm_release; one namespace per network) and a thin example root
-infra/testnet-seeds/  Terraform: the seed hosts on EC2 + Elastic IPs (ips/, nodes/), every testnet on each host, seedctl; the same module makes the pool, explorer and lightwallet hosts (its README)
+infra/testnet-seeds/  Terraform: the seed hosts on EC2 + Elastic IPs (ips/, nodes/), every testnet on each host, seedctl; the same module makes the pool, explorer, lightwallet and x402 hosts (its README)
 infra/mainnet-harvest/ Terraform: the mainnet history harvest on a one-shot EC2 instance (results bucket, launch template; its README)
 infra/vast-miners/    the testnet GPU miner fleet on Vast.ai: fleet.example.json and its README; scripts/vast-fleet.py reconciles it
 bundles/prefix/       the Zcash testnet history bundle: format (FORMAT.md), harvest, import checks (testnet-prefix*.yml)
 bundles/state/        the state bundles: format (FORMAT.md: ycash-state/1 testnet, /2 and /3 mainnet, /3 in 1 GiB parts; kogany-state), verify.py, mainnet/ (the snapshot tools), the offline tests
 bundles/zcash-params/ the mirrored Zcash parameter files' checksums (zcash-params.yml)
-.github/workflows/    ci, the security scans, node-image (the ycashd image), lightwalletd-image, yolo-image, miner-image (the testnet GPU miner), prefix-frame-image, testnet-prefix(-import), mainnet-prefix(-import), zcash-params
+.github/workflows/    ci, the security scans, node-image (the ycashd image), lightwalletd-image, yolo-image, miner-image (the testnet GPU miner), prefix-frame-image, faucet-image (the testnet faucet, for the x402 host), testnet-prefix(-import), mainnet-prefix(-import), zcash-params
 keys/                 public keys only: ycash-release.pub, the Ycash release minisign key for release SHA256SUMS (its README)
 docs/eks-runbook.md   EKS: empty account → smoke green, cost, rollback, open decisions
 docs/try-it.md        the tester's guide to the demo kit (the wallet's screens, the walk, troubleshooting)
+docs/x402-host-threats.md  the x402 host: what an attacker gains, the abuse cases and the limits that answer each
 docs/plans/           ycash-infra-plan.md (phases K0–K4, decisions, status)
 ```

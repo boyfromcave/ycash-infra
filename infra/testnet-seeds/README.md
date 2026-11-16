@@ -650,6 +650,124 @@ What a `lightwallet` adds, per host (`files/seedctl-lightwallet`, seedctl's ligh
 - **The certificate contact** (`lightwallet_acme_email`, optional) is handled as the explorer's
   (sensitive in the module, root-only on the host).
 
+## The x402 host (a network's `x402`)
+
+The same module, called from a fifth root with its own state, makes an **x402 host**: one small
+machine that runs the fast testnet's x402 demonstration at one public HTTPS name (workspace
+`docs/plans/x402-demonstrations.md` §3.2, decisions D-2, D-4, D-6 and D-10): a paid chain-data API
+that agents pay per request in testnet YEC, the x402 facilitator that checks and relays their
+payments, and the testnet faucet that gives visitors their first coins. Like the pool, explorer and
+lightwallet hosts it is never a seed: its own address, state, deploy layer and role. What an attacker
+gains from it and the limits that answer each abuse: [`docs/x402-host-threats.md`](../../docs/x402-host-threats.md).
+
+```hcl
+module "x402" {   # e.g. the operator's testnet-x402/nodes root, one host, fast only
+  source            = "git::https://github.com/<owner>/ycash-infra.git//infra/testnet-seeds/nodes?ref=<sha>"
+  seeds             = data.terraform_remote_state.ips.outputs.seeds    # its own ips root, one address
+  name_prefix       = "testnet-x402"
+  vpc_cidr          = "10.81.0.0/16"
+  instance_type     = "t3a.small"
+  data_volume_size  = 20
+  swap_mb           = 4096
+  p2p_ingress_cidrs = []                       # nothing published for P2P: the node only connects out
+  extra_args        = "-dbcache=128 -maxconnections=16"
+  networks = {
+    yb-fast = {
+      profile    = "fast"
+      extra_args = "-listen=0 -addnode=<seed address>:18833 ..."   # fixed outbound peers, by address
+      insight    = true                        # -txindex -insightexplorer: the API's address reports
+      x402 = {
+        hostname          = "<the host's name>"   # its A record points at the host's address
+        api_image         = "ghcr.io/<owner>/x402-ycash-chain-api@sha256:..."
+        facilitator_image = "ghcr.io/<owner>/x402-ycash-facilitator@sha256:..."
+        faucet_image      = "ghcr.io/<owner>/ycash-faucet@sha256:..."       # faucet-image.yml
+        proxy_image       = "caddy:2.10-alpine@sha256:..."
+        explorer_url      = "https://<the explorer's name>"
+        lightwalletd      = "<the light-wallet server>:443"                  # shown on the API's page
+        # price_exact_zat = 10000, price_broadcast_zat = 10000, zero_conf_cap_zat = 100000   (D-10)
+        # faucet = { amount_zat = 10000000, daily_cap_zat = 1000000000, pow_bits = 16, ... }
+      }
+    }
+  }
+  x402_acme_email = var.acme_email             # optional certificate contact; from a secret, never committed
+  prefix = { ... }                             # the same testnet-prefix-v1 pin as the seeds
+}
+```
+
+What an `x402` adds, per host (`files/seedctl-x402`, seedctl's x402 half):
+
+| Container | Image | Runs as | Networks | Notes |
+|---|---|---|---|---|
+| `ycashd-<key>` | the network's node image | uid 2001, read-only root, no capabilities | `backend` (.11), `edge` | `YCASHD_INSIGHT=1`; **keeps its wallet** (no `-disablewallet`): the faucet's, the host's only spending key, in the datadir on the encrypted data volume; `-exportdir` for `seedctl x402-backup`, `-rpcthreads=8 -rpcworkqueue=64` (three RPC clients); RPC bound to its `backend` address and loopback only, allowed for the API's, the facilitator's and the faucet's fixed addresses (`172.31.254.12`–`.14`) and loopback, never the proxy; no published port; P2P out through `edge`; `node_mem_limit_mb` (1536 MiB) plus 2 GiB of swap |
+| `facilitator-<key>` | `x402.facilitator_image` (x402-ycash `packages/facilitator`) | uid 2009, read-only root, no capabilities, 192 MiB | `backend` only (.13) | port 4022, reachable from the API only; `/verify` and `/settle` need the API key (`apiKey`); its configuration in a 0400 file of its uid (`x402/facilitator.json`: the node's RPC credential, the API key, `ycash:testnet`, `testnetProfile` = the network's profile (D-6: it refuses to start on another testnet), mempool settlement allowed (confirmations −1 to 1)); its settlement and channel stores in `x402/facilitator` (one claim per settled txid, so one payment buys one request); holds no spending key; healthcheck `/healthz` |
+| `x402api-<key>` | `x402.api_image` (x402-ycash `examples/chain-api`) | uid 2008, read-only root, no capabilities, 256 MiB | `backend` only (.12) | port 4021; the paid routes (`/v1/address`, `/v1/tx`, `/v1/block`, `/v1/chain`, `/v1/yellowback` at `price_exact_zat`; `POST /v1/broadcast`, the paid relay, at `price_broadcast_zat`; mempool settlement up to `zero_conf_cap_zat`) and the free `/`, `/pricing`, `/healthz`; `API_PAY_TO` = the faucet wallet's P2PKH address; the node's credential and the API key in its 0400 environment file (`x402/api.env`); its own per-client limits (`paid_per_minute`, `unpaid_per_minute`, `free_per_minute`), counting the address the proxy writes (`API_TRUST_PROXY=1`); no state of its own; healthcheck `/healthz` |
+| `faucet-<key>` | `x402.faucet_image` (`images/faucet`, `FAUCET_MODE=testnet`) | uid 2010, read-only root, no capabilities, 96 MiB | `backend` only (.14) | pays `faucet.amount_zat` from the wallet's Sapling address; per client address and per recipient (`per_ip`, `per_address` per `window_seconds`), `daily_cap_zat` in any 24 h, `pow_bits` of proof of work, one payment at a time; refuses unless the node reports this testnet profile; sweeps `payTo` back into its Sapling address (`SWEEP_FROM`, at `sweep_min_zat`); its `/metrics` is not routed; healthcheck `/info` |
+| `x402proxy-<key>` | `x402.proxy_image` (Caddy, by digest) | uid 2006, every capability dropped but binding low ports, read-only root, 128 MiB | `backend` (.10), `edge` (.10) | **the only published port, TCP 443** (80 with `tls = false`); the Let's Encrypt certificate over the TLS-ALPN challenge (no HTTP challenge, no port 80, no redirect), HSTS; HTTP/1.1 and HTTP/2; 64 KB of headers (a payment travels in one), 256 KB of body (the broadcast route's transaction); header, body, write and idle timeouts; the faucet's own paths (`/faucet/`, `info`, `challenge`, `send`, its script) to the faucet, everything else to the API, each with `X-Forwarded-For` set to the client's address (a client's own header is replaced); a 503 while the backend is not up |
+
+- **Networks.** `backend` (`172.31.254.0/24`; .10 the proxy, .11 the node, .12 the API, .13 the
+  facilitator, .14 the faucet, every other container from `.128/25`) is internal: no route out, so
+  none of the three services can reach anything but each other and the node. `edge`
+  (`172.31.255.0/24`) carries the node's outbound P2P and the proxy's port. A `DOCKER-USER` rule
+  refuses both subnets the metadata address; another drops a client address's new connections to the
+  proxy above `conn_rate_limit` a minute (bursts of twice that; `hashlimit`, per source address).
+- **Inbound:** 443 alone to `x402_ingress_cidrs` (default everyone). Nothing else: the node
+  publishes no P2P port (it only connects out to fixed peers), and the certificate needs no port 80.
+- **The faucet's wallet.** ycashd creates it at the node's first start (a random seed) or, if the
+  operator placed a recovery phrase at `/srv/ycash-data/<key>/x402/mnemonic` before that start
+  (mode 0400, the node's uid; mounted read-only and passed as `YCASHD_MNEMONIC_FILE`), from that
+  phrase. Once the chain is imported seedctl asks it for one transparent address (the API's
+  `payTo`; refused if the wallet hands out a post-quantum or script address) and one Sapling address
+  (the faucet's source), and keeps both (`x402/payto`, `x402/zaddr`). The wallet lives in the
+  datadir on the encrypted data volume: kept across upgrades and instance replacements, and **moved
+  aside and back across a reset** (the chain goes, the keys stay; the node rescans). Backup:
+  `seedctl x402-backup <key>` writes a `z_exportwallet` file (the recovery phrase and the keys) into
+  the node's export directory on the data volume and prints its path; the operator copies the phrase
+  off the host in an interactive SSM session and deletes the file (Run Command output is stored by
+  SSM, so the phrase never goes through it). Losing it loses testnet coins only: a new wallet is
+  funded again from the pool. Fund the faucet by sending testnet YEC to its Sapling address
+  (`status` shows it) and keep its balance to a few days of `daily_cap_zat`: everything in it is
+  hot.
+- **Generated secret** (`x402/secrets/`, 0700): the facilitator's API key, made on the host at the
+  first apply, never leaving it, readable by root and handed to the facilitator and the API only.
+  **The facilitator's replay store** (`x402/facilitator`, its `/data`: one claim per settled txid)
+  is on the data volume, so it survives restarts, upgrades, resets and new instances. The node's RPC credential is the network's
+  (`rpc.env`), in the facilitator's 0400 file and the API's and the faucet's 0400 environment files.
+- **The prefix.** While the node imports, only the node and the proxy run (503); `prefix-check`
+  makes the faucet's addresses and starts the facilitator, the API and the faucet once the import
+  is done.
+- **Host size.** A `t3a.small` (2 GiB, 2 vCPU burstable) with a 4 GiB swap file. Steady state, from
+  the explorer host's measurements (its node with both indexes 386 MB, 868 MB while indexing): the
+  node about 0.4–0.9 GB, the API and the facilitator about 0.1 GB each (Node.js), the faucet 30 MB,
+  Caddy 20 MB, the OS and Docker about 0.35 GB: about 1.1–1.6 GB of 1.9. The limits (1536 + 256 +
+  192 + 96 + 128 MiB) are caps, not reservations. The prefix import with both indexes peaked at
+  about 1.5 GiB resident on the explorer host; here only the node and the proxy run then, and the
+  node may use 2 GiB of swap beyond its 1536 MiB, so the import is slower but is not killed. Use
+  `cpu_credits = "unlimited"` for the first import, `standard` after. If `status` ever shows the
+  node's OOM kills, the next size is `t3a.medium` (an in-place change, a stop and a start).
+- **seedctl:** `apply`, `reset`, `stop`, `sync` and `boot` act on all five containers; `reset`
+  deletes the chain and keeps the wallet, the addresses, the stores, the secrets and the
+  certificate. `x402-backup <key>` as above. `status` adds an `x402` field:
+
+  | Field | What it says |
+  |---|---|
+  | `phase` | `deploying: <step>`, `prefix import: H of L (N %)`, `prefix imported …`, `a service is not healthy: …`, `the node is catching up: B of H headers`, `the node has no peers …`, `serving`, or `starting (the TLS proxy answers …)`. `serving` = every service healthy, the node within a block of its peers' headers with a peer, and on this host the free route `200` and the paid route `402` with its `PAYMENT-REQUIRED` header |
+  | `url` | the public URL |
+  | `facilitator`, `api`, `faucet`, `proxy` | each container's state and health |
+  | `payTo`, `faucetAddress` | the faucet wallet's transparent address (the API's `payTo`) and Sapling address (the faucet's source; fund it here) |
+  | `faucetBalance`, `payToBalance` | the Sapling address's confirmed balance, and what agents paid that is not swept yet (mempool included), YEC |
+  | `settlementClaims` | the claims the facilitator holds: one per settled payment, until pruned |
+  | `faucetInfo` | the faucet's `/info`: `available`, `tip`, `amountZat`, `powBits` |
+  | `freeOnHost`, `paidOnHost`, `freePublic`, `paidPublic` | `GET /pricing` and `GET /v1/address/<payTo>` through the proxy, on this host for its name and through the public name: the status code (`402 payment-required` when the header is there), else `none` |
+  | `node`, `restarts`, `oomKilled`, `nodeStartedAt`, `nodeOomKills`, `nodeOomKillsSinceBoot` | as the lightwallet's |
+- **The API's interface** (x402-ycash `examples/chain-api/src/config.ts`): the host gives it
+  `HOST`, `PORT` (4021), `X402_NETWORK` (`ycash:testnet`), `FACILITATOR_URL`, `FACILITATOR_API_KEY`,
+  `API_PAY_TO`, `API_RPC_URL` / `API_RPC_USER` / `API_RPC_PASSWORD` (the node keeps a password, so
+  no cookie file), `API_PRICE_ZAT`, `API_PRICE_BROADCAST_ZAT`, `API_ZERO_CONF_CAP_ZAT`,
+  `API_PAID_PER_MINUTE`, `API_UNPAID_PER_MINUTE`, `API_FREE_PER_MINUTE`, `API_TRUST_PROXY` (1),
+  `API_LINK_FAUCET`, `API_LINK_EXPLORER`, `API_LINK_LIGHTWALLETD`. The facilitator: its JSON file
+  (`testnetProfile`, confirmations from −1) and `/data`.
+- **The certificate contact** (`x402_acme_email`, optional) is handled as the explorer's.
+
 ## Cost estimate
 
 On-demand prices in us-east-1, as of 2026-10. Other regions are within about 20 percent.
@@ -675,6 +793,9 @@ On-demand prices in us-east-1, as of 2026-10. Other regions are within about 20 
 - A lightwallet host (`t3a.medium`, 30 GiB data + 20 GiB root, one public IPv4, one network):
   ≈ $27.45 + $4.00 + $3.65 ≈ **$35/month**, plus data transfer out (compact blocks to every wallet
   that syncs: small at testnet traffic).
+- An x402 host (`t3a.small`, 20 GiB data + 20 GiB root, one public IPv4, one network):
+  ≈ $13.72 + $3.20 + $3.65 ≈ **$21/month**, plus data transfer out (JSON answers: small at
+  demonstration traffic) and a few cents of surplus CPU credits for the first import.
 - A third host adds ≈ $39. An arm64 `t4g.medium` is ≈ $3/month cheaper per host; it needs an
   arm64 image, which the `node-image` workflow does not build today.
 
@@ -794,7 +915,11 @@ credentials and no plan:
   an image and a build, at `DEBUG`); the lightwallet host (its config, 443 and 80 only and no P2P,
   the host files, the `lightwallets` output without the contact; plain HTTP and listed origins) and
   its refusals (without `insight`, a placeholder all-zero digest, an origin with a path, beside an
-  explorer or a pool);
+  explorer or a pool); the x402 host (its config with the D-10 prices and the faucet's limits, the
+  node keeping its wallet, 443 alone and no P2P, the host files, the `x402s` output without the
+  contact; plain HTTP on 80 alone; a partly given faucet) and its refusals (without `insight`, a
+  placeholder digest, an image by tag, a daily cap below one payment, beside a lightwallet, on
+  mainnet);
 - `shellcheck` on the host's scripts;
 - `tests/seedctl.sh`: `seedctl` against a fake `docker` in a scratch root: apply with the shared
   prefix cache, the rendered arguments and ports, prefix-check, status, a reset and an upgrade of
@@ -814,4 +939,11 @@ credentials and no plan:
   after it (trusting the gRPC-web proxy only), the node's credential only in lightwalletd's 0400
   file, the Caddyfile and Envoy's routes and origins, the metadata rule, status (GetLightdInfo, the
   height, the four probes, each phase), reset (cache gone, certificate kept), plain HTTP, its
-  refusals and its removal; and a host without the prefix tools (refused at once).
+  refusals and its removal; an x402 host: the node on its networks with its wallet and RPC for the
+  three services only, the proxy alone on 443 during the import, the facilitator's 0400 file with
+  the credential and the API key, the generated secrets, the metadata rule and the per-address
+  connection limit, the faucet's addresses after the import, the three services on the internal
+  network with their environments, status (serving, balances, both routes), reset (the wallet back
+  after the bootstrap), `x402-backup`, a placed recovery phrase, plain HTTP, its refusals (a
+  post-quantum `payTo` among them) and its removal; and a host without the prefix tools (refused at
+  once).

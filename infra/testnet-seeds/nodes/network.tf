@@ -55,7 +55,9 @@ resource "aws_route_table_association" "public" {
 # stratum port (to var.pool_ingress_cidrs), for a network with an explorer, 443 and 80 (to
 # var.explorer_ingress_cidrs; the explorer's proxy is the only listener there) and, for a network
 # with a lightwallet, 443 and 80 (to var.lightwallet_ingress_cidrs; its proxy; its node publishes
-# no P2P port, so none is opened for it); nothing else. No
+# no P2P port, so none is opened for it), for a network with an x402, 443 alone (80 alone with tls
+# false; to var.x402_ingress_cidrs; its proxy; its certificate comes over the TLS-ALPN challenge, so
+# no port 80; its node publishes no P2P port either); nothing else. No
 # SSH, no RPC: every node's RPC binds to 127.0.0.1 on its own port (an explorer's node: inside its
 # container, reachable only from Inzyght's address), yolo's status page too, and an operator reaches
 # a host through SSM, which needs no inbound port. Disabling or removing a network (or its pool or
@@ -81,6 +83,10 @@ resource "aws_security_group" "seed" {
       error_message = "networks: a lightwallet image is the all-zero placeholder digest: set the published digest (ycash-infra lightwalletd-image.yml prints it)."
     }
     precondition {
+      condition     = alltrue([for k, n in local.enabled : n.x402 == null ? true : !anytrue([for i in [n.x402.api_image, n.x402.facilitator_image, n.x402.faucet_image, n.x402.proxy_image] : can(regex("@sha256:0{64}$", i))])])
+      error_message = "networks: an x402 image is the all-zero placeholder digest: set the published digest (x402-ycash's image workflow for the API and the facilitator, ycash-infra faucet-image.yml for the faucet)."
+    }
+    precondition {
       condition     = alltrue([for k, n in local.enabled : !try(n.explorer.p2p_inbound, false) || !can(regex("(^| )--?(no)?listen(=[^ ]*)?( |$)", "${var.extra_args} ${n.extra_args}"))])
       error_message = "networks: explorer.p2p_inbound with a -listen (or -nolisten) in extra_args: the node listens by default; drop it, or the port would be opened to a node that does not listen."
     }
@@ -88,7 +94,7 @@ resource "aws_security_group" "seed" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "p2p" {
-  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.lightwallet == null && (n.explorer == null || try(n.explorer.p2p_inbound, false))]), var.p2p_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
+  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.lightwallet == null && n.x402 == null && (n.explorer == null || try(n.explorer.p2p_inbound, false))]), var.p2p_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
 
   security_group_id = aws_security_group.seed.id
   description       = "P2P ${each.value.net}"
@@ -133,6 +139,19 @@ resource "aws_vpc_security_group_ingress_rule" "lightwallet" {
   ip_protocol       = "tcp"
   from_port         = each.value.port
   to_port           = each.value.port
+  cidr_ipv4         = each.value.cidr
+  tags              = var.tags
+}
+
+resource "aws_vpc_security_group_ingress_rule" "x402" {
+  #checkov:skip=CKV_AWS_260:a public x402 demonstration: port 80 only when tls is false (a test without a name)
+  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.x402 != null]), var.x402_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
+
+  security_group_id = aws_security_group.seed.id
+  description       = "x402 ${each.value.net} ${local.enabled[each.value.net].x402.tls ? "https" : "http (tls off)"}"
+  ip_protocol       = "tcp"
+  from_port         = local.enabled[each.value.net].x402.tls ? 443 : 80
+  to_port           = local.enabled[each.value.net].x402.tls ? 443 : 80
   cidr_ipv4         = each.value.cidr
   tags              = var.tags
 }

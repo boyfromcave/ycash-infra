@@ -613,3 +613,137 @@ run "refuses_a_lightwallet_beside_a_pool" {
   }
   expect_failures = [var.networks]
 }
+
+# The x402 host (README.md, "The x402 host"): one host, fast only, the chain API, the facilitator, the
+# faucet with its wallet in the node, and the TLS proxy on 443 alone.
+run "x402_host" {
+  variables {
+    seeds = {
+      "seed-0" = { allocation_id = "eipalloc-00000000000000000", public_ip = "192.0.2.50" }
+    }
+    networks = {
+      yb-fast = {
+        profile    = "fast"
+        extra_args = "-listen=0 -addnode=192.0.2.10:18833"
+        insight    = true
+        x402 = {
+          hostname          = "x402.example.org"
+          explorer_url      = "https://explorer.example.org"
+          lightwalletd      = "lightwallet.example.org:443"
+          api_image         = "ghcr.io/example/x402-ycash-chain-api@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+          facilitator_image = "ghcr.io/example/x402-ycash-facilitator@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+          faucet_image      = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          proxy_image       = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+        }
+      }
+    }
+    p2p_ingress_cidrs = []
+    x402_acme_email   = "ops@example.org"
+  }
+  assert {
+    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).insight && !strcontains(jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args, "-disablewallet") && endswith(jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args, "-listen=0 -addnode=192.0.2.10:18833 -exportdir=/var/lib/ycash/export -rpcthreads=8 -rpcworkqueue=64")
+    error_message = "an x402 host's node: the indexes, its wallet (no -disablewallet), the export directory, more RPC threads"
+  }
+  assert {
+    condition = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).x402) == jsonencode({
+      acme_email        = "ops@example.org", api_image = "ghcr.io/example/x402-ycash-chain-api@sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      api_mem_limit_mb  = 256, conn_rate_limit = 60, explorer_url = "https://explorer.example.org", free_per_minute = 120, lightwalletd = "lightwallet.example.org:443",
+      facilitator_image = "ghcr.io/example/x402-ycash-facilitator@sha256:9999999999999999999999999999999999999999999999999999999999999999", facilitator_mem_limit_mb = 192,
+      faucet            = { amount_zat = 10000000, daily_cap_zat = 1000000000, per_address = 1, per_ip = 1, pow_bits = 16, sweep_min_zat = 1000000, window_seconds = 86400 },
+      faucet_image      = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", faucet_mem_limit_mb = 96,
+      hostname          = "x402.example.org", node_mem_limit_mb = 1536, paid_per_minute = 120, price_broadcast_zat = 10000, price_exact_zat = 10000, unpaid_per_minute = 30,
+    proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444", tls = true, zero_conf_cap_zat = 100000 })
+    error_message = "the x402's config: name, contact, images, the D-10 prices, the faucet's limits, the memory limits"
+  }
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.p2p) == 0 && length(aws_vpc_security_group_ingress_rule.stratum) == 0 && length(aws_vpc_security_group_ingress_rule.explorer) == 0 && length(aws_vpc_security_group_ingress_rule.lightwallet) == 0 && jsonencode([for r in aws_vpc_security_group_ingress_rule.x402 : "${r.from_port}-${r.to_port} ${r.cidr_ipv4}"]) == jsonencode(["443-443 0.0.0.0/0"])
+    error_message = "inbound: 443 to everyone and nothing else (no 80: the certificate comes over TLS-ALPN; no P2P)"
+  }
+  assert {
+    condition     = jsonencode(sort(keys(local.host_files))) == jsonencode(["frame.py", "prefix-restore.sh", "seedctl-x402"]) && local.host_files["seedctl-x402"].content == file("${path.module}/files/seedctl-x402")
+    error_message = "host_files: the prefix tools and seedctl's x402 half"
+  }
+  assert {
+    condition     = output.x402s["yb-fast"].url == "https://x402.example.org" && output.x402s["yb-fast"].faucet == "https://x402.example.org/faucet/" && !strcontains(jsonencode(output.x402s), "ops@example.org") && !strcontains(local.cloud_config["seed-0"], "x402.example.org")
+    error_message = "the x402s output names the URLs, never the contact; user_data carries no x402 setting"
+  }
+}
+
+run "x402_plain_http_and_limits" {
+  variables {
+    networks = {
+      yb-fast = {
+        profile = "fast", insight = true
+        x402 = {
+          hostname  = "x402.example.org", tls = false, price_exact_zat = 20000, conn_rate_limit = 30
+          faucet    = { amount_zat = 50000000, pow_bits = 20 }
+          api_image = "ghcr.io/example/x402-ycash-chain-api@sha256:8888888888888888888888888888888888888888888888888888888888888888", facilitator_image = "ghcr.io/example/x402-ycash-facilitator@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+        faucet_image = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" }
+      }
+      yb-slow = { profile = "slow" }
+    }
+  }
+  assert {
+    condition     = output.x402s["yb-fast"].url == "http://x402.example.org" && jsonencode([for r in aws_vpc_security_group_ingress_rule.x402 : r.from_port]) == jsonencode([80])
+    error_message = "plain HTTP: port 80 only"
+  }
+  assert {
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).x402.faucet) == jsonencode({ amount_zat = 50000000, daily_cap_zat = 1000000000, per_address = 1, per_ip = 1, pow_bits = 20, sweep_min_zat = 1000000, window_seconds = 86400 })
+    error_message = "a partly given faucet keeps the other defaults"
+  }
+  assert {
+    condition     = !contains(keys(jsondecode(base64decode(output.network_configs["yb-slow"]))), "x402") && strcontains(jsondecode(base64decode(output.network_configs["yb-slow"])).extra_args, "") && !strcontains(jsondecode(base64decode(output.network_configs["yb-slow"])).extra_args, "-exportdir") && jsonencode(sort(keys(aws_vpc_security_group_ingress_rule.p2p))) == jsonencode(["yb-slow 0.0.0.0/0"])
+    error_message = "the x402 is fast's only; slow's node has no export directory; P2P inbound for slow only"
+  }
+}
+
+run "refuses_an_x402_without_insight" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", x402 = { hostname = "x.example.org", api_image = "ghcr.io/example/a@sha256:8888888888888888888888888888888888888888888888888888888888888888", facilitator_image = "ghcr.io/example/f@sha256:9999999999999999999999999999999999999999999999999999999999999999", faucet_image = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_an_x402_placeholder_digest" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, x402 = { hostname = "x.example.org", api_image = "ghcr.io/example/a@sha256:0000000000000000000000000000000000000000000000000000000000000000", facilitator_image = "ghcr.io/example/f@sha256:9999999999999999999999999999999999999999999999999999999999999999", faucet_image = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [aws_security_group.seed]
+}
+
+run "refuses_an_x402_image_by_tag" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, x402 = { hostname = "x.example.org", api_image = "ghcr.io/example/a:latest", facilitator_image = "ghcr.io/example/f@sha256:9999999999999999999999999999999999999999999999999999999999999999", faucet_image = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_a_faucet_cap_below_one_payment" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, x402 = { hostname = "x.example.org", faucet = { amount_zat = 100000000, daily_cap_zat = 1000 }, api_image = "ghcr.io/example/a@sha256:8888888888888888888888888888888888888888888888888888888888888888", facilitator_image = "ghcr.io/example/f@sha256:9999999999999999999999999999999999999999999999999999999999999999", faucet_image = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_an_x402_beside_a_lightwallet" {
+  command = plan
+  variables {
+    networks = {
+      yb-fast = { profile = "fast", insight = true, x402 = { hostname = "x.example.org", api_image = "ghcr.io/example/a@sha256:8888888888888888888888888888888888888888888888888888888888888888", facilitator_image = "ghcr.io/example/f@sha256:9999999999999999999999999999999999999999999999999999999999999999", faucet_image = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } }
+      yb-slow = { profile = "slow", insight = true, lightwallet = { hostname = "lw.example.org", grpcweb_origins = ["https://wallet.example.org"], image = "ghcr.io/example/lightwalletd@sha256:6666666666666666666666666666666666666666666666666666666666666666", grpcweb_image = "docker.io/envoyproxy/envoy@sha256:7777777777777777777777777777777777777777777777777777777777777777", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } }
+    }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_an_x402_on_mainnet" {
+  command = plan
+  variables {
+    networks = { main = { profile = "main", insight = true, x402 = { hostname = "x.example.org", api_image = "ghcr.io/example/a@sha256:8888888888888888888888888888888888888888888888888888888888888888", facilitator_image = "ghcr.io/example/f@sha256:9999999999999999999999999999999999999999999999999999999999999999", faucet_image = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [var.networks]
+}

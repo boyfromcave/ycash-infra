@@ -53,6 +53,7 @@ class Node:
                     "z_getoperationstatus": [{"status": "success", "result": {"txid": "ab" * 32}}],
                     "generate": ["00" * 32],
                     "getnewaddress": TADDR,
+                    "z_mergetoaddress": {"opid": "opid-2", "mergingTransparentValue": 50.0},
                 }.get(m)
                 body = json.dumps({"result": res, "error": None if m in node.known else {"message": f"{m}?"}, "id": req["id"]}).encode()
                 self.send_response(200)
@@ -64,7 +65,7 @@ class Node:
                 pass
 
         self.known = {"getblockcount", "getrawmempool", "getblockchaininfo", "z_listaddresses", "z_getbalance",
-                      "validateaddress", "z_validateaddress", "z_sendmany", "z_getoperationstatus", "generate", "getnewaddress"}
+                      "validateaddress", "z_validateaddress", "z_sendmany", "z_getoperationstatus", "generate", "getnewaddress", "z_mergetoaddress"}
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/"
@@ -253,6 +254,45 @@ class Testnet(unittest.TestCase):
             time.sleep(0.1)
         self.assertIn("faucet_balance_zat 5000000000", metrics)
         self.assertIn("faucet_chain_ok 1", metrics)
+
+
+    def wait_for(self, method, arg=None, seconds=5):
+        for _ in range(int(seconds * 20)):
+            if any(m == method and (arg is None or (p and p[0] == arg)) for m, p in self.node.calls):
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_sweeps_pay_to_into_the_faucet(self):
+        f = self.start(SWEEP_FROM=TADDR, SWEEP_SECONDS=0)
+        self.assertTrue(self.wait_for("z_mergetoaddress"), "no sweep")
+        (srcs, dest, fee, tlimit, _zlimit, _memo, policy), = [p for m, p in self.node.calls if m == "z_mergetoaddress"][:1]
+        self.assertEqual((srcs, dest, fee, tlimit, policy), ([TADDR], SOURCE, None, 50, "AllowRevealedSenders"))
+        self.assertIn(("z_getbalance", [TADDR, 1]), self.node.calls)
+        for _ in range(50):
+            if "faucet_swept_zat_total 5000000000" in f.get("/metrics")[1]:
+                break
+            time.sleep(0.1)
+        self.assertIn("faucet_swept_zat_total 5000000000", f.get("/metrics")[1])
+
+    def test_no_sweep_below_the_minimum_or_off_chain(self):
+        self.start(SWEEP_FROM=TADDR, SWEEP_SECONDS=0, SWEEP_MIN_ZAT=10000000000)   # 100 YEC; it holds 50
+        self.assertTrue(self.wait_for("z_getbalance", TADDR), "the sweep never looked")
+        self.assertNotIn("z_mergetoaddress", [m for m, _ in self.node.calls])
+        node2 = Node()
+        self.addCleanup(node2.srv.shutdown)
+        node2.chain = "main"
+        f = Faucet(node2, FAUCET_MODE="testnet", FAUCET_PROFILE="fast", SWEEP_FROM=TADDR, SWEEP_SECONDS=0)
+        self.addCleanup(f.stop)
+        time.sleep(1)
+        self.assertNotIn("z_mergetoaddress", [m for m, _ in node2.calls])
+        self.assertNotIn(("z_getbalance", [TADDR, 1]), node2.calls)
+
+    def test_no_sweep_without_sweep_from(self):
+        self.start(SWEEP_SECONDS=0)
+        self.assertTrue(self.wait_for("z_getbalance"), "no probe")
+        time.sleep(0.3)
+        self.assertNotIn("z_mergetoaddress", [m for m, _ in self.node.calls])
 
 
 class Regtest(unittest.TestCase):

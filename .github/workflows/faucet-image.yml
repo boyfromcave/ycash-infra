@@ -1,0 +1,84 @@
+# faucet-image: build the testnet faucet image (images/faucet) and push it to
+# ghcr.io/<owner>/ycash-faucet:<sha12>, with build provenance. The x402 host (infra/testnet-seeds/nodes
+# with a network's `x402`) runs it in FAUCET_MODE=testnet beside its node; charts/ycash-testnet's
+# faucet takes it by digest as well. It runs only when started by hand, from upgrade/vault.
+#
+# In plain words: the fast testnet's faucet gives a fixed, small amount of worthless testnet YEC to
+# anyone who asks, within per-visitor and daily limits. This job makes its container, in public from
+# this repository at one commit, after the faucet's offline tests pass, and prints its fingerprint
+# (digest) for the deployment (networks.<key>.x402.faucet_image). The image holds no secret: the
+# wallet it pays from lives in the node.
+name: faucet-image
+on:
+  workflow_dispatch: {}
+permissions: {}
+concurrency:
+  group: faucet-image-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/upgrade/vault'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      REPO_OWNER: ${{ github.repository_owner }}
+      SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: the tag and the offline checks
+        id: meta
+        run: |
+          set -euo pipefail
+          python3 -I -m unittest discover -s images/faucet/tests
+          owner=$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          {
+            echo "image=ghcr.io/$owner/ycash-faucet"
+            echo "tag=ghcr.io/$owner/ycash-faucet:${SHA:0:12}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: build and push
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: images/faucet
+          file: images/faucet/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=ycash-faucet (the Ycash testnet faucet)
+            org.opencontainers.image.description=The Ycash testnet faucet: a fixed amount of testnet YEC per request from its node's wallet, with per-address and per-IP limits, a daily cap and proof of work; refuses any chain but a testnet. Holds no secret.
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/upgrade/vault/images/faucet/README.md
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: digest
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "image: $IMAGE@$DIGEST"
+          {
+            echo "## faucet-image at $SHA"
+            echo
+            echo "- tag: \`$TAG\`"
+            echo "- by digest (what a network's \`x402.faucet_image\` takes): \`$IMAGE@$DIGEST\`"
+            echo "- verify: \`gh attestation verify oci://$IMAGE@$DIGEST -R $GITHUB_REPOSITORY\`"
+          } >> "$GITHUB_STEP_SUMMARY"
