@@ -20,7 +20,8 @@
 #   seedctl boot               start every applied network from its last applied config (a new
 #                              instance on an old data volume); systemd runs it at boot
 #   seedctl prefix-check       once a network holds the whole prefix, drop its -loadblock flags
-#                              and the framed copies (a systemd timer runs it every 10 minutes)
+#                              and the framed copies (a systemd timer runs it every 10 minutes);
+#                              an x402 host's API and faucet are started here, and retried each time
 #   seedctl install-files F    put the module's host_files (F: the decoded JSON) into /opt/ycash-seed:
 #                              the prefix tools, seedctl-explorer, the Inzyght build context,
 #                              seedctl-lightwallet, seedctl-x402; nothing
@@ -537,18 +538,26 @@ prefix_check() {
   local net N h last
   for net in $(applied_nets); do
     N="$D/$net/node"
-    if [ ! -d "$N/prefix/load" ] || [ ! -e "$N/prefix/FRAMED" ]; then continue; fi
-    last=$(cat "$N/prefix/LAST_HEIGHT" 2>/dev/null || echo 0)
-    h=$(cli "$net" getblockcount 2>/dev/null) || continue
-    [ "$h" -ge "$last" ] || { log "$net: prefix import at $h of $last"; continue; }
-    touch "$N/prefix/IMPORTED"
-    render "$net" "$D/$net/applied.json"
-    compose "$net" up -d
-    rm -rf "$N/prefix/load"
-    log "$net: prefix imported (height $h); -loadblock retired"
-    # an x402 host: the faucet's addresses, then the faucet and the API (a failure is retried at the
-    # next check; status shows it)
-    if x4_of "$D/$net/applied.json"; then (need_x402 && x402_up "$net") || log "$net: the x402 services did not start; the next check retries"; fi
+    if [ -d "$N/prefix/load" ] && [ -e "$N/prefix/FRAMED" ]; then
+      last=$(cat "$N/prefix/LAST_HEIGHT" 2>/dev/null || echo 0)
+      h=$(cli "$net" getblockcount 2>/dev/null) || continue
+      [ "$h" -ge "$last" ] || { log "$net: prefix import at $h of $last"; continue; }
+      touch "$N/prefix/IMPORTED"
+      render "$net" "$D/$net/applied.json"
+      compose "$net" up -d
+      rm -rf "$N/prefix/load"
+      log "$net: prefix imported (height $h); -loadblock retired"
+    elif [ -e "$N/prefix/FRAMED" ] && [ ! -e "$N/prefix/IMPORTED" ]; then
+      continue
+    fi
+    # an x402 host whose API is not rendered yet (the import just finished, or an earlier check could
+    # not start it): the faucet's addresses, then the faucet and the API. The import's own check has
+    # just restarted the node (the -loadblock flags went), so its RPC is warming up: wait for it. A
+    # failure is retried at the next check (the prefix is retired by then); status shows it.
+    if x4_of "$D/$net/applied.json" && ! grep -q '^  api:' "$O/net/$net/compose.yaml" 2>/dev/null; then
+      (need_x402 && { wait_rpc "$net" 900 || die "$net: RPC did not answer within 15 minutes"; } && x402_up "$net") \
+        || log "$net: the x402 services did not start; the next check retries"
+    fi
   done
 }
 
