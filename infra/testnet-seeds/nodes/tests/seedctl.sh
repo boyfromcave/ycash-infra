@@ -5,7 +5,7 @@
 # host: apply (with the prefix bootstrap and the shared cache), the rendered node arguments and
 # ports, prefix-check, status, reset of one network leaving the other alone, sync stopping a
 # network no longer configured, boot re-rendering from the applied configs, and the refusals; then a
-# pool beside a node (single payout and per miner), an explorer (insight, ZMQ, PostgreSQL, Inzyght built on the host, proxy; a
+# pool beside a node (single payout, per miner and paced), an explorer (insight, ZMQ, PostgreSQL, Inzyght built on the host, proxy; a
 # failed build; install-files refusals), a detached run (and one still holding the lock; status
 # before the first applied.json), and a host without the prefix tools.
 # Run: infra/testnet-seeds/nodes/tests/seedctl.sh   (make seeds-validate runs it)
@@ -130,7 +130,7 @@ case "$*" in
       starting) printf 'HTTP/2 503\r\n\r\n' > "$hdr"; echo 503 ;;
       down) echo 000; exit 7 ;;
     esac ;;
-  *127.0.0.1:3334/status*) echo '{"nodeUp":true,"height":510432,"templateAgeSeconds":0,"miners":2,"connections":2,"accepted":1,"rejected":0,"lastSubmitVerdict":"accepted","payout":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","equihash":"192,7","shares":9,"stale":4,"highHash":3,"shareRatio":32,"uptimeSeconds":60,"minersByKind":{"p2pkh":1,"p2sh":0,"pq":0,"sapling":1,"fixed":0},"minerList":[{"id":0,"kind":"p2pkh","address":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","label":null},{"id":1,"kind":"sapling","address":"ytestsapling1example","label":"rig1"}],"coinbaseCall":true,"pairs":{"addresses":1,"waiting":0,"inFlight":0,"concurrency":2,"requests":3,"failures":0,"lastRoundTripMs":180}}' ;;
+  *127.0.0.1:3334/status*) echo '{"nodeUp":true,"height":510432,"templateAgeSeconds":0,"miners":2,"connections":2,"accepted":1,"rejected":0,"lastSubmitVerdict":"accepted","payout":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","equihash":"192,7","shares":9,"stale":4,"highHash":3,"shareRatio":32,"uptimeSeconds":60,"minersByKind":{"p2pkh":1,"p2sh":0,"pq":0,"sapling":1,"fixed":0},"minerList":[{"id":0,"kind":"p2pkh","address":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb","label":null},{"id":1,"kind":"sapling","address":"ytestsapling1example","label":"rig1"}],"coinbaseCall":true,"pairs":{"addresses":1,"waiting":0,"inFlight":0,"concurrency":2,"requests":3,"failures":0,"lastRoundTripMs":180},"minBlockInterval":60,"nextBlockInSeconds":12,"held":null,"heldStale":0,"paceCandidates":5}' ;;
   *) exit 7 ;;
 esac
 EOF
@@ -304,6 +304,26 @@ done
 grep -qF '"--payout", "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", "--bind"' "$c" && ! grep -q -- '--coinbase-concurrency' "$c" || fail "single mode after per-miner: $(grep command "$c")"
 "$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null || fail "the pool removed again"
 ok "a per-miner pool: no --payout, the paired-jobs options, per-miner status fields; bad values refused"
+# 10c. block pacing (yolo --min-block-interval): the flag only when above 0, before --share-ratio;
+#      status passes the pacing fields through; bad values refused; 0 renders as without it
+PACED=$(echo "$POOLED" | base64 -d | jq -c '.pool += {min_block_interval: 60}' | b64)
+"$SEEDCTL" apply yb-fast "$PACED" 2>"$T/err" || { cat "$T/err"; fail "apply with a paced pool"; }
+c="$O/net/yb-fast/compose.yaml"
+grep -qF 'command: ["--conf", "/etc/yolo/pool.conf", "--payout", "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", "--bind", "0.0.0.0", "--port", "3333", "--status-port", "3334", "--status-bind", "127.0.0.1", "--max-connections", "64", "--max-per-ip", "4", "--log", "info", "--min-block-interval", "60", "--share-ratio", "32", "--text", "testnet pool"]' "$c" || fail "paced yolo's command line: $(grep command "$c")"
+s=$("$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -c '[.pool.minBlockInterval, .pool.nextBlockInSeconds, .pool.held, .pool.heldStale, (.pool | has("paceCandidates"))]')" = '[60,12,null,0,false]' ] || fail "status with a paced pool: $s"
+for bad in '.pool.min_block_interval = -1' '.pool.min_block_interval = 301' '.pool.min_block_interval = 2.5' \
+           '.pool.min_block_interval = "60"' '.pool.min_block_interval = "60\", \"--payout"'; do
+  BADPOOL=$(echo "$PACED" | base64 -d | jq -c "$bad" | b64)
+  if "$SEEDCTL" apply yb-fast "$BADPOOL" 2>/dev/null; then fail "accepted a paced pool with $bad"; fi
+done
+"$SEEDCTL" apply yb-fast "$POOLED" 2>/dev/null || fail "back to an unpaced pool"
+cp "$c" "$T/unpaced.yaml"
+ZEROPACE=$(echo "$POOLED" | base64 -d | jq -c '.pool += {min_block_interval: 0}' | b64)
+"$SEEDCTL" apply yb-fast "$ZEROPACE" 2>/dev/null || fail "apply with min_block_interval 0"
+cmp -s "$c" "$T/unpaced.yaml" && ! grep -q -- '--min-block-interval' "$c" || fail "min_block_interval 0 changed the compose file: $(diff "$T/unpaced.yaml" "$c")"
+"$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null || fail "the pool removed again"
+ok "a paced pool: --min-block-interval only above 0, pacing status fields; bad values refused"
 # 11. an explorer beside fast (the explorer host): the node on the explorer's networks with its
 #     indexes, PostgreSQL and the proxy at once, Inzyght (built on the host from the delivered,
 #     checked build context) and ZMQ only once the prefix is imported; secrets only in 0400 files

@@ -87,7 +87,8 @@ locals {
     n.x402 == null ? "" : "-exportdir=/var/lib/ycash/export -rpcthreads=8 -rpcworkqueue=64"])))
     peers = [for s in local.seed_keys : format("%s:%d", var.seeds[s].public_ip, n.p2p_port)]
     # The yolo pool beside this network's node (files/seedctl render), or null. The per-miner fields
-    # appear only with per_miner, so a single-payout pool keeps exactly the config it had before.
+    # appear only with per_miner, and min_block_interval only when above 0, so a pool without them
+    # keeps exactly the config it had before.
     pool = n.pool == null ? null : merge({
       image       = n.pool.image
       payout      = n.pool.payout
@@ -96,7 +97,8 @@ locals {
       text        = n.pool.text
       share_ratio = n.pool.share_ratio
       }, n.pool.per_miner ? { per_miner = true } : {},
-    n.pool.per_miner ? { coinbase_concurrency = n.pool.coinbase_concurrency, max_paired_per_ip = n.pool.max_paired_per_ip } : {})
+      n.pool.per_miner ? { coinbase_concurrency = n.pool.coinbase_concurrency, max_paired_per_ip = n.pool.max_paired_per_ip } : {},
+    n.pool.min_block_interval > 0 ? { min_block_interval = n.pool.min_block_interval } : {})
     prefix = n.testnet && n.bootstrap && var.prefix != null ? {
       base_url    = local.profile_prefix[n.profile].base_url
       sums_sha256 = local.profile_prefix[n.profile].sums_sha256

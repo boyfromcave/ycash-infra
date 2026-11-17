@@ -249,6 +249,66 @@ run "pool_host_per_miner_default_concurrency" {
   }
 }
 
+# Block pacing (README.md, "The pool": "Block pacing"): min_block_interval above 0 is carried in the
+# pool's config; 0, given or left out, renders the config exactly as before (pool_host above).
+run "pool_host_paced" {
+  variables {
+    networks = {
+      yb-fast = {
+        profile = "fast"
+        pool    = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", share_ratio = 32, min_block_interval = 60 }
+      }
+    }
+  }
+  assert {
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).pool) == jsonencode({ image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", port = 3333, status_port = 3334, text = "", share_ratio = 32, min_block_interval = 60 })
+    error_message = "a paced pool's config: min_block_interval 60 beside the other pool fields"
+  }
+  assert {
+    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args == "-maxtipage=999999999 -dbcache=256 -maxconnections=64 -disablewallet -mineraddress=smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb -minetolocalwallet=0"
+    error_message = "pacing changes nothing on the node's command line"
+  }
+}
+
+run "pool_host_pacing_zero_is_off" {
+  variables {
+    networks = {
+      yb-fast = {
+        profile = "fast"
+        pool    = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", share_ratio = 32, min_block_interval = 0 }
+      }
+    }
+  }
+  assert {
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).pool) == jsonencode({ image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", port = 3333, status_port = 3334, text = "", share_ratio = 32 })
+    error_message = "min_block_interval 0 renders the pool's config exactly as without it"
+  }
+}
+
+run "refuses_a_pacing_above_300" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", min_block_interval = 301 } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_a_negative_pacing" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", min_block_interval = -1 } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_a_fractional_pacing" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", min_block_interval = 2.5 } } }
+  }
+  expect_failures = [var.networks]
+}
+
 run "refuses_a_bad_per_miner_pool" {
   command = plan
   variables {
