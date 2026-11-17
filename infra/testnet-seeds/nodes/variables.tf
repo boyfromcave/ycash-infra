@@ -82,7 +82,10 @@ variable "networks" {
     getcoinbasetemplatefor (6.22.0-beta3 or later). With it, `coinbase_concurrency` (default 2,
     1-64; yolo --coinbase-concurrency; above 2 the node also gets -rpcthreads of it plus 2, so do
     not set -rpcthreads in extra_args) and `max_paired_per_ip` (default 8, 1-4096; yolo
-    --max-paired-per-ip). The pool reaches the node only through its stock mining RPCs (and
+    --max-paired-per-ip). `min_block_interval` (default 0 = off, 0-300 seconds; yolo
+    --min-block-interval, which yolo refuses on mainnet: needs a yolo with block pacing, yolo#19)
+    holds a block the pool finds until that many seconds after its job's time, so a rented GPU on a
+    testnet at minimum difficulty does not drive the difficulty up (README.md, "The pool"). The pool reaches the node only through its stock mining RPCs (and
     getcoinbasetemplatefor) on 127.0.0.1.
 
     `insight` (default false) builds the node's transaction and address indexes (-txindex
@@ -170,6 +173,8 @@ variable "networks" {
       per_miner            = optional(bool, false)
       coinbase_concurrency = optional(number, 2)
       max_paired_per_ip    = optional(number, 8)
+      # block pacing (yolo --min-block-interval; 0 = off, the flag not passed)
+      min_block_interval = optional(number, 0)
     }))
     insight = optional(bool, false)
     zmq     = optional(number)
@@ -268,9 +273,10 @@ variable "networks" {
       can(regex("^[A-Za-z0-9 ._:/-]{0,60}$", n.pool.text)) &&
       n.pool.share_ratio >= 1 && n.pool.share_ratio <= 1000000 && floor(n.pool.share_ratio) == n.pool.share_ratio &&
       n.pool.coinbase_concurrency >= 1 && n.pool.coinbase_concurrency <= 64 && floor(n.pool.coinbase_concurrency) == n.pool.coinbase_concurrency &&
-      n.pool.max_paired_per_ip >= 1 && n.pool.max_paired_per_ip <= 4096 && floor(n.pool.max_paired_per_ip) == n.pool.max_paired_per_ip
+      n.pool.max_paired_per_ip >= 1 && n.pool.max_paired_per_ip <= 4096 && floor(n.pool.max_paired_per_ip) == n.pool.max_paired_per_ip &&
+      n.pool.min_block_interval >= 0 && n.pool.min_block_interval <= 300 && floor(n.pool.min_block_interval) == n.pool.min_block_interval
     )])
-    error_message = "networks: pool on a testnet profile only, image pinned by digest, payout a base58 transparent address, port 1024-65534 clear of every node port (port + 1 is the status page), text of at most 60 letters, digits, spaces and . _ : / -, share_ratio a whole number from 1 to 1000000, coinbase_concurrency a whole number from 1 to 64, max_paired_per_ip a whole number from 1 to 4096."
+    error_message = "networks: pool on a testnet profile only, image pinned by digest, payout a base58 transparent address, port 1024-65534 clear of every node port (port + 1 is the status page), text of at most 60 letters, digits, spaces and . _ : / -, share_ratio a whole number from 1 to 1000000, coinbase_concurrency a whole number from 1 to 64, max_paired_per_ip a whole number from 1 to 4096, min_block_interval a whole number of seconds from 0 to 300."
   }
   validation {
     # yolo needs the node's -rpcthreads at least coinbase_concurrency + 2; above 2 the module sets it

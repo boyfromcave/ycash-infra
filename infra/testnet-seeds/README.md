@@ -265,8 +265,9 @@ What a `pool` adds, per host:
 - **seedctl** runs both containers together (`apply`, `reset`, `stop`, `sync`, `boot`); `apply`
   also waits for yolo's status page; `status` adds a `pool` field (container, image, node up,
   height, miners, accepted, rejected, stale, highHash, shares, share ratio, last verdict, payout,
-  and yolo's per-miner fields `minersByKind`, `minerList`, `coinbaseCall` and `pairs`, null from a
-  yolo without them).
+  and yolo's per-miner fields `minersByKind`, `minerList`, `coinbaseCall` and `pairs`, and its pacing
+  fields `minBlockInterval`, `nextBlockInSeconds`, `held` and `heldStale`, null from a yolo without
+  them).
   `stale` (a job the chain has moved past) and `highHash` (a hash above the share target, which
   GPU miners send now and then; never a valid block) are not refusals and are not in `rejected`.
 
@@ -319,6 +320,35 @@ an older image refuses the new options and does not start).
 - Switching mode recreates the yolo container only (its command line changes); the node is
   recreated only when its arguments change (`-rpcthreads` above a concurrency of 2). Check with
   `status`: `pool.payout` is `"username"` and `pool.coinbaseCall` is `true`.
+
+### Block pacing (`min_block_interval`)
+
+A testnet whose difficulty has fallen to the minimum gives one rented GPU a block every second or
+two, and the difficulty then climbs out of reach of every CPU. `min_block_interval = S` (a whole
+number of seconds, 0-300; default 0, off) runs yolo with `--min-block-interval S`: the pool submits
+a block it finds no sooner than S seconds after that block's job time, so its blocks' header times
+are at least S seconds apart and the difficulty stays near where it was (yolo README, "Block
+pacing"). Miners notice nothing; the held block's coinbase pays its finder in full, as without
+pacing. It needs a yolo with block pacing (yolo#19 or later; an older image refuses the option and
+does not start), and yolo refuses it on any chain but a testnet or regtest (the module only puts a
+pool on a testnet profile).
+
+```hcl
+      pool = {
+        image              = "ghcr.io/<owner>/yolo@sha256:..."   # yolo with block pacing (yolo#19)
+        payout             = "sm..."
+        share_ratio        = 32
+        min_block_interval = 60         # default 0 = off, 0-300: yolo --min-block-interval
+      }
+```
+
+- 0, given or left out, passes no flag: the host's config and compose file are exactly those of a
+  pool without the setting.
+- Setting, changing or removing it recreates the yolo container only (its command line changes);
+  the node and the instance are untouched. Check with `status`: `pool.minBlockInterval` is S, and
+  `pool.nextBlockInSeconds` and `pool.held` show the next release.
+- It paces only this pool's blocks. Another miner on the same network is not slowed, and a block
+  from elsewhere drops a held one (`heldStale`).
 
 The image is `ghcr.io/<owner>/yolo`, built from the yolo repository at one commit on its
 `upgrade/vault` by `yolo-image.yml` with [`images/yolo/Dockerfile`](../../images/yolo/Dockerfile).

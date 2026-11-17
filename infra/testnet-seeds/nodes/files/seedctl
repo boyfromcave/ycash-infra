@@ -90,7 +90,8 @@ check_config() { # file name
       and ((.pool.share_ratio // 1) | type == "number" and . >= 1 and . == floor)
       and ((.pool.per_miner // false) | type == "boolean")
       and ((.pool.coinbase_concurrency // 2) | type == "number" and . >= 1 and . <= 64 and . == floor)
-      and ((.pool.max_paired_per_ip // 8) | type == "number" and . >= 1 and . <= 4096 and . == floor)))
+      and ((.pool.max_paired_per_ip // 8) | type == "number" and . >= 1 and . <= 4096 and . == floor)
+      and ((.pool.min_block_interval // 0) | type == "number" and . >= 0 and . <= 300 and . == floor)))
     and ((.insight // false) | type == "boolean")
     and (.zmq_port == null or (.zmq_port | type == "number" and . >= 1024 and . <= 65535 and . == floor))
   ' "$1" >/dev/null || die "config for $2 is not valid"
@@ -234,7 +235,7 @@ imds_guard() {
 }
 
 render_pool() { # net file
-  local net=$1 f=$2 R="$O/net/$1" pc="$D/$1/pool.conf" text ratio pay
+  local net=$1 f=$2 R="$O/net/$1" pc="$D/$1/pool.conf" text ratio pace pay
   imds_guard
   ( umask 077
     # shellcheck source=/dev/null
@@ -247,6 +248,9 @@ render_pool() { # net file
   [ -z "$text" ] || text=", \"--text\", \"$text\""
   ratio=$(cfg "$f" '.pool.share_ratio // 1')
   [ "$ratio" = 1 ] || text=", \"--share-ratio\", \"$ratio\"$text"
+  # block pacing (yolo#19; testnets only, yolo refuses it on mainnet): absent or 0 passes no flag
+  pace=$(cfg "$f" '.pool.min_block_interval // 0')
+  [ "$pace" = 0 ] || text=", \"--min-block-interval\", \"$pace\"$text"
   # the per-miner values are whole numbers (checked above); jq prints them as such
   if [ "$(cfg "$f" '.pool.per_miner // false')" = true ]; then
     pay="\"--coinbase-concurrency\", \"$(cfg "$f" '.pool.coinbase_concurrency // 2')\", \"--max-paired-per-ip\", \"$(cfg "$f" '.pool.max_paired_per_ip // 8')\""
@@ -277,12 +281,14 @@ pool_status() { # net: yolo's /status, cut to what an operator reads ({} when it
   # highHash = submits above the share target (yolo#13; before it they were in rejected); shares =
   # submits that met only the share target (--share-ratio); payout "username" in per-miner mode, with
   # minersByKind, minerList (each miner's kind, address and label), coinbaseCall (paired jobs
-  # available: the node serves getcoinbasetemplatefor) and pairs (yolo#16). A field the image lacks shows null.
+  # available: the node serves getcoinbasetemplatefor) and pairs (yolo#16); minBlockInterval (0 when
+  # off) and, with block pacing on, nextBlockInSeconds, held and heldStale (yolo#19). A field the
+  # image lacks shows null.
   local sp
   sp=$(cfg "$D/$1/applied.json" '.pool.status_port // empty' 2>/dev/null || true)
   [ -n "$sp" ] || { echo null; return 0; }
   curl -fsS --max-time 3 "http://127.0.0.1:$sp/status" 2>/dev/null \
-    | jq -c '{nodeUp, height, templateAgeSeconds, miners, connections, accepted, rejected, stale, highHash, shares, shareRatio, lastSubmitVerdict, payout, equihash, minersByKind, minerList, coinbaseCall, pairs}' 2>/dev/null \
+    | jq -c '{nodeUp, height, templateAgeSeconds, miners, connections, accepted, rejected, stale, highHash, shares, shareRatio, lastSubmitVerdict, payout, equihash, minersByKind, minerList, coinbaseCall, pairs, minBlockInterval, nextBlockInSeconds, held, heldStale}' 2>/dev/null \
     || echo '{}'
 }
 
