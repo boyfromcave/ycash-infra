@@ -774,6 +774,15 @@ class TestPayouts(unittest.TestCase):
         self.assertIsNone(vf.accepted_shares("connecting to the pool\n"))
         self.assertIsNone(vf.accepted_shares(""))
 
+    def test_not_mining_download(self):
+        # the entrypoint's NOT MINING line shows in the shares column instead of "?"
+        shares = vf.Fleet.shares_of
+        cut = ("ycash-miner: download attempt 6/6 cut (curl exit 28): 45552599 of 50722348 bytes so far\n"
+               "ycash-miner: NOT MINING: could not download miniz from https://miniz.example/ after 6 attempts\n")
+        self.assertEqual(shares(None, {}, cut), "not mining: download")
+        self.assertEqual(shares(None, {}, "connecting to the pool\n"), "?")
+        self.assertEqual(shares(None, {}, cut + "[ 0d 0h 2m]  S: 17/1 30.2 Sol/s\n"), "17")
+
 
 class TestPayoutMiners(Base):
     def setUp(self):

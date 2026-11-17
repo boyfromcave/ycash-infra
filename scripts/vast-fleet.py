@@ -665,6 +665,8 @@ SHARES_RES = [
     re.compile(r"\bAccepted shares?\b\D{0,20}?(\d+)", re.I),       # a running total ("Accepted shares: 12")
 ]
 SHARE_LINE_RE = re.compile(r"\bshare\b.*\baccepted\b|\baccepted\b.*\bshare\b", re.I)
+# the entrypoint's one line when the miner program could not be downloaded (images/miner/entrypoint.sh)
+NOT_MINING_DOWNLOAD_RE = re.compile(r"^ycash-miner: NOT MINING: could not download\b", re.M)
 
 
 def accepted_shares(text):
@@ -1012,6 +1014,8 @@ class Fleet:
             except ApiError:
                 return "?"
         n = accepted_shares(text)
+        if n is None and NOT_MINING_DOWNLOAD_RE.search(text or ""):
+            return "not mining: download"
         return "?" if n is None else str(n)
 
     def status(self, shares=True):

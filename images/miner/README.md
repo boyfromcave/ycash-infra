@@ -197,6 +197,21 @@ download failed (no network or the release moved; nothing run), 70 no usable GPU
 0 at a burst's end. A verified download is kept in
 `~/.cache/ycash-miner` and checked again before each reuse.
 
+**Slow links.** Rented machines can have slow links: on 2026-11-17 three of seven took more than
+600 s for miniZ's 50 MB, and the old fixed 600 s limit cut every attempt at 70-90 % and began again
+from zero, so they never mined. Now the download goes to a partial file (`<miner>-<sha>.part` in the
+cache, kept across attempts and container restarts) and each attempt **resumes** it (`curl -C -`)
+where the server honours byte ranges (GitHub, so lolMiner, does; miniz.cc answered a range request
+with the whole file on 2026-11-17, so for miniZ a resume is refused, the partial file dropped and the
+attempt starts again from zero). An attempt is cut only when the transfer **stalls** (under 20 kB/s
+for 60 s) or after an hour, never because the link is merely slow. `DOWNLOAD_TRIES` attempts
+(default 6), `DOWNLOAD_PAUSE` seconds apart (default 15); between attempts the log says how far it
+got (`download attempt 2/6 cut (curl exit 28): 41000000 of 50722348 bytes so far`). Only the
+complete file is checked against the pinned SHA-256; a file that fails is deleted, never resumed
+onto. When every attempt fails the log says so in one line, `ycash-miner: NOT MINING: could not
+download <miner> from <url> after <n> attempts (<bytes> of <total> bytes; ...)`, the container exits
+69, and the fleet's `status` shows `not mining: download` in the shares column instead of `?`.
+
 **Who gets paid (yolo).** Without `--payout`, a yolo pool pays each block to the miner's **stratum
 username**, which must then be a transparent address; with `--payout <address>`, the pool pays that
 address for every block and the username is just a name. So:
@@ -246,7 +261,8 @@ This image is for the Ycash **testnets**. This project does not run or support m
 GPU): a matching download runs, a mismatching one or a failed download refuses and runs nothing, the
 cache is reused and re-checked, miniZ is refused without its pins, the exact commands for both
 miners, miniZ from a query URL with its own checksum file checked, the payout rule, the refusals,
-the restart rules, the GPU, driver and pool listing with exit 70 when lolMiner has no OpenCL GPU (a
+a cut download resumed (or restarted where ranges are refused), one that never completes logging
+one NOT MINING line, the restart rules, the GPU, driver and pool listing with exit 70 when lolMiner has no OpenCL GPU (a
 card listed as `Drivers: Cuda, OpenCL` counts) or miniZ cannot load CUDA, and the burst end (`MINER_UNTIL`: destroy, else stop, with Vast's
 per-instance key, never printed). CI also builds the image and runs its entrypoint in dry-run mode
 inside it. Without a GPU, `docker run --platform linux/amd64 -e POOL_URL=<pool> -e MINER_DIAG=1
