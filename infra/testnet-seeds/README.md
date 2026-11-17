@@ -742,7 +742,9 @@ What an `x402` adds, per host (`files/seedctl-x402`, seedctl's x402 half):
   (`rpc.env`), in the facilitator's 0400 file and the API's and the faucet's 0400 environment files.
 - **The prefix.** While the node imports, only the node and the proxy run (503); `prefix-check`
   makes the faucet's addresses and starts the facilitator, the API and the faucet once the import
-  is done.
+  is done, after waiting for the node's RPC (the import's check restarts the node without its
+  `-loadblock` flags). A check that could not start them leaves the API out and every later check
+  (every 10 minutes) tries again until it is rendered; a deploy (`seedctl apply`) does the same at once.
 - **Host size.** A `t3a.small` (2 GiB, 2 vCPU burstable) with a 4 GiB swap file. Steady state, from
   the explorer host's measurements (its node with both indexes 386 MB, 868 MB while indexing): the
   node about 0.4–0.9 GB, the API and the facilitator about 0.1 GB each (Node.js), the faucet 30 MB,

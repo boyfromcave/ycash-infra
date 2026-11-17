@@ -40,7 +40,9 @@ echo "docker $*" >> "$LOG"
 case "$1" in
   compose) f=$3; shift 3
     case "$1" in
-      up) echo "up $(sed -n 's/^name: //p' "$f")" >> "$LOG" ;;
+      # FAKE_WARMUP=N: the node a compose up (re)starts answers its next N RPC calls with ycashd's
+      # warm-up error, as a real one does while it loads its block index and wallet
+      up) echo "up $(sed -n 's/^name: //p' "$f")" >> "$LOG"; [ -z "${FAKE_WARMUP:-}" ] || echo "$FAKE_WARMUP" > "$LOG.warm" ;;
       down) echo "down $(sed -n 's/^name: //p' "$f")" >> "$LOG" ;;
     esac ;;
   image) case "$2" in
@@ -60,7 +62,15 @@ case "$1" in
       lightwalletd-*) [ -z "${FAKE_LWD_DOWN:-}" ] || exit 1
         echo "{\"version\":\"v0.4.6\",\"vendor\":\"Ycash\",\"taddrSupport\":true,\"chainName\":\"test\",\"saplingActivationHeight\":280000,\"consensusBranchId\":\"6d5b7a31\",\"blockHeight\":${FAKE_LWD_HEIGHT:-600000},\"latestHeight\":${FAKE_LWD_HEIGHT:-600000}}"; exit 0 ;;
     esac
-    # the x402 host's wallet calls (seedctl-x402): the faucet's addresses, balances and export
+    case "$2" in ycashd-*)
+      w=$(cat "$LOG.warm" 2>/dev/null || echo 0)
+      if [ "$w" -gt 0 ]; then echo $((w - 1)) > "$LOG.warm"; echo "error code: -28" >&2; echo "error message: Loading block index..." >&2; exit 1; fi ;;
+    esac
+    # the x402 host's wallet calls (seedctl-x402): the faucet's addresses, balances and export;
+    # FAKE_WALLET_FAIL: the wallet calls fail (a node that cannot answer them yet)
+    case " $* " in *" getnewaddress "* | *" z_getnewaddress "* | *" z_listaddresses "* | *" validateaddress "*)
+      [ -z "${FAKE_WALLET_FAIL:-}" ] || { echo "error code: -28" >&2; exit 1; } ;;
+    esac
     case " $* " in
       *" getnewaddress "*) echo smFakePayToAddress123456789abcdefg; exit 0 ;;
       # FAKE_NOTMINE=t / z: the wallet no longer holds payTo's / the Sapling address's key
@@ -550,7 +560,12 @@ grep -qx 'iptables -I DOCKER-USER 1 -s 172.31.254.0/23 -d 169.254.169.254/32 -j 
 s=$(FAKE_HEIGHT=255123 "$SEEDCTL" status yb-fast)
 [ "$(echo "$s" | jq -r .x402.phase)" = "prefix import: 255123 of 510247 (49 %)" ] && [ "$(echo "$s" | jq -c '[.x402.payTo, .x402.restarts]')" = '[null,{"ycashd":0,"facilitator":0,"api":0,"faucet":0,"proxy":0}]' ] || fail "status during the import: $s"
 ok "an x402 host while the prefix imports: the node with its wallet on its networks, the TLS proxy on 443 alone, secrets private, the connection limit"
-"$SEEDCTL" prefix-check 2>"$T/err" || { cat "$T/err"; fail "prefix-check on the x402 host"; }
+# the import's check cannot make the faucet's addresses (the wallet does not answer): the prefix
+# is retired all the same, and the next check retries the x402 services (the host otherwise stays at
+# "api absent, faucet absent" for good)
+FAKE_WALLET_FAIL=1 "$SEEDCTL" prefix-check 2>"$T/err" || { cat "$T/err"; fail "prefix-check on the x402 host"; }
+[ -e "$D/yb-fast/node/prefix/IMPORTED" ] && [ ! -e "$X/payto" ] && ! grep -q 'container_name: x402api-' "$c" && grep -q 'container_name: facilitator-yb-fast' "$c" && grep -q 'the next check retries' "$T/err" || fail "a failed first x402_up after the import: $(cat "$T/err")"
+"$SEEDCTL" prefix-check 2>"$T/err" || { cat "$T/err"; fail "the next prefix-check on the x402 host"; }
 [ "$(cat "$X/payto" 2>/dev/null)" = smFakePayToAddress123456789abcdefg ] && [[ "$(cat "$X/zaddr")" == ytestsapling1fake* ]] || fail "the faucet's addresses after the import: $(cat "$T/err")"
 grep -q 'container_name: facilitator-yb-fast' "$c" && grep -q 'container_name: x402api-yb-fast' "$c" && grep -q 'container_name: faucet-yb-fast' "$c" && grep -q 'X402_FACILITATOR_CONFIG: /etc/x402/facilitator.json' "$c" && grep -q 'user: "2008:2008"' "$c" && grep -q 'user: "2009:2009"' "$c" && grep -q 'user: "2010:2010"' "$c" && [ "$(grep -c 'read_only: true' "$c")" = 5 ] && [ "$(grep -c 'cap_drop: \[ALL\]' "$c")" = 5 ] && [ "$(grep -c 'healthcheck:' "$c")" = 3 ] && ! grep -q loadblock "$e" || fail "after the import: the three services, each its own uid, read-only, no capabilities, a healthcheck: $(cat "$c")"
 awk '/^  (api|facilitator|faucet):$/ { s = 1 } /^  x402proxy:$/ { s = 0 } s && /edge/ { bad = 1 } END { exit bad }' "$c" || fail "the three services are on the internal network only"
@@ -579,7 +594,10 @@ echo other > "$D/yb-fast/node/testnet-yb-fast/wallet.dat"
 grep -q 'the datadir already holds a wallet, so the kept one did not replace it: the wallet in .*/x402/keep is kept at .*/x402/keep\.[0-9]\{14\} (nothing was deleted' "$T/err" && [ "$(cat "$X"/keep.*/testnet-yb-fast/wallet.dat)" = kept ] && [ "$(cat "$D/yb-fast/node/testnet-yb-fast/wallet.dat")" = other ] && [ ! -e "$X/keep" ] || fail "a kept wallet that cannot return is set aside, never deleted: $(cat "$T/err")"
 rm -rf "$X"/keep.*
 ok "a kept wallet that cannot return, or a keep an interrupted reset left, moves to keep.<time>, with a message; nothing is deleted"
-"$SEEDCTL" prefix-check 2>/dev/null; [ -e "$D/yb-fast/node/prefix/IMPORTED" ] || fail "prefix-check after the reset"
+# the import's check restarts the node (the -loadblock flags go): its RPC is warming up when the
+# check reaches the wallet, which it waits for rather than failing
+FAKE_WARMUP=2 "$SEEDCTL" prefix-check 2>"$T/err"; rm -f "$LOG.warm"
+[ -e "$D/yb-fast/node/prefix/IMPORTED" ] && grep -q 'container_name: x402api-yb-fast' "$c" && [ "$(cat "$X/owned" 2>/dev/null)" = "$(cat "$X/payto") $(cat "$X/zaddr")" ] || fail "prefix-check after the reset, the node's RPC warming up after its restart: $(cat "$T/err")"
 "$SEEDCTL" x402-backup yb-fast 2>/dev/null | grep -q "^the faucet wallet's export: $D/yb-fast/node/export/faucet[0-9]\{14\} " || fail "x402-backup prints the export's path"
 echo "a phrase" > "$X/mnemonic"; "$SEEDCTL" apply yb-fast "$X4" 2>/dev/null
 grep -q 'environment: { YCASHD_MNEMONIC_FILE: /run/ycash/mnemonic }' "$c" && grep -qF "$X/mnemonic:/run/ycash/mnemonic:ro" "$c" || fail "an operator's recovery phrase is mounted read-only for the wallet's creation"
