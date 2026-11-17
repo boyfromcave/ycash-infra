@@ -44,7 +44,11 @@
 #                    Vast's per-instance key it just exits 70. After the grace the GPU is checked
 #                    again; only a second failure ends the rental (destroy, tried 3 times with
 #                    VAST_RETRY_DELAY x 1, 2 s between, default 10; then stop).
-#   MINER_CACHE      where the verified download is kept across restarts (default ~/.cache/ycash-miner).
+#   MINER_CACHE      where the verified download is kept across restarts (default ~/.cache/ycash-miner);
+#                    an unfinished download is kept there too, and resumed where the server allows it.
+#   DOWNLOAD_TRIES   download attempts before giving up (default 6); an attempt ends when the transfer
+#                    stalls (under 20 kB/s for 60 s) or after an hour, never because the link is slow.
+#   DOWNLOAD_PAUSE   seconds between attempts (default 15).
 #   RESTART_DELAY    seconds before a watchdog restart (default 10).
 # Before mining it prints what the container sees: nvidia-smi's GPUs, the driver version and which of
 # its libraries the container runtime mounted, the OpenCL ICD and platforms (clinfo), every OpenCL
@@ -56,7 +60,8 @@
 # lolMiner's exit code 42 (a GPU hung, --watchdog exit) restarts it here, at most 20 times; any other
 # lolMiner exit ends the container, so the fleet reconcile replaces the machine. miniZ has no such
 # code: any exit restarts it, at most 20 times.
-# Exit codes of its own: 64 bad configuration, 65 checksum mismatch, 69 download failed, 70 no usable
+# Exit codes of its own: 64 bad configuration, 65 checksum mismatch, 69 download failed (logged as one
+# line "ycash-miner: NOT MINING: could not download ...", which the fleet's status shows), 70 no usable
 # GPU; 0 at the end of a burst (MINER_UNTIL).
 set -euo pipefail
 
@@ -190,18 +195,65 @@ burst_over() {
 past_until() { [ -n "$until" ] && [ "$(date +%s)" -ge "$until" ]; }
 if past_until; then burst_over; fi
 
+# The download goes to a partial file beside the cache directory, kept across attempts and container
+# restarts, and each attempt resumes it (curl -C -) where the server honours byte ranges (GitHub does;
+# miniz.cc answered a range with the whole file on 2026-11-17, so there every attempt starts from zero).
+# A slow link is not a failure: an attempt is cut only when it stalls (under 20 kB/s for 60 s) or
+# after an hour. Before, a fixed 600 s limit cut every attempt on slow rented links at 70-90 % and
+# began again from zero, and the machine never mined.
+download() { # PART -> true once the whole file is in PART
+  local part=$1 tries=${DOWNLOAD_TRIES:-6} pause=${DOWNLOAD_PAUSE:-15} try=1 rc before have total hdr err resume=yes
+  [[ $tries =~ ^[1-9][0-9]?$ ]] || tries=6
+  [[ $pause =~ ^[0-9]{1,4}$ ]] || pause=15
+  hdr=$part.headers err=$part.err
+  while :; do
+    before=0
+    [ ! -s "$part" ] || before=$(wc -c < "$part")
+    local args=()
+    if [ "$resume" = yes ] && [ "$before" -gt 0 ]; then
+      args=(-C -); echo "ycash-miner: downloading $url (attempt $try/$tries, resuming at $before bytes)"
+    else
+      echo "ycash-miner: downloading $url (attempt $try/$tries)"
+    fi
+    rc=0
+    curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 20 --speed-limit 20000 --speed-time 60 --max-time 3600 \
+      ${args[@]+"${args[@]}"} -D "$hdr" -o "$part" "$url" 2> "$err" || rc=$?
+    [ ! -s "$err" ] || cat "$err" >&2
+    [ "$rc" != 0 ] || { rm -f "$hdr" "$err"; return 0; }
+    have=0
+    [ ! -s "$part" ] || have=$(wc -c < "$part")
+    if [ "${#args[@]}" -gt 0 ] && [ "$have" -le "$before" ]; then
+      # the resume was refused (a server without byte ranges, or the partial file is no longer valid
+      # there): drop it and start from zero; a refusal of ranges turns resuming off for this download
+      rm -f "$part"; have=0
+      if grep -q 'byte ranges' "$err"; then
+        resume=no; echo "ycash-miner: the server does not resume downloads: starting again from zero"
+        continue
+      fi
+    fi
+    # the size of the whole file: a resumed answer's Content-Range "bytes a-b/<total>", else Content-Length
+    total=$(tr -d '\r' < "$hdr" 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed -n 's#^content-range: bytes [0-9]*-[0-9]*/\([0-9][0-9]*\)$#\1#p' | tail -1) || true
+    [ -n "$total" ] || total=$(tr -d '\r' < "$hdr" 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed -n 's/^content-length: *\([0-9][0-9]*\)$/\1/p' | tail -1) || true
+    if [ "$try" -ge "$tries" ]; then
+      rm -f "$hdr" "$err"
+      fail "NOT MINING: could not download $miner from $url after $tries attempts ($have of ${total:-?} bytes; curl exit $rc: a slow or broken link, no network, or the release moved); nothing was run" 69
+    fi
+    echo "ycash-miner: download attempt $try/$tries cut (curl exit $rc): $have of ${total:-?} bytes so far; trying again in $pause s"
+    sleep "$pause"
+    try=$((try + 1))
+  done
+}
+
 fetch() {
-  local dir=$CACHE/$miner-$sha tmp got
+  local dir=$CACHE/$miner-$sha part=$CACHE/$miner-$sha.part tmp got
   if [ -x "$bin" ] && [ -f "$dir/.verified" ] && [ "$(sha256sum < "$dir/download" | cut -d' ' -f1)" = "$sha" ]; then
     echo "ycash-miner: using the verified download in $dir"; return 0
   fi
   rm -rf "$dir"; mkdir -p "$dir"
   tmp=$dir/download
-  echo "ycash-miner: downloading $url"
-  if ! curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 5 --connect-timeout 20 --max-time 600 -o "$tmp" "$url"; then
-    rm -rf "$dir"
-    fail "could not download $miner from $url (no network, or the release moved); nothing was run" 69
-  fi
+  download "$part"
+  # only the complete file is checked; a file that fails the check is deleted, never resumed onto
+  mv "$part" "$tmp"
   got=$(sha256sum < "$tmp" | cut -d' ' -f1)
   if [ "$got" != "$sha" ]; then
     rm -rf "$dir"

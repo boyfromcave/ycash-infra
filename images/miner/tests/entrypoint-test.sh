@@ -11,7 +11,9 @@
 # miner devices it sees and where the pool resolves, and exits 70 without mining when lolMiner has no
 # OpenCL GPU (GPU bursts 1 and 2) or miniZ cannot load CUDA; that a card lolMiner lists as
 # "Drivers: Cuda, OpenCL" counts as usable; and that a burst miner (MINER_UNTIL) stops at its end and
-# ends its own rental with Vast's per-instance key (destroy, else stop), never printing that key.
+# ends its own rental with Vast's per-instance key (destroy, else stop), never printing that key. A cut
+# download resumes where the server allows it, else starts again; one that never completes logs one
+# NOT MINING line and exits 69; a file that fails the check is deleted, never resumed onto.
 # Run: images/miner/tests/entrypoint-test.sh   (make miners-test, CI)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -76,12 +78,31 @@ if [ -n "$method" ]; then
   case " ${FAKE_API_FAIL:-} " in *" $method "*) exit 22 ;; esac
   exit 0
 fi
-out=; prev=
-for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done
+out=; hdr=; resume=no; prev=
+for a in "$@"; do
+  case "$prev" in -o) out=$a ;; -D) hdr=$a ;; -C) resume=yes ;; esac; prev=$a
+done
 url=${*: -1}
 echo "$url" >> "$FAKE_DL"
+echo "$resume" >> "$FAKE_DL.resume"
 if [ "${FAKE_NET:-up}" = down ]; then echo "curl: (6) Could not resolve host" >&2; exit 6; fi
-cp "$FAKE_FILES/${url##*/}" "$out"
+# FAKE_CUTS=<n>: the first n transfers stop after FAKE_CHUNK bytes like a stalled link (exit 28);
+# FAKE_RANGES=no: a resume is answered like miniz.cc does (the whole file, so curl refuses)
+src=$FAKE_FILES/${url##*/}; size=$(wc -c < "$src"); off=0
+if [ "$resume" = yes ] && [ -s "$out" ]; then
+  off=$(wc -c < "$out")
+  if [ "${FAKE_RANGES:-yes}" = no ]; then echo "curl: (33) HTTP server doesn't seem to support byte ranges. Cannot resume." >&2; exit 33; fi
+  printf 'HTTP/1.1 206 Partial Content\r\nContent-Range: bytes %d-%d/%d\r\nContent-Length: %d\r\n\r\n' \
+    "$off" $((size - 1)) "$size" $((size - off)) > "$hdr"
+else
+  : > "$out"
+  printf 'HTTP/2 200\r\ncontent-length: %d\r\n\r\n' "$size" > "$hdr"
+fi
+if [ "$(wc -l < "$FAKE_DL")" -le "${FAKE_CUTS:-0}" ]; then
+  tail -c +$((off + 1)) "$src" | head -c "${FAKE_CHUNK:-100}" >> "$out"
+  echo "curl: (28) Operation too slow. Less than 20000 bytes/sec transferred the last 60 seconds" >&2; exit 28
+fi
+tail -c +$((off + 1)) "$src" >> "$out"
 EOF
 # stand-in nvidia-smi (FAKE_SMI=0: no GPU) and getent (FAKE_DNS=<address>, else the name does not resolve)
 cat > "$T/bin/nvidia-smi" <<'EOF'
@@ -104,10 +125,10 @@ MINIZ_URL=
 MINIZ_SHA256=
 EOF
 export PATH="$T/bin:$PATH" FAKE_LOG="$T/calls" FAKE_DL="$T/downloads" FAKE_FILES="$T/files" \
-  FAKE_API="$T/api" MINER_MANIFEST="$T/manifest" RESTART_DELAY=0
+  FAKE_API="$T/api" MINER_MANIFEST="$T/manifest" RESTART_DELAY=0 DOWNLOAD_PAUSE=0
 fail() { echo "FAIL: $*" >&2; cat "$T/out" >&2 || true; exit 1; }
 fresh() { rm -rf "$T/cache"; }
-run() { : > "$T/calls"; : > "$T/downloads"; : > "$T/api"; rm -f "$T/calls.listed"; rc=0
+run() { : > "$T/calls"; : > "$T/downloads"; : > "$T/downloads.resume"; : > "$T/api"; rm -f "$T/calls.listed"; rc=0
   env -u POOL_URL -u WORKER -u PAYOUT -u MINER_ARGS -u MINER_DRY_RUN -u MINER -u MINIZ_URL -u MINIZ_SHA256 \
     -u MINER_UNTIL -u MINER_DIAG -u CONTAINER_ID -u CONTAINER_API_KEY -u NO_GPU_GRACE -u VAST_RETRY_DELAY \
     MINER_CACHE="$T/cache" "$@" ./entrypoint.sh > "$T/out" 2>&1 || rc=$?; }
@@ -178,6 +199,36 @@ sed -i "s#^LOLMINER_URL=.*#LOLMINER_URL=https://releases.example/lol.tar.gz#" "$
 run POOL_URL=pool.example:3333 FAKE_NET=down
 if ! { [ "$rc" = 69 ] && grep -q 'could not download' "$T/out" && grep -q 'nothing was run' "$T/out" && [ ! -s "$T/calls" ]; }; then fail "no network: a clear error, nothing run"; fi
 echo "ok - refuses on a SHA-256 mismatch (65) and when the download fails (69); nothing runs"
+
+# ---- a slow link: cut downloads resume; one that never completes says NOT MINING -----------------------
+fresh
+run POOL_URL=pool.example:3333 FAKE_CUTS=2 FAKE_CHUNK=100
+if ! { [ "$rc" = 0 ] && [ "$(wc -l < "$T/downloads")" = 3 ] && [ "$(tr '\n' ' ' < "$T/downloads.resume")" = 'no yes yes ' ] \
+       && grep -q 'attempt 1/6 cut (curl exit 28): 100 of [0-9]* bytes so far' "$T/out" \
+       && grep -q 'attempt 2/6 cut (curl exit 28): 200 of [0-9]* bytes so far' "$T/out" \
+       && grep -q 'resuming at 200 bytes' "$T/out" && grep -q 'lolminer verified' "$T/out" && [ -s "$T/calls" ] \
+       && [ ! -e "$T/cache/lolminer-$LOLSHA.part" ]; }; then fail "cut twice, resumed, complete on the third attempt: verified and mining"; fi
+fresh
+run POOL_URL=pool.example:3333 FAKE_CUTS=1 FAKE_CHUNK=100 FAKE_RANGES=no
+if ! { [ "$rc" = 0 ] && [ "$(tr '\n' ' ' < "$T/downloads.resume")" = 'no yes no ' ] && grep -q 'does not resume downloads' "$T/out" \
+       && [ -s "$T/calls" ]; }; then fail "a server without ranges: the partial file is dropped and the download starts again from zero"; fi
+fresh
+run POOL_URL=pool.example:3333 FAKE_CUTS=99 FAKE_CHUNK=100 DOWNLOAD_TRIES=3
+if ! { [ "$rc" = 69 ] && [ "$(wc -l < "$T/downloads")" = 3 ] && [ ! -s "$T/calls" ] \
+       && [ "$(grep -c '^ycash-miner: NOT MINING: could not download lolminer' "$T/out")" = 1 ] \
+       && grep -q 'after 3 attempts (300 of [0-9]* bytes' "$T/out" && [ -s "$T/cache/lolminer-$LOLSHA.part" ]; }; then
+  fail "a download that never completes: 3 attempts, one NOT MINING line, exit 69, the partial file kept"; fi
+# the next start (Vast restarts the container) resumes the kept partial file and completes
+run POOL_URL=pool.example:3333
+if ! { [ "$rc" = 0 ] && grep -q 'resuming at 300 bytes' "$T/out" && [ -s "$T/calls" ]; }; then fail "a restart resumes the kept partial file"; fi
+# a corrupted partial file: the complete file fails the check, is deleted, and the next start begins at zero
+fresh
+mkdir -p "$T/cache"; printf 'garbage' > "$T/cache/lolminer-$LOLSHA.part"
+run POOL_URL=pool.example:3333
+if ! { [ "$rc" = 65 ] && [ ! -s "$T/calls" ] && [ ! -e "$T/cache/lolminer-$LOLSHA.part" ] && [ ! -e "$T/cache/lolminer-$LOLSHA" ]; }; then fail "a resumed file that fails the check is deleted"; fi
+run POOL_URL=pool.example:3333
+if ! { [ "$rc" = 0 ] && [ "$(tr '\n' ' ' < "$T/downloads.resume")" = 'no ' ]; }; then fail "after a failed check the download starts from zero"; fi
+echo "ok - a cut download resumes (or starts again where ranges are refused); one that never completes logs NOT MINING and exits 69; a failed check is never resumed onto"
 
 fresh
 addr=smDjxPnw7p3e7TQaQchJPDENxCnQif2d4CG

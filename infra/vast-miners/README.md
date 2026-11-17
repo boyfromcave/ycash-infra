@@ -177,7 +177,10 @@ python3 -I scripts/vast-fleet.py --fleet fleet.json down [--network legacy]
   address, from the environment it was started with), the accepted shares its log shows, and
   Vast's own status message (addresses masked). The share count is read from each running miner's
   last 400 log lines: miniZ's running total (`S: <accepted>/<rejected>`), else the share-accepted
-  lines in that tail; `?` when the log has neither or cannot be read (`--no-shares` skips the log
+  lines in that tail; `not mining: download` when neither is there and the log has the
+  entrypoint's `ycash-miner: NOT MINING: could not download …` line (the miner program never
+  arrived, `images/miner/README.md` "Slow links"); `?` when the log has none of these or cannot be
+  read (`--no-shares` skips the log
   reads). The pool's own `/status` is the authoritative count. `logs` ends each miner's log with
   the same payout and share count.
 - `--dry-run` reads the account and the offers and prints what it would do, changing nothing.
