@@ -400,7 +400,7 @@ What an `explorer` adds, per host (`files/seedctl-explorer`, seedctl's explorer 
 | `inzyght-<key>` | built on the host, or `explorer.image` by digest | uid 2005, read-only root, no capabilities, `mem_limit_mb` (768) | `backend` only (fixed .12) | applies and checks its schema on every start; trusts `X-Forwarded-For` from the proxy's fixed address only; started once the prefix is imported and only when its image is on the host |
 | `proxy-<key>` | `explorer.proxy_image` (Caddy, by digest) | uid 2006 (its data directories handed to it by seedctl), every capability dropped but binding low ports, read-only root, 128 MiB | `backend` (fixed .10), `edge` | the only published ports, TCP 80 and 443 (HTTP/3 off); Let's Encrypt certificate for `hostname` (HTTP-01), renewal, redirect to HTTPS, HSTS on HTTPS, JSON access log, header and idle timeouts, a 1 MB body limit (explorer/Caddyfile); certificate in `/srv/ycash-data/<key>/explorer/caddy` (kept across resets and new instances, so the certificate authority's rate limits are never met); a plain 503 page while Inzyght is not up |
 
-- **Networks.** `backend` (`172.31.250.0/24`; the proxy at .10, the node at .11 and Inzyght at .12 fixed, every other container from `.128/25`) is internal: no route out, so Inzyght's hard-coded
+- **Networks.** `backend` (`172.31.250.0/24`; the proxy at .10, the node at .11 and Inzyght at .12 fixed, the value-pools service at .13 when `explorer.pools` is set, every other container from `.128/25`) is internal: no route out, so Inzyght's hard-coded
   peer-location call (`http://ip-api.com/batch`) cannot leave the host and PostgreSQL has no
   egress. `edge` (`172.31.251.0/24`) carries the node's outbound P2P and the proxy's ports. Nothing
   listens on the host's own interfaces but the proxy (and, with `p2p_inbound`, the node's P2P port). The containers are not in host networking,
@@ -583,6 +583,48 @@ recommended. Disk for yb-fast: about 2.5 GB of node data, 1 GB of PostgreSQL, 1.
 prefix while it imports and 1.1 GB of prefix cache: 40 GiB is ample. The root volume holds the OS,
 the swap file, the images and the build: give an explorer host `root_volume_size = 30` (the
 default 20 GiB is tight with a 4 GiB swap file and a rebuild beside the running image).
+
+### Value pools (`explorer.pools`, default none)
+
+An explorer may also serve the value-pools page under `/pools/`: how much YEC sits in each pool of
+the chain, now and over time, from the node's value-pool index (it needs a node image of
+6.22.0-beta3 or later). It is our own small service
+([`images/value-pools`](../../images/value-pools/README.md)), not part of Inzyght.
+
+```hcl
+      explorer = {
+        # ...
+        pools = {
+          image = "ghcr.io/<owner>/ycash-value-pools@sha256:..."   # value-pools-image.yml
+          title = "Ycash fast testnet"                              # the page's heading (optional)
+          # mem_limit_mb = 128
+        }
+      }
+```
+
+What it adds, and only when set (without it every rendered file and the network's config are what
+they were before the option):
+
+- **`pools-<key>`**: uid 2007, read-only root, no capabilities, `mem_limit_mb` (128; it uses about
+  25 MiB), on `backend` only at the fixed address .13, no published port. Like Inzyght it starts
+  once the prefix is imported.
+- **The node's RPC** admits a second address: `YCASHD_RPC_ALLOWIP` becomes Inzyght's .12 and the
+  service's .13. The service sends only `getblockchaininfo`, `getblockhash` and `getblock`. Its copy
+  of the node's credential is `/srv/ycash-data/<key>/explorer/pools.env` (0400, root), beside
+  Inzyght's.
+- **The proxy** sends `/pools` and everything under it to the service; every other path goes to
+  Inzyght as before. No new port, no new security-group rule, no new host file.
+- **Its samples** are in `/srv/ycash-data/<key>/explorer/pools/` (one small file). A `reset` deletes
+  the file with the chain; removing the option removes the container and leaves the file.
+- **First start:** about 2,600 `getblock` calls over two to three minutes on yb-fast, one at a time
+  with a pause between them, then one or two calls per new block (the image's README, "History").
+- `seedctl status <key>` gains `explorer.pools`, the container's state.
+
+**Turn it on:** run `value-pools-image.yml`, put the printed digest in `explorer.pools.image` in the
+explorer's root, deploy. **Verify:** `https://<the explorer's name>/pools/` shows the totals, and
+`/pools/api/v1/status` says `historyComplete: true` a few minutes later with `rpcErrors: 0`.
+**Roll back:** remove `pools` and deploy; the node's RPC allow list, the Caddyfile and the compose
+file return to what they were.
 
 ## The lightwallet (a network's `lightwallet`)
 

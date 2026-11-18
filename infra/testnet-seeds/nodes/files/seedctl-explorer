@@ -14,6 +14,11 @@ UID_PROXY=2006               # Caddy runs as this uid, not root (explorer/compos
 EX_BACKEND=172.31.250        # internal: .10 proxy, .11 node, .12 Inzyght fixed; the others from .128/25
 EX_EDGE=172.31.251           # the node's P2P out and the proxy's published ports
 EX_INZYGHT=$EX_BACKEND.12    # the only address the node's RPC admits (besides its own loopback)
+# The value-pools page (explorer.pools; images/value-pools): our own sidecar beside Inzyght, a second
+# RPC client of the node at its own fixed address, admitted only when the option is set.
+UID_POOLS=2007               # the value-pools image's user (images/value-pools/Dockerfile: adduser -u 2007)
+EX_POOLS=$EX_BACKEND.13
+pools_of() { [ "$(cfg "$1" '.explorer.pools != null' 2>/dev/null)" = true ]; }   # config file
 
 # check_config's explorer half: every value lands in a compose file, an env file or a Caddyfile.
 explorer_check() { # file name
@@ -35,6 +40,10 @@ explorer_check() { # file name
     and ((.explorer.node_mem_limit_mb // 2304) | type == "number" and . >= 512 and . <= 65536 and . == floor)
     and ((.explorer.p2p_inbound // false) | type == "boolean")
     and (.explorer.p2p_inbound != true or (.extra_args | test("(^| )--?(no)?listen(=[^ ]*)?( |$)") | not))
+    and (.explorer.pools == null or (
+      (.explorer.pools.image | test($digest))
+      and (.explorer.pools.mem_limit_mb | type == "number" and . >= 64 and . <= 4096 and . == floor)
+      and (.explorer.pools.title | test("^[A-Za-z0-9 ._()-]{0,60}$"))))
   ' "$1" >/dev/null || die "the explorer in the config for $2 is not valid"
 }
 
@@ -42,6 +51,8 @@ explorer_check() { # file name
 # the prefix is imported only PostgreSQL and the proxy run (prefix-check starts Inzyght).
 explorer_up() { # net
   local net=$1 f="$D/$1/applied.json"
+  # a value-pools page removed from the config: its container goes, its sample file stays
+  if [ -d "$D/$net/explorer/pools" ] && ! pools_of "$f"; then docker rm -f "pools-$net" >/dev/null 2>&1 || true; fi
   wait_explorer "$net" 600 || die "$net: the explorer did not come up within 10 minutes (docker logs inzyght-$net / postgres-$net / proxy-$net)"
   if grep -q '^  inzyght:' "$O/net/$net/compose.yaml"; then
     log "$net explorer up: $(explorer_image "$f"), $(cfg "$f" '.explorer.hostname')"
@@ -151,8 +162,23 @@ explorer_image() { # file
 # compose pull's service list: empty (every service) unless Inzyght's image is built here, which is
 # never pulled.
 pull_services() { # file
-  if [ "$(cfg "$1" '.explorer.build != null')" = true ]; then echo "ycashd postgres proxy"; fi
+  if [ "$(cfg "$1" '.explorer.build != null')" = true ]; then
+    echo "ycashd postgres proxy$(if pools_of "$1" && grep -q '^  pools:' "$O/net/$(cfg "$1" .name)/compose.yaml" 2>/dev/null; then echo " pools"; fi)"
+  fi
   return 0
+}
+
+# The value-pools service's copy of the node's RPC credential (pools.env, 0400, beside Inzyght's) and
+# its data directory (its sample file; owned by its uid). Only for a config with explorer.pools.
+explorer_pools_files() { # net
+  local E="$D/$1/explorer"
+  mkdir -p "$E/pools"
+  if [ "$(id -u)" = 0 ]; then chown "$UID_POOLS:$UID_POOLS" "$E/pools"; fi
+  ( umask 077
+    # shellcheck source=/dev/null
+    . "$D/$1/rpc.env"
+    printf 'RPC_USER=%s\nRPC_PASSWORD=%s\n' "$YCASHD_RPC_USER" "$YCASHD_RPC_PASSWORD" > "$E/pools.env.new"
+    chmod 0400 "$E/pools.env.new"; mv -f "$E/pools.env.new" "$E/pools.env" )
 }
 
 # Can Inzyght be started? A published image is pulled by compose; a built one must be on the host.
@@ -249,7 +275,7 @@ explorer_build() { # net file
 # explorer/compose.yaml: backend internal, only the proxy publishes ports.
 render_explorer() { # net file loadblock-flags
   local net=$1 f=$2 importing=$3 R="$O/net/$1" E="$D/$1/explorer"
-  local host tls email site img pull="" ports dep=""
+  local host tls email site img pull="" ports dep="" pools_route=""
   explorer_imds_guard
   explorer_secrets "$net"
   host=$(cfg "$f" .explorer.hostname); tls=$(cfg "$f" .explorer.tls); email=$(cfg "$f" '.explorer.acme_email // ""')
@@ -257,6 +283,12 @@ render_explorer() { # net file loadblock-flags
   [ "$(cfg "$f" '.explorer.build != null')" = true ] && pull=$'\n    pull_policy: never'
   if [ "$tls" = true ]; then site=$host; ports='["80:80", "443:443"]'; else site=:80; ports='["80:80"]'; fi
   mkdir -p "$R/postgres-init" "$E/pg" "$E/caddy/data" "$E/caddy/config"
+  # the value-pools page (explorer.pools), like Inzyght not while the prefix is imported: /pools and
+  # everything under it go to our own service; Inzyght has no route there (explorer/Caddyfile.pools)
+  if pools_of "$f" && [ -z "$importing" ]; then
+    explorer_pools_files "$net"
+    pools_route=$'\n\t# the value-pools page, our own service beside Inzyght (ycash-infra explorer/Caddyfile.pools)\n\tredir /pools /pools/ 308\n\treverse_proxy /pools/* pools:8080'
+  fi
   # Caddy runs as uid 2006: its data (the certificate) and config directories are handed to it here,
   # on the host (the stack's one-shot proxy-volumes service does the same for its named volumes)
   if [ "$(id -u)" = 0 ]; then chown -R "$UID_PROXY:$UID_PROXY" "$E/caddy"; fi
@@ -297,7 +329,7 @@ $site {
 	header @https Strict-Transport-Security "max-age=31536000"
 	# Caddy replaces any X-Forwarded-For the client sent, so Inzyght, which trusts only this proxy's
 	# address, rate-limits on the real client address. WebSocket (/ws) upgrades pass through.
-	reverse_proxy inzyght:8080
+	reverse_proxy inzyght:8080$pools_route
 	# while Inzyght is not up (the prefix import, its first start): a plain page, not a bare 502
 	handle_errors 502 503 504 {
 		respond "This explorer is starting: the node is importing the chain or Inzyght is indexing it. Try again in a few minutes." 503
@@ -379,6 +411,35 @@ YAML
     logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
 YAML
   fi
+  # the value-pools page: the node's RPC (read-only calls) from its fixed backend address, its
+  # samples on the data volume, no published port, no route out (backend is internal)
+  if [ -n "$pools_route" ]; then
+    cat >> "$R/compose.yaml" <<YAML
+  pools:
+    image: $(cfg "$f" .explorer.pools.image)
+    container_name: pools-$net
+    restart: unless-stopped
+    user: "$UID_POOLS:$UID_POOLS"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file: [$E/pools.env]
+    environment:
+      RPC_URL: "http://$EX_BACKEND.11:$(cfg "$f" .rpc_port)/"
+      NETWORK_NAME: "$(cfg "$f" .explorer.pools.title)"
+      TRUSTED_PROXY: "$EX_BACKEND.10"
+    volumes: ["$E/pools:/data"]
+    networks:
+      backend: { ipv4_address: "$EX_POOLS" }
+    depends_on:
+      ycashd: { condition: service_started }
+    mem_limit: $(cfg "$f" .explorer.pools.mem_limit_mb)m
+    healthcheck: { test: ["CMD", "python3", "-I", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"], interval: 30s, timeout: 5s, retries: 3, start_period: 20s }
+    stop_grace_period: 5s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "3" } }
+YAML
+  fi
   cat >> "$R/compose.yaml" <<YAML
   proxy:
     image: $(cfg "$f" .explorer.proxy_image)
@@ -403,7 +464,7 @@ YAML
 networks:
   backend:
     internal: true
-    # the fixed addresses (.10 proxy, .11 node, .12 Inzyght) below the dynamic range, so a recreated container
+    # the fixed addresses (.10 proxy, .11 node, .12 Inzyght, .13 value pools) below the dynamic range, so a recreated container
     # can never take one
     ipam: { config: [{ subnet: "$EX_BACKEND.0/24", ip_range: "$EX_BACKEND.128/25" }] }
   edge:
@@ -496,7 +557,8 @@ explorer_status() { # net
     --argjson ih "$ih" --arg here "${here:-000}" --arg pub "${pub:-000}" --arg phase "$phase" \
     --argjson ready "$ready" --arg reason "$reason" --argjson rs "$rs" --argjson oom "$oom" \
     --arg started "$started" --argjson kills "$kills" \
-    '{phase: $phase, url: $url, image: $img} + $c + {indexedHeight: $ih, httpOnHost: $here, httpPublic: $pub}
+    --argjson pools "$(if pools_of "$f"; then jq -n --arg v "$(dinspect '{{.State.Status}}{{if .State.Health}} {{.State.Health.Status}}{{end}}' "pools-$1" absent)" '{pools: $v}'; else echo '{}'; fi)" \
+    '{phase: $phase, url: $url, image: $img} + $c + $pools + {indexedHeight: $ih, httpOnHost: $here, httpPublic: $pub}
      + {restarts: $rs, oomKilled: $oom, nodeStartedAt: (if $started == "" then null else $started end), nodeOomKills: $kills.sinceStart, nodeOomKillsSinceBoot: $kills.sinceBoot}
      + (if $ready then {} else {imageMissing: $reason} end)'
 }

@@ -442,6 +442,35 @@ for bad in '.extra_args += " -listen=0"' '.extra_args += " -nolisten"' '.extra_a
 done
 "$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null && cmp -s "$c" "$T/compose.before" || fail "p2p_inbound off again: the compose file as before"
 ok "p2p_inbound publishes the node's P2P port only, advertises the host's address; refuses a -listen; off renders as before"
+# the value-pools page (explorer.pools): our own sidecar at its fixed backend address, the node's
+# second RPC client, /pools/ in the Caddyfile; its credential only in a 0400 file; off, everything as before
+"$SEEDCTL" prefix-check 2>/dev/null
+"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null && cp "$c" "$T/compose.nopools" && cp "$O/net/yb-fast/Caddyfile" "$T/Caddyfile.nopools" && cp "$e" "$T/node.env.nopools" || fail "apply before the value-pools page"
+grep -q 'container_name: inzyght-yb-fast' "$c" || fail "the prefix is imported before the value-pools checks"
+PIMG=ghcr.io/example/ycash-value-pools@sha256:7777777777777777777777777777777777777777777777777777777777777777
+POOLX=$(echo "$MEMX" | base64 -d | jq -c --arg i "$PIMG" '.explorer.pools = {image: $i, mem_limit_mb: 128, title: "Ycash fast testnet"}' | b64)
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$POOLX" 2>"$T/err" || { cat "$T/err"; fail "apply with the value-pools page"; }
+grep -qx 'YCASHD_RPC_ALLOWIP=172.31.250.12 172.31.250.13' "$e" || fail "the node's RPC admits Inzyght and the value-pools service: $(grep ALLOWIP "$e")"
+[ "$(awk '/^  [a-z-]+:$/ { s = $1 } /ipv4_address: "172.31.250.13"/ { print s }' "$c")" = "pools:" ] && grep -q "image: $PIMG" "$c" && grep -q 'container_name: pools-yb-fast' "$c" && grep -q 'user: "2007:2007"' "$c" \
+  && grep -qx '    mem_limit: 128m' "$c" && grep -q 'RPC_URL: "http://172.31.250.11:18832/"' "$c" && grep -q 'NETWORK_NAME: "Ycash fast testnet"' "$c" && grep -q 'TRUSTED_PROXY: "172.31.250.10"' "$c" \
+  && [ "$(grep -c 'ports:' "$c")" = 1 ] && [ "$(grep -c 'read_only: true' "$c")" = 4 ] || fail "the value-pools service: its image, fixed address, user, limit; it publishes nothing: $(cat "$c")"
+diff <(grep -v -e '^	# the value-pools page' -e '^	redir /pools /pools/ 308$' -e '^	reverse_proxy /pools/\* pools:8080$' "$O/net/yb-fast/Caddyfile") "$T/Caddyfile.nopools" >/dev/null \
+  && [ "$(grep -c -e '^	redir /pools /pools/ 308$' -e '^	reverse_proxy /pools/\* pools:8080$' "$O/net/yb-fast/Caddyfile")" = 2 ] || fail "the Caddyfile gains /pools and nothing else: $(cat "$O/net/yb-fast/Caddyfile")"
+[ "$(stat -c %a "$D/yb-fast/explorer/pools.env")" = 400 ] && grep -qx "RPC_PASSWORD=$pw" "$D/yb-fast/explorer/pools.env" && [ -d "$D/yb-fast/explorer/pools" ] && ! grep -rqF -e "$pw" "$O/net/yb-fast" || fail "the value-pools credential only in its 0400 env file"
+grep -q 'docker compose .* pull -q ycashd postgres proxy pools' "$LOG" || fail "the value-pools image is pulled (Inzyght's built one is not): $(grep pull "$LOG")"
+[ "$("$SEEDCTL" status yb-fast | jq -r '.explorer.pools | type')" = string ] || fail "status names the value-pools container"
+for bad in '.explorer.pools.image = "ghcr.io/example/ycash-value-pools:latest"' '.explorer.pools.mem_limit_mb = 10' '.explorer.pools.title = "x\"\n  evil: 1"' '.explorer.pools.title = "x{y}"'; do
+  BADX=$(echo "$POOLX" | base64 -d | jq -c "$bad" | b64)
+  if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "the value-pools page accepted $bad"; fi
+done
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null && cmp -s "$c" "$T/compose.nopools" && cmp -s "$O/net/yb-fast/Caddyfile" "$T/Caddyfile.nopools" && cmp -s "$e" "$T/node.env.nopools" \
+  && grep -qx 'docker rm -f pools-yb-fast' "$LOG" || fail "the value-pools page off again: every rendered file as before, its container removed"
+"$SEEDCTL" apply yb-fast "$POOLX" 2>/dev/null && touch "$D/yb-fast/explorer/pools/samples.jsonl" || fail "apply with the value-pools page again"
+"$SEEDCTL" reset yb-fast "$POOLX" 2>/dev/null
+[ ! -e "$D/yb-fast/explorer/pools/samples.jsonl" ] && ! grep -q 'container_name: pools-yb-fast' "$c" && ! grep -q '/pools' "$O/net/yb-fast/Caddyfile" && grep -qx 'YCASHD_RPC_ALLOWIP=172.31.250.12 172.31.250.13' "$e" || fail "reset: the samples go with the chain; no value-pools service while the prefix imports"
+ok "the value-pools page: a sidecar at its fixed address, /pools in the Caddyfile, its credential private; refuses a tag, a small limit, an injected title; off renders as before; reset wipes its samples"
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null
 grep -q 'network_mode: host' "$c" && ! grep -q postgres "$c" && grep -q 'docker rm -f postgres-yb-fast inzyght-yb-fast proxy-yb-fast' "$LOG" && grep -qx 'YCASHD_INSIGHT=0' "$e" || fail "an explorer removed from the config"

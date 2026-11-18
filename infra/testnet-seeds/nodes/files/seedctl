@@ -157,6 +157,8 @@ render() { # net file
   ex=$(cfg "$f" '.explorer != null'); lw=$(cfg "$f" '.lightwallet != null'); x4=$(cfg "$f" '.x402 != null')
   [ "$(cfg "$f" '.insight // false')" = true ] && insight=1
   if [ "$ex" = true ]; then need_explorer; bind=0.0.0.0; allow=$EX_INZYGHT; zb=$EX_BACKEND.11; fi
+  # an explorer with the value-pools page: its sidecar is the node's second RPC client
+  if [ "$ex" = true ] && pools_of "$f"; then allow="$EX_INZYGHT $EX_POOLS"; fi
   if [ "$lw" = true ]; then need_lightwallet; bind=$LW_BACKEND.11; allow=$LW_LWD; zb=$LW_BACKEND.11; fi
   # an x402 host's node: RPC for the API, the facilitator and the faucet (three addresses), never the proxy
   if [ "$x4" = true ]; then need_x402; bind=$X4_BACKEND.11; allow=$X4_RPC_ALLOW; zb=$X4_BACKEND.11; fi
@@ -396,7 +398,7 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   fi
   if ex_of "$D/$net/applied.json"; then job_phase "waiting for the explorer"; explorer_up "$net"
   elif [ -d "$D/$net/explorer" ]; then
-    docker rm -f "postgres-$net" "inzyght-$net" "proxy-$net" >/dev/null 2>&1 || true   # an explorer removed from the config
+    docker rm -f "postgres-$net" "inzyght-$net" "proxy-$net" "pools-$net" >/dev/null 2>&1 || true   # an explorer removed from the config
   fi
   if lw_of "$D/$net/applied.json"; then job_phase "waiting for the light-wallet server"; lightwallet_up "$net"
   elif [ -d "$D/$net/lightwallet" ]; then
@@ -416,13 +418,13 @@ reset() { # net config-b64
   valid_name "$net"
   log "$net: RESET: stopping and deleting its chain"
   if [ -e "$O/net/$net/compose.yaml" ]; then compose "$net" down --timeout 180 || true; fi
-  docker rm -f "ycashd-$net" "yolo-$net" "postgres-$net" "inzyght-$net" "proxy-$net" "lightwalletd-$net" "grpcweb-$net" "lwproxy-$net" \
+  docker rm -f "ycashd-$net" "yolo-$net" "postgres-$net" "inzyght-$net" "proxy-$net" "pools-$net" "lightwalletd-$net" "grpcweb-$net" "lwproxy-$net" \
     "facilitator-$net" "x402api-$net" "faucet-$net" "x402proxy-$net" >/dev/null 2>&1 || true
   # an x402 host's faucet wallet is not the chain: it moves aside and comes back (apply)
   if [ -e "$D/$net/applied.json" ] && x4_of "$D/$net/applied.json"; then need_x402; x402_keep_wallet "$net"; fi
   # the chain, and what was built from it (the explorer's index, lightwalletd's block cache); the
   # certificates, the secrets and an x402 host's wallet stay
-  rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json" "$D/$net/explorer/pg" "$D/$net/lightwallet/cache"
+  rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json" "$D/$net/explorer/pg" "$D/$net/explorer/pools/samples.jsonl" "$D/$net/lightwallet/cache"
   apply "$net" "$2"
 }
 
