@@ -1,0 +1,8 @@
+# The value-pools page's routes (compose.pools.yaml mounts this file as /etc/caddy/routes/pools.caddy;
+# the Caddyfile imports that directory inside its site block). /pools and everything under it go to
+# our own `pools` service; Inzyght has no route there (its pages are /, /block/, /transaction/,
+# /address/, /blocks, /transactions, /api, /mempool, /supply, /difficulty, /blocksize; its API is
+# /api/v1/; its WebSocket /ws), so nothing of Inzyght's is hidden. A path matcher is more specific
+# than the Caddyfile's catch-all reverse_proxy, so these win for /pools only.
+redir /pools /pools/ 308
+reverse_proxy /pools/* pools:8080

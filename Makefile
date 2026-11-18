@@ -54,7 +54,7 @@ ROLLOUT_TIMEOUT ?= 10m
 KOGANY_CLUSTER ?= ycash-kogany
 KOGANY_VALUES  := values-kind.yaml values-kind-kogany.yaml
 
-.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status image-prefix-frame services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner image-yolo miners-test image-inzyght explorer-up explorer-down explorer-status explorer-logs explorer-psql explorer-wipe explorer-wipe-index explorer-lint
+.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status image-prefix-frame services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner image-yolo miners-test image-inzyght image-value-pools explorer-up explorer-down explorer-status explorer-logs explorer-psql explorer-wipe explorer-wipe-index explorer-lint
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -73,6 +73,7 @@ STAMP_web           = images/web/Dockerfile images/web/nginx.conf bundles/zcash-
 STAMP_faucet        = images/faucet/Dockerfile images/faucet/faucet.py images/faucet/fetch-params.py images/faucet/index.html images/faucet/app.js images/faucet/testnet.html images/faucet/testnet.js
 STAMP_testnet_status = images/testnet-status/Dockerfile images/testnet-status/probe.py images/testnet-status/status.py images/testnet-status/index.html images/testnet-status/status.js
 STAMP_inzyght       = images/inzyght/Dockerfile images/inzyght/entrypoint.sh
+STAMP_value_pools   = images/value-pools/Dockerfile images/value-pools/pools.py images/value-pools/index.html
 # ALLOW_STALE_IMAGES=1 (every image) or =ycashd,lightwalletd (by name): kind-load warns about a stale
 # image instead of failing (e.g. a node image built before stamps from an unchanged Dockerfile)
 ALLOW_STALE_IMAGES ?=
@@ -348,9 +349,10 @@ mainnet-prefix-local: ## harvest Ycash mainnet 0..H_S on this machine with Docke
 state-test: ## the state bundle's offline tests: snapshot.sh's steps against a stand-in node, verify.py (bundles/state)
 	python3 -I -m unittest discover -s bundles/state/tests -v
 
-services-test: state-test ## offline tests of the faucet (both modes), the probe and the status page, the state bundle
+services-test: state-test ## offline tests of the faucet (both modes), the probe and the status page, the value-pools page, the state bundle
 	python3 -I -m unittest discover -s images/faucet/tests -v
 	python3 -I -m unittest discover -s images/testnet-status/tests -v
+	python3 -I -m unittest discover -s images/value-pools/tests -v
 
 # --- Zcash parameter mirror (bundles/zcash-params) ---
 zcash-params-test: ## the parameter mirror's offline tests: SHA256SUMS vs the chart copy and ycash-dd's fetch-params.sh (YCASH_DD), the chart's init script
@@ -377,7 +379,13 @@ INZYGHT_COMMIT ?= 17f505f273c053247b59d20270e4d6a7b74994fb
 # on the host instead of the node service (explorer/compose.host-node.yaml).
 EXPLORER_ENV ?= explorer/.env
 EXPLORER_HOST_NODE ?=
-EXPLORER_COMPOSE = docker compose --project-directory explorer --env-file $(EXPLORER_ENV) -f explorer/compose.yaml $(if $(EXPLORER_HOST_NODE),-f explorer/compose.host-node.yaml)
+# EXPLORER_POOLS=1: the value-pools page beside the explorer, under /pools/ (explorer/compose.pools.yaml;
+# our own image, images/value-pools). Off by default: the stack is then exactly compose.yaml.
+EXPLORER_POOLS ?=
+EXPLORER_COMPOSE = docker compose --project-directory explorer --env-file $(EXPLORER_ENV) -f explorer/compose.yaml $(if $(EXPLORER_HOST_NODE),-f explorer/compose.host-node.yaml) $(if $(EXPLORER_POOLS),-f explorer/compose.pools.yaml $(if $(EXPLORER_HOST_NODE),-f explorer/compose.pools.host-node.yaml))
+
+image-value-pools: ## the value-pools page of an explorer host (images/value-pools: python:3.12-alpine + the standard library)
+	s=$$(scripts/image-stamp.sh hash $(STAMP_value_pools)) && docker build --platform $(PLATFORM) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/value-pools:$(YINDEX_REV) -t $(REGISTRY)/value-pools:local images/value-pools
 
 image-inzyght: ## Inzyght from github.com/miodragpop/inzyght at INZYGHT_COMMIT, with the build's few anchored edits (images/inzyght/README.md; local only, never pushed)
 	s=$$(scripts/image-stamp.sh hash $(STAMP_inzyght)) && docker build --platform $(PLATFORM) --build-arg INZYGHT_COMMIT=$(INZYGHT_COMMIT) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/inzyght:$(shell echo $(INZYGHT_COMMIT) | cut -c1-12) -t $(REGISTRY)/inzyght:local images/inzyght
@@ -389,6 +397,7 @@ explorer-up: ## the explorer stack (explorer/compose.yaml): writes EXPLORER_ENV 
 	@test "$(EXPLORER_ENV)" != explorer/.env || explorer/env-init.sh
 	@test -f $(EXPLORER_ENV) || { echo "$(EXPLORER_ENV) missing (copy explorer/.env.example and set the passwords)"; exit 1; }
 	@{ docker image inspect $(REGISTRY)/inzyght:local >/dev/null 2>&1 && scripts/image-stamp.sh check $(REGISTRY)/inzyght:local image-inzyght $(STAMP_inzyght) >/dev/null; } || $(MAKE) image-inzyght
+	@test -z "$(EXPLORER_POOLS)" || { docker image inspect $(REGISTRY)/value-pools:local >/dev/null 2>&1 && scripts/image-stamp.sh check $(REGISTRY)/value-pools:local image-value-pools $(STAMP_value_pools) >/dev/null; } || $(MAKE) image-value-pools
 	$(EXPLORER_COMPOSE) up -d
 	@. "$(EXPLORER_ENV_SH)"; echo "explorer: http://$${PROXY_BIND:-127.0.0.1}:$${PROXY_HTTP_PORT:-8090}/ (the first start restores the block prefix and syncs: make explorer-status)"
 
@@ -436,3 +445,5 @@ explorer-lint: ## shellcheck the explorer's scripts; docker compose config -q ov
 	shellcheck -s sh images/inzyght/entrypoint.sh explorer/env-init.sh explorer/postgres-init/*.sh
 	$(EXPLORER_LINT_COMPOSE) config -q
 	$(EXPLORER_LINT_COMPOSE) -f explorer/compose.host-node.yaml config -q
+	$(EXPLORER_LINT_COMPOSE) -f explorer/compose.pools.yaml config -q
+	$(EXPLORER_LINT_COMPOSE) -f explorer/compose.host-node.yaml -f explorer/compose.pools.yaml -f explorer/compose.pools.host-node.yaml config -q

@@ -1,0 +1,53 @@
+# Override: the value-pools page beside the explorer (images/value-pools/README.md; README.md "Value pools").
+#   make explorer-up EXPLORER_POOLS=1
+# OFF by default: without this file the stack is exactly compose.yaml. It adds one container, `pools`
+# (our own code, not part of Inzyght), on the internal `backend` network only, so like Inzyght and
+# PostgreSQL it has no route out. It reads the node over JSON-RPC with the credential Inzyght uses
+# (getblockchaininfo, getblockhash, getblock: it refuses to send anything else) and keeps its samples
+# in the `pools-data` volume. The proxy serves it under /pools/ (Caddyfile.pools, mounted into the
+# proxy's routes directory); Inzyght has no route there.
+services:
+  pools:
+    image: ${POOLS_IMAGE:-ycash/value-pools:local}
+    user: "2007:2007"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
+    environment:
+      RPC_URL: ${POOLS_RPC_URL:-http://node:${YCASHD_RPC_PORT:-18832}/}
+      RPC_USER: ${RPC_USER:?run make explorer-up (it writes .env)}
+      RPC_PASSWORD: ${RPC_PASSWORD:?run make explorer-up (it writes .env)}
+      NETWORK_NAME: ${POOLS_NETWORK_NAME:-}
+      # the proxy's fixed address: the only peer whose X-Forwarded-For names the client (the per-client limit)
+      TRUSTED_PROXY: ${BACKEND_PREFIX:-172.31.250}.10
+      # history: every block of the last RECENT_BLOCKS, every FINE_STEP-th from FINE_FROM (auto: the
+      # Ycash or Vault activation), every COARSE_STEP-th of the whole chain; RPC_INTERVAL_MS between
+      # the sampler's calls to the node
+      RECENT_BLOCKS: "${POOLS_RECENT_BLOCKS:-2000}"
+      FINE_STEP: "${POOLS_FINE_STEP:-10}"
+      FINE_FROM: ${POOLS_FINE_FROM:-auto}
+      COARSE_STEP: "${POOLS_COARSE_STEP:-1000}"
+      RPC_INTERVAL_MS: "${POOLS_RPC_INTERVAL_MS:-50}"
+    volumes:
+      - pools-data:/data
+    networks: [backend]
+    mem_limit: ${POOLS_MEM_LIMIT:-128m}
+    stop_grace_period: 5s
+    healthcheck:
+      # "the process serves HTTP"; whether the node answers it is /pools/api/v1/status
+      test: ["CMD", "python3", "-I", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+  proxy:
+    volumes:
+      - ./Caddyfile.pools:/etc/caddy/routes/pools.caddy:ro
+
+volumes:
+  pools-data:

@@ -1,0 +1,11 @@
+# Override on top of compose.pools.yaml and compose.host-node.yaml: the value-pools service reads the
+# node on the host too (make explorer-up EXPLORER_POOLS=1 EXPLORER_HOST_NODE=1). A development aid,
+# like compose.host-node.yaml: the service then needs a route to the host, so it also joins `edge`.
+# It makes no other outbound connection (its only HTTP client is the one to RPC_URL, which ignores
+# proxy settings).
+services:
+  pools:
+    environment:
+      RPC_URL: http://host.docker.internal:${HOST_RPC_PORT:?set HOST_RPC_PORT in .env (the host node's RPC port)}/
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [backend, edge]
