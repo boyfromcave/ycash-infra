@@ -305,6 +305,49 @@ wait_pool() { # net seconds
 
 compose() { local net=$1; shift; docker compose -f "$O/net/$net/compose.yaml" "$@"; }
 
+# A rendered file that a running container reads only when it starts (a bind-mounted configuration:
+# a Caddyfile, with Caddy's admin API off; Envoy's envoy.yaml; lightwalletd's and the facilitator's
+# files) goes in place with install_conf. Docker compose recreates a service when its definition or an
+# env_file's content changes, never for a bind-mounted file's content (and a file replaced with mv is
+# a new inode, which the running container does not see). So the host records, per service, the
+# sha256 of the file its container was last started with (NET/restart/SERVICE.sha256, on the root
+# disk, written by compose_up only after a successful up); a rendered file whose sha256 differs from
+# the record, or with no record yet, marks the service (NET/restart/SERVICE), and compose_up
+# recreates a marked service once the stack is up if its container was already running (one the up
+# creates reads the new file anyway): only those, only when their file changed, so an unchanged
+# deploy drops no connection, and the first deploy with this code restarts each such service once.
+# A mark outlives a run that fails before the recreate. The service's container is SERVICE-NET.
+install_conf() { # net service new-file file
+  local d="$O/net/$1/restart" h
+  mkdir -p "$d"
+  h=$(sha256sum < "$3" | cut -d' ' -f1)
+  if [ "$(cat "$d/$2.sha256" 2>/dev/null || true)" = "$h" ]; then rm -f "$d/$2"; else echo "$h" > "$d/$2"; fi
+  mv -f "$3" "$4"
+}
+
+compose_up() { # net: compose up -d, then recreate the running services whose configuration file changed
+  local d="$O/net/$1/restart" s v running=" "
+  for s in "$d"/*; do
+    case $s in *.sha256) continue ;; esac; [ -e "$s" ] || continue
+    v=${s##*/}
+    [ "$(dinspect '{{.State.Status}}' "$v-$1" absent)" != running ] || running="$running$v "
+  done
+  compose "$1" up -d || return 1
+  for s in "$d"/*; do
+    case $s in *.sha256) continue ;; esac; [ -e "$s" ] || continue
+    v=${s##*/}
+    if grep -q "^  $v:\$" "$O/net/$1/compose.yaml"; then
+      case "$running" in *" $v "*)
+        log "$1: $v's configuration changed (or was never recorded): recreating it"
+        compose "$1" up -d --no-deps --force-recreate "$v" || return 1 ;;
+      esac
+      mv -f "$s" "$s.sha256"   # the version its container now runs with
+    else
+      rm -f "$s"   # not in the stack (yet): it reads the current file when it is created
+    fi
+  done
+}
+
 # An empty datadir only: fetch and verify the prefix once per host into prefix-cache (the chart's
 # prefix-restore.sh: SHA256SUMS against the pin, every file against SHA256SUMS), then frame it with
 # this network's magic into NET/node/prefix/load (frame.py checks every block again).
@@ -381,7 +424,7 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   # shellcheck disable=SC2046  # one word per service, none for all of them
   retry compose "$net" pull -q $(if ex_of "$tmp"; then pull_services "$tmp"; fi)
   job_phase "starting the containers"
-  compose "$net" up -d
+  compose_up "$net"
   mv "$tmp" "$D/$net/applied.json"
   job_phase "waiting for the node's RPC"
   if wait_rpc "$net" 900; then
@@ -456,13 +499,13 @@ boot() {
   local net
   for net in $(applied_nets); do
     render "$net" "$D/$net/applied.json"
-    compose "$net" up -d || log "$net: did not start"
+    compose_up "$net" || log "$net: did not start"
     # A new instance has no locally built Inzyght image: the node, PostgreSQL and the proxy are up
     # already (render leaves Inzyght out); build the image from the kept context, then start it.
     if ex_of "$D/$net/applied.json" && ! explorer_image_ready "$D/$net/applied.json"; then
       if explorer_build "$net" "$D/$net/applied.json"; then
         render "$net" "$D/$net/applied.json"
-        compose "$net" up -d || log "$net: did not start"
+        compose_up "$net" || log "$net: did not start"
       else
         log "$net: the Inzyght image did not build: $(explorer_build_reason "$net")"
       fi
@@ -552,7 +595,7 @@ prefix_check() {
       [ "$h" -ge "$last" ] || { log "$net: prefix import at $h of $last"; continue; }
       touch "$N/prefix/IMPORTED"
       render "$net" "$D/$net/applied.json"
-      compose "$net" up -d
+      compose_up "$net"
       rm -rf "$N/prefix/load"
       log "$net: prefix imported (height $h); -loadblock retired"
     elif [ -e "$N/prefix/FRAMED" ] && [ ! -e "$N/prefix/IMPORTED" ]; then

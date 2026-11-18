@@ -340,7 +340,8 @@ CADDY
   # it carries the certificate contact: root and Caddy's group only
   chmod 0640 "$R/Caddyfile.new"
   if [ "$(id -u)" = 0 ]; then chown "0:$UID_PROXY" "$R/Caddyfile.new"; fi
-  mv -f "$R/Caddyfile.new" "$R/Caddyfile"
+  # Caddy reads it only at its start (admin off): a changed one recreates the proxy (install_conf)
+  install_conf "$net" proxy "$R/Caddyfile.new" "$R/Caddyfile"
   cat > "$R/postgres-init/10-inzyght.sh" <<'INIT'
 #!/bin/sh
 # Runs once, when the database directory is first initialised (docker-entrypoint-initdb.d): the
