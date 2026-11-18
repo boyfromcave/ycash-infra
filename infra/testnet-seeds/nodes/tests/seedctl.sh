@@ -333,7 +333,7 @@ ok "a paced pool: --min-block-interval only above 0, pacing status fields; bad v
 #      compose project; the node's credential in a private quote.toml; status with pool.quote; off again
 cp "$here/../files/seedctl-quote" "$O/seedctl-quote"
 QIMG=ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333
-QUOTED=$(echo "$POOLED" | base64 -d | jq -c --arg q "$QIMG" '.pool += {quote: {image: $q, poll_seconds: 75, min_move_bps: 10, heartbeat_seconds: 600}}' | b64)
+QUOTED=$(echo "$POOLED" | base64 -d | jq -c --arg q "$QIMG" '.pool += {quote: {image: $q, poll_seconds: 75}}' | b64)
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$QUOTED" 2>"$T/err" || { cat "$T/err"; fail "apply with pool quotes"; }
 c="$O/net/yb-fast/compose.yaml"
@@ -342,7 +342,7 @@ grep -qF "\"$D/yb-fast/quote.toml:/etc/yellowback-quote/host.toml:ro\"" "$c" && 
 [ "$(grep -c 'read_only: true' "$c")" = 2 ] && [ "$(grep -c 'cap_drop: \[ALL\]' "$c")" = 2 ] || fail "yolo and the agent: read-only, no capabilities"
 pw=$(sed -n 's/^YCASHD_RPC_PASSWORD=//p' "$D/yb-fast/rpc.env")
 grep -qx "rpc_password = \"$pw\"" "$D/yb-fast/quote.toml" && grep -qx 'rpc_url = "http://127.0.0.1:18832"' "$D/yb-fast/quote.toml" \
-  && grep -qx 'min_move_bps = 10' "$D/yb-fast/quote.toml" && grep -qx 'heartbeat_seconds = 600' "$D/yb-fast/quote.toml" && [ "$(stat -c %a "$D/yb-fast/quote.toml")" = 400 ] \
+  && grep -qx 'poll_seconds = 75' "$D/yb-fast/quote.toml" && ! grep -q 'min_move_bps\|heartbeat' "$D/yb-fast/quote.toml" && [ "$(stat -c %a "$D/yb-fast/quote.toml")" = 400 ] \
   || fail "quote.toml: the node's credential on loopback, the agent's settings, mode 0400"
 ! grep -q "$pw" "$c" || fail "the node's password is not in the compose file"
 grep -qx 'iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner 2005 -j REJECT' "$LOG" || fail "the agent's uid is refused the metadata service"
@@ -350,8 +350,8 @@ s=$("$SEEDCTL" status yb-fast)
 [ "$(echo "$s" | jq -c '.pool.quote | [.container, .quoteKind, .quoteAgeSeconds]')" = '["running","quote",42]' ] || fail "status with pool quotes: $s"
 s=$(FAKE_YED_INACTIVE=1 "$SEEDCTL" status yb-fast)
 [ "$(echo "$s" | jq -c '.pool.quote | [.container, .quoteKind]')" = '["running",null]' ] || fail "status while Yellowback is not active: $s"
-for bad in '.pool.quote.heartbeat_seconds = 1800' '.pool.quote.heartbeat_seconds = 60' '.pool.quote.poll_seconds = 10' \
-           '.pool.quote.min_move_bps = -1' '.pool.quote.image = "ghcr.io/example/ycash-quote:latest"' '.pool.payout = "t2UNzUUx8mWBCRYPRezvA363EYXyEpHokyi"'; do
+for bad in '.pool.quote.poll_seconds = 10' '.pool.quote.poll_seconds = 601' '.pool.quote.poll_seconds = 7.5' \
+           '.pool.quote.image = "ghcr.io/example/ycash-quote:latest"' '.pool.payout = "t2UNzUUx8mWBCRYPRezvA363EYXyEpHokyi"'; do
   BADPOOL=$(echo "$QUOTED" | base64 -d | jq -c "$bad" | b64)
   if "$SEEDCTL" apply yb-fast "$BADPOOL" 2>/dev/null; then fail "accepted pool quotes with $bad"; fi
 done

@@ -89,8 +89,7 @@ variable "networks" {
     getcoinbasetemplatefor) on 127.0.0.1. `quote` (default null = off) runs the Yellowback quote agent
     beside the node (README.md, "The pool": "Pool quotes"): `image` the quote image by digest
     (quote-image.yml, from a ycash6 commit with the beta4 cadence), `poll_seconds` (default 75,
-    30-600), `min_move_bps` (default 10, 0-1000) and `heartbeat_seconds` (default 600, from
-    poll_seconds to 1200) are its [quote] settings; with it the node also gets
+    the block time; 30-600) how often it fetches the price and calls yed_setquote; with it the node also gets
     -yellowbackpayoutaddress=<payout>, so `payout` must then be a P2PKH address (sm…, the tag's payout
     key; its key stays off the host). Until Yellowback is active on the network the node ignores the
     option and the agent waits (it logs once and asks again every poll).
@@ -190,10 +189,8 @@ variable "networks" {
       min_block_interval = optional(number, 0)
       # pool quotes (yellowback-quote beside the node; null = off, nothing rendered)
       quote = optional(object({
-        image             = string
-        poll_seconds      = optional(number, 75)
-        min_move_bps      = optional(number, 10)
-        heartbeat_seconds = optional(number, 600)
+        image        = string
+        poll_seconds = optional(number, 75)
       }))
     }))
     insight = optional(bool, false)
@@ -309,11 +306,9 @@ variable "networks" {
       can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", n.pool.quote.image)) &&
       can(regex("^sm[1-9A-HJ-NP-Za-km-z]{33}$", n.pool.payout)) &&
       n.pool.quote.poll_seconds >= 30 && n.pool.quote.poll_seconds <= 600 && floor(n.pool.quote.poll_seconds) == n.pool.quote.poll_seconds &&
-      n.pool.quote.min_move_bps >= 0 && n.pool.quote.min_move_bps <= 1000 && floor(n.pool.quote.min_move_bps) == n.pool.quote.min_move_bps &&
-      n.pool.quote.heartbeat_seconds >= n.pool.quote.poll_seconds && n.pool.quote.heartbeat_seconds <= 1200 && floor(n.pool.quote.heartbeat_seconds) == n.pool.quote.heartbeat_seconds &&
       !can(regex("(^| )-yellowbackpayout", n.extra_args))
     )])
-    error_message = "networks: a pool's quote needs its image pinned by digest, a P2PKH payout (sm..., 35 characters: the coinbase tag's payout key), poll_seconds a whole number from 30 to 600, min_move_bps a whole number from 0 to 1000, heartbeat_seconds a whole number from poll_seconds to 1200 (well inside the node's -yellowbackquotemaxage, 1800), and no -yellowbackpayout* in extra_args (the module sets -yellowbackpayoutaddress)."
+    error_message = "networks: a pool's quote needs its image pinned by digest, a P2PKH payout (sm..., 35 characters: the coinbase tag's payout key), poll_seconds a whole number from 30 to 600, and no -yellowbackpayout* in extra_args (the module sets -yellowbackpayoutaddress)."
   }
   validation {
     # yolo needs the node's -rpcthreads at least coinbase_concurrency + 2; above 2 the module sets it

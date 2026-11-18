@@ -326,8 +326,8 @@ run "pool_host_quotes" {
     error_message = "a quoting pool's node: the payout address as -yellowbackpayoutaddress too"
   }
   assert {
-    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).pool.quote) == jsonencode({ heartbeat_seconds = 600, image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333", min_move_bps = 10, poll_seconds = 75 })
-    error_message = "the quote agent's config: image, poll 75 s, 10 bps, heartbeat 600 s (the defaults)"
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).pool.quote) == jsonencode({ image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333", poll_seconds = 75 })
+    error_message = "the quote agent's config: image, poll 75 s (the default)"
   }
   assert {
     condition     = contains(keys(local.host_files), "seedctl-quote")
@@ -335,18 +335,10 @@ run "pool_host_quotes" {
   }
 }
 
-run "refuses_a_quote_with_a_heartbeat_past_1200" {
+run "refuses_a_quote_poll_below_30" {
   command = plan
   variables {
-    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", quote = { image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333", heartbeat_seconds = 1800 } } } }
-  }
-  expect_failures = [var.networks]
-}
-
-run "refuses_a_quote_with_a_heartbeat_below_the_poll" {
-  command = plan
-  variables {
-    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", quote = { image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333", poll_seconds = 120, heartbeat_seconds = 60 } } } }
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", quote = { image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333", poll_seconds = 10 } } } }
   }
   expect_failures = [var.networks]
 }

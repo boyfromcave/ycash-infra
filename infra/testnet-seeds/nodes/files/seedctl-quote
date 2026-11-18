@@ -6,8 +6,8 @@
 # seedctl-quote: the pool-quotes half of seedctl (sourced by seedctl, never run by itself). A network
 # whose `pool` has a `quote` runs the Yellowback quote agent beside its node (README.md, "The pool":
 # "Pool quotes"): yellowback-quote (ycash6 contrib/yellowback, images/quote) fetches the YEC price
-# from the public sources its image carries and calls yed_setquote on the node when the price moved
-# more than min_move_bps or every heartbeat_seconds. The node puts the quote into its coinbase tag,
+# from the public sources its image carries and calls yed_setquote on the node
+# every poll_seconds (one block by default). The node puts the quote into its coinbase tag,
 # which names the pool's payout address (-yellowbackpayoutaddress, locals.tf: an address, no key on
 # the host). Outbound HTTPS only; nothing listens. Where Yellowback is not active yet (no attestor
 # set on the network) the node has no yed_* calls: the agent logs that once and keeps asking, so the
@@ -23,9 +23,6 @@ quote_check() { # file name
     (.pool.quote.image | test("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$"))
     and (.pool.payout | test("^sm[1-9A-HJ-NP-Za-km-z]{33}$"))
     and (.pool.quote.poll_seconds | type == "number" and . >= 30 and . <= 600 and . == floor)
-    and (.pool.quote.min_move_bps | type == "number" and . >= 0 and . <= 1000 and . == floor)
-    and (.pool.quote.heartbeat_seconds | type == "number" and . <= 1200 and . == floor)
-    and (.pool.quote.heartbeat_seconds >= .pool.quote.poll_seconds)
   ' "$1" >/dev/null || die "config for $2: the pool's quote is not valid"
 }
 
@@ -37,9 +34,9 @@ render_quote() { # net file
   ( umask 077
     # shellcheck source=/dev/null
     . "$D/$net/rpc.env"
-    printf '[node]\nrpc_url = "http://127.0.0.1:%s"\nrpc_user = "%s"\nrpc_password = "%s"\n\n[quote]\npoll_seconds = %s\nmin_move_bps = %s\nheartbeat_seconds = %s\n\n' \
+    printf '[node]\nrpc_url = "http://127.0.0.1:%s"\nrpc_user = "%s"\nrpc_password = "%s"\n\n[quote]\npoll_seconds = %s\n\n' \
       "$(cfg "$f" .rpc_port)" "$YCASHD_RPC_USER" "$YCASHD_RPC_PASSWORD" \
-      "$(cfg "$f" .pool.quote.poll_seconds)" "$(cfg "$f" .pool.quote.min_move_bps)" "$(cfg "$f" .pool.quote.heartbeat_seconds)" > "$qc.new" )
+      "$(cfg "$f" .pool.quote.poll_seconds)" > "$qc.new" )
   if [ "$(id -u)" = 0 ]; then chown "$UID_QUOTE:$UID_QUOTE" "$qc.new"; fi
   chmod 0400 "$qc.new"; mv -f "$qc.new" "$qc"
   cat >> "$R/compose.yaml" <<YAML

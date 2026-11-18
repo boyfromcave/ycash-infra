@@ -19,7 +19,7 @@ RUN set -eu; d=/usr/local/share/yellowback-quote; \
     grep -q '^\[\[sources\]\]' "$d/sources.toml"; ! grep -qE '^\[(node|quote)\]' "$d/sources.toml"; \
     chmod 0755 /usr/local/lib/yellowback-quote/yellowback-quote; \
     printf '[node]\nrpc_url = "http://127.0.0.1:1"\n' | cat - "$d/sources.toml" > /tmp/check.toml; \
-    python3 -c 'import importlib.machinery as m, sys; sys.path.insert(0, "/usr/local/lib/yellowback-quote"); q = m.SourceFileLoader("q", "/usr/local/lib/yellowback-quote/yellowback-quote").load_module(); c = q.load_config("/tmp/check.toml"); assert c["sources"] and c["quote"]["poll_seconds"] == 75 and "min_move_bps" in c["quote"], c["quote"]'; \
+    python3 -c 'import importlib.machinery as m, sys; sys.path.insert(0, "/usr/local/lib/yellowback-quote"); q = m.SourceFileLoader("q", "/usr/local/lib/yellowback-quote/yellowback-quote").load_module(); c = q.load_config("/tmp/check.toml"); assert c["sources"] and c["quote"]["poll_seconds"] == 75 and c["quote"]["silence_seconds"] == 180, c["quote"]'; \
     rm /tmp/check.toml
 # The entrypoint joins the host's [node]/[quote] (mounted read-only at /etc/yellowback-quote/host.toml,
 # mode 0400: it holds the node's RPC password) and the image's sources into one private file on the
