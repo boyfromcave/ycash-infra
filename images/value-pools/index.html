@@ -1,0 +1,452 @@
+<!doctype html>
+<!-- Copyright (c) 2026 The Ycash developers. Distributed under the MIT software license.
+     The value-pools page (images/value-pools/README.md). Self-contained: one inline style, one
+     inline script, nothing loaded from anywhere else; pools.py serves it with a Content-Security-Policy
+     that admits exactly these two blocks by their sha256. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Value pools</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --raised: #f3f2ee; --text: #0b0b0b; --text-2: #52514e; --rule: #e2e1db; --focus: #2a78d6;
+  --ecc: #2a78d6; --sprout: #eb6834; --sapling: #1baf7a; --falcon: #6250d6; --slh: #e34948; --vault: #008300;
+  --link: #1c5cab; --warn: #8a4b00;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface: #1a1a19; --raised: #242422; --text: #f0efec; --text-2: #c3c2b7; --rule: #383834; --focus: #6da7ec;
+    --ecc: #3987e5; --sprout: #d95926; --sapling: #199e70; --falcon: #9085e9; --slh: #e66767; --vault: #0ca30c;
+    --link: #86b6ef; --warn: #f0b860;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface: #1a1a19; --raised: #242422; --text: #f0efec; --text-2: #c3c2b7; --rule: #383834; --focus: #6da7ec;
+  --ecc: #3987e5; --sprout: #d95926; --sapling: #199e70; --falcon: #9085e9; --slh: #e66767; --vault: #0ca30c;
+  --link: #86b6ef; --warn: #f0b860;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--surface); color: var(--text);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 780px; margin: 0 auto; padding: 16px 16px 40px; }
+a { color: var(--link); }
+h1 { font-size: 22px; line-height: 1.2; margin: 0 0 2px; }
+h2 { font-size: 15px; margin: 0 0 2px; }
+.sub, .tip, .note, figcaption span, .axis-note { color: var(--text-2); }
+.sub { margin: 0 0 10px; }
+.tip { margin: 0 0 12px; font-variant-numeric: tabular-nums; }
+.tip strong, .at strong { color: var(--text); font-weight: 600; }
+.warnline { color: var(--warn); font-weight: 600; margin: 0 0 10px; }
+.hidden { display: none; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
+th { font-weight: 600; font-size: 13px; color: var(--text-2); }
+td.num, th.num { text-align: right; padding-right: 0; padding-left: 8px; white-space: nowrap; }
+td small { color: var(--text-2); font-size: 12px; display: block; }
+td small.share { display: none; }
+@media (max-width: 480px) {
+  /* a phone: the share moves under the amount, so the pool's name keeps its room */
+  #totals th:nth-child(3), #totals td:nth-child(3) { display: none; }
+  td small.share { display: block; }
+}
+tr.total td { font-weight: 600; border-bottom: 0; }
+.key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 7px; }
+.k-ecc { background: var(--ecc); } .k-sprout { background: var(--sprout); } .k-sapling { background: var(--sapling); }
+.k-falcon { background: var(--falcon); } .k-slh { background: var(--slh); } .k-vault { background: var(--vault); }
+.k-none { background: transparent; }
+.sums { margin: 6px 0 18px; font-size: 13px; color: var(--text-2); }
+.ranges { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.ranges button { font: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--rule); border-radius: 6px; padding: 6px 10px; min-height: 34px; cursor: pointer; }
+.ranges button[aria-pressed="true"] { background: var(--raised); border-color: var(--text-2); font-weight: 600; }
+button:focus-visible, svg:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.at { margin: 0 0 10px; font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; min-height: 20px; }
+figure { margin: 0 0 18px; }
+figcaption { margin-bottom: 2px; }
+figcaption span { font-size: 13px; display: block; }
+svg.chart { display: block; width: 100%; touch-action: pan-y; }
+svg.tall { height: 220px; } svg.short { height: 150px; }
+svg text { font: 11px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; fill: var(--text-2); }
+.grid { stroke: var(--rule); stroke-width: 1; }
+.cursor { stroke: var(--text-2); stroke-width: 1; }
+.ring { stroke: var(--surface); stroke-width: 2; }
+.s-ecc { stroke: var(--ecc); } .s-sprout { stroke: var(--sprout); } .s-sapling { stroke: var(--sapling); }
+.s-falcon { stroke: var(--falcon); } .s-slh { stroke: var(--slh); } .s-vault { stroke: var(--vault); }
+.f-ecc { fill: var(--ecc); } .f-sprout { fill: var(--sprout); } .f-sapling { fill: var(--sapling); }
+.f-falcon { fill: var(--falcon); } .f-slh { fill: var(--slh); } .f-vault { fill: var(--vault); }
+.line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.band { fill-opacity: .72; stroke: none; }
+.dim { opacity: .45; }
+ul.legend { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 18px;
+  font-size: 13px; font-variant-numeric: tabular-nums; }
+ul.legend li { display: flex; align-items: center; gap: 6px; }
+ul.legend svg { width: 22px; height: 10px; flex: none; }
+ul.legend .name { color: var(--text-2); }
+ul.legend strong { font-weight: 600; }
+details { margin: 0 0 18px; }
+summary { cursor: pointer; font-size: 13px; color: var(--text-2); padding: 4px 0; }
+.scroll { overflow-x: auto; }
+.scroll table { font-size: 12px; min-width: 640px; }
+.note h2 { color: var(--text); margin-top: 14px; }
+.note p { margin: 4px 0 8px; font-size: 13px; }
+footer { font-size: 12px; color: var(--text-2); border-top: 1px solid var(--rule); padding-top: 10px; margin-top: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Value pools<span id="net"></span></h1>
+  <p class="sub">How much YEC sits in each pool of the chain, now and over time. <a href="/">Block explorer</a></p>
+  <p class="tip" id="tip" role="status">Loading the current totals.</p>
+  <p class="warnline hidden" id="warn"></p>
+
+  <table id="totals">
+    <caption class="vh">YEC in each pool at the chain tip, and each pool's share of the total supply</caption>
+    <thead><tr><th scope="col">Pool</th><th scope="col" class="num">YEC</th><th scope="col" class="num">Share</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="3">…</td></tr></tbody>
+  </table>
+  <p class="sums" id="sums"></p>
+
+  <div class="ranges" role="group" aria-label="Range of the charts">
+    <button type="button" data-range="day" aria-pressed="false">Last day</button>
+    <button type="button" data-range="k" aria-pressed="false">Last 1,000 blocks</button>
+    <button type="button" data-range="vault" aria-pressed="false">Since the Vault activation</button>
+    <button type="button" data-range="all" aria-pressed="false">All</button>
+  </div>
+  <p class="at" id="at" aria-live="polite"></p>
+
+  <figure>
+    <figcaption><h2>Transparent (ECC), Sprout and Sapling</h2>
+      <span>YEC in each pool, stacked, by block height. Point at the chart, or use the arrow keys, for the values at a block.</span></figcaption>
+    <svg class="chart tall" id="c-big" tabindex="0" role="group" aria-label="Stacked area chart of YEC in the transparent ECC, Sprout and Sapling pools by block height. The same figures are in the table below the charts."></svg>
+    <ul class="legend" id="l-big"></ul>
+  </figure>
+  <figure>
+    <figcaption><h2>Post-quantum: Falcon and SLH-DSA</h2>
+      <span>YEC at post-quantum addresses, by signature scheme. Its own scale: these pools are thousands of times smaller than the ones above.</span></figcaption>
+    <svg class="chart tall" id="c-pq" tabindex="0" role="group" aria-label="Line chart of YEC at post-quantum Falcon and SLH-DSA addresses by block height. The same figures are in the table below the charts."></svg>
+    <ul class="legend" id="l-pq"></ul>
+  </figure>
+  <figure>
+    <figcaption><h2>Locked in vaults</h2>
+      <span>YEC locked in vaults. Its own scale.</span></figcaption>
+    <svg class="chart short" id="c-vault" tabindex="0" role="group" aria-label="Line chart of YEC locked in vaults by block height. The same figures are in the table below the charts."></svg>
+    <ul class="legend" id="l-vault"></ul>
+  </figure>
+
+  <details>
+    <summary>The charts' figures as a table</summary>
+    <div class="scroll"><table id="data"><caption class="vh">YEC in each pool at evenly spaced blocks of the chosen range</caption>
+      <thead><tr><th scope="col">Block</th><th scope="col">Time (UTC)</th><th scope="col" class="num">Transparent (ECC)</th><th scope="col" class="num">Sprout</th><th scope="col" class="num">Sapling</th><th scope="col" class="num">Falcon</th><th scope="col" class="num">SLH-DSA</th><th scope="col" class="num">Vault</th></tr></thead>
+      <tbody id="datarows"></tbody></table></div>
+  </details>
+
+  <section class="note" aria-labelledby="about">
+    <h2 id="about">What these numbers are</h2>
+    <p>They are totals for the whole chain, kept by the node in its value-pool index: for each block, how much YEC
+      sits in outputs of each kind after that block. Every node running the same release reports the same figures for
+      the same block. This page reads them from one node and adds nothing of its own.</p>
+    <p><strong>Sapling</strong> and <strong>Sprout</strong> are the two shielded pools. <strong>Transparent (ECC)</strong> is YEC at
+      ordinary transparent addresses, which are spent with an elliptic-curve signature. <strong>Post-quantum</strong> is YEC at
+      addresses spent with a post-quantum signature, by scheme: Falcon (FN-DSA-512) or SLH-DSA (SLH-DSA-SHA2-128s).
+      <strong>Vault</strong> is YEC locked in vaults. The rows add up to the total supply.</p>
+    <p><strong>Monitored</strong> is the node's word for "this figure is available". A node that is still building its index, or
+      cannot build it, reports a pool as not monitored; the page then shows a dash, never a guess.</p>
+    <p><strong>Not shown:</strong> nothing here is about any address, transaction or person. The figures are sums over the
+      whole chain and cannot be broken down further on this page.</p>
+    <p id="hist"></p>
+  </section>
+  <footer>Figures as JSON: <a href="api/v1/current">current</a>, <a href="api/v1/series?last=1000">series</a>, <a href="api/v1/deltas">per-block changes</a>. 1 YEC = 100,000,000 zatoshis.</footer>
+</main>
+<script>
+"use strict";
+(function () {
+  var NS = "http://www.w3.org/2000/svg", ZAT = 1e8;
+  var q = new URLSearchParams(location.search);
+  if (q.get("theme") === "dark" || q.get("theme") === "light") document.documentElement.setAttribute("data-theme", q.get("theme"));
+
+  var CHARTS = [
+    { svg: "c-big", legend: "l-big", stacked: true, series: [
+      { id: "transparent_ecc", name: "Transparent (ECC)", c: "ecc" },
+      { id: "sprout", name: "Sprout", c: "sprout" },
+      { id: "sapling", name: "Sapling", c: "sapling" } ] },
+    { svg: "c-pq", legend: "l-pq", series: [
+      { id: "pq_falcon", name: "Falcon (FN-DSA-512)", c: "falcon" },
+      { id: "pq_slh_dsa", name: "SLH-DSA", c: "slh", dash: "6 4" } ] },
+    { svg: "c-vault", legend: "l-vault", series: [
+      { id: "vault", name: "Vault", c: "vault" } ] }
+  ];
+  var ROWS = [
+    { id: "sapling", name: "Sapling", c: "sapling" },
+    { id: "sprout", name: "Sprout", c: "sprout" },
+    { id: "transparent_ecc", name: "Transparent (ECC)", c: "ecc" },
+    { id: "pq_falcon", name: "Post-quantum Falcon", sub: "FN-DSA-512", c: "falcon" },
+    { id: "pq_slh_dsa", name: "Post-quantum SLH-DSA", sub: "SLH-DSA-SHA2-128s", c: "slh" },
+    { id: "vault", name: "Vault", sub: "locked in vaults", c: "vault" },
+    { id: "vault_intent", name: "Vault intents", sub: "released, waiting out their delay", optional: true },
+    { id: "pq_channel", name: "Post-quantum channels", optional: true },
+    { id: "orchard", name: "Orchard", optional: true },
+    { id: "other", name: "Other pools", optional: true }
+  ];
+  var state = { cur: null, fetchedAt: 0, series: null, cursor: -1, range: null, seriesTip: null, seriesAt: 0, failed: false };
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function sv(tag, attrs) { var e = document.createElementNS(NS, tag); for (var k in attrs) e.setAttribute(k, attrs[k]); return e; }
+  function clear(e) { while (e.firstChild) e.removeChild(e.firstChild); }
+  function group(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+  function groupYec(s) { var p = s.split("."); return (p[0][0] === "-" ? "-" : "") + group(p[0].replace("-", "")) + "." + p[1]; }
+  // zatoshis (a safe integer) as YEC text: 2 decimals from 1,000 YEC up, else up to 8 with trailing zeros cut to 2
+  function yec(z) {
+    if (z == null) return "–";
+    var neg = z < 0, a = Math.abs(z), w = Math.floor(a / ZAT), f = String(a % ZAT + ZAT).slice(1);
+    f = w >= 1000 ? f.slice(0, 2) : f.replace(/0{1,6}$/, "");
+    return (neg ? "-" : "") + group(w) + "." + f;
+  }
+  function when(t) { return new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC"; }
+  function ago(s) {
+    if (s < 90) return s + " second" + (s === 1 ? "" : "s") + " ago";
+    if (s < 5400) return Math.round(s / 60) + " minutes ago";
+    return Math.round(s / 3600) + " hours ago";
+  }
+  function blockLink(h, text) {
+    var base = state.cur && state.cur.links && state.cur.links.block || "/block/";
+    if (!/^(\/|https:\/\/)/.test(base)) base = "/block/";
+    var a = el("a", null, text || group(h)); a.href = base + h; return a;
+  }
+  function getJSON(url) {
+    return fetch(url, { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); });
+  }
+
+  // ---- the totals -----------------------------------------------------------------------------
+  // the tip line and the warnings: once a second, so "updated n seconds ago" counts
+  function renderTip() {
+    var c = state.cur, tip = $("tip");
+    if (!c || !c.ready) return;
+    var age = c.ageSeconds + Math.max(0, Math.round((Date.now() - state.fetchedAt) / 1000));
+    clear(tip);
+    tip.appendChild(document.createTextNode("Block "));
+    var s = el("strong"); s.appendChild(blockLink(c.height)); tip.appendChild(s);
+    tip.appendChild(document.createTextNode(" · " + when(c.time) + " · updated " + ago(age)));
+    var warn = $("warn"), msgs = [];
+    if (state.failed) msgs.push("The page could not reach its server; these are the last figures it received.");
+    else if (age > 120) msgs.push("Out of date: the node has not answered for " + ago(age).replace(" ago", "") + ".");
+    if (!c.monitored) msgs.push("The node does not report the split of the transparent pool at this block (not monitored): those rows show a dash.");
+    warn.textContent = msgs.join(" "); warn.className = "warnline" + (msgs.length ? "" : " hidden");
+
+  }
+  function renderCurrent() {
+    var c = state.cur, tip = $("tip");
+    if (!c || !c.ready) { tip.textContent = "The node has not answered yet. This page tries again every 15 seconds."; return; }
+    document.title = "Value pools" + (c.network ? ": " + c.network : "");
+    $("net").textContent = c.network ? ": " + c.network : "";
+    renderTip();
+    var by = {}; c.pools.concat(c.aggregates).forEach(function (p) { by[p.id] = p; });
+    var body = $("rows"); clear(body);
+    function row(def, p, total) {
+      var tr = el("tr", total ? "total" : null), td = el("td");
+      td.appendChild(el("span", "key k-" + (def.c || "none")));
+      td.appendChild(document.createTextNode(def.name));
+      if (def.sub) td.appendChild(el("small", null, def.sub));
+      tr.appendChild(td);
+      var sh = p.sharePercent == null ? "–" : p.sharePercent + " %";
+      var amt = el("td", "num", p.yec == null ? "–" : groupYec(p.yec));
+      amt.appendChild(el("small", "share", sh));
+      tr.appendChild(amt);
+      tr.appendChild(el("td", "num", sh));
+      body.appendChild(tr);
+    }
+    ROWS.forEach(function (def) {
+      var p = by[def.id]; if (!p) return;
+      if (def.optional && !p.zat) return;
+      row(def, p);
+    });
+    row({ name: "Total supply" }, by.supply, true);
+    var ok = ["transparent", "postQuantum", "supply"].map(function (k) { return c.checks[k].holds; });
+    $("sums").textContent = ok.every(function (x) { return x === true; })
+      ? "Checked at this block: the rows add up to the total supply, and the two post-quantum rows add up to the node's post-quantum total."
+      : ok.some(function (x) { return x === false; })
+        ? "Warning: the node's figures do not add up at this block."
+        : "The sums could not be checked at this block: the node does not report every figure.";
+    var h = c.history, hist = $("hist");
+    hist.textContent = "History on this page: every block of the last " + group(h.recentBlocks) + ", every " + group(h.fineStep) + "th block from "
+      + (h.fineFrom == null ? "the start" : "block " + group(h.fineFrom)) + ", every " + group(h.coarseStep) + "th block before that."
+      + (h.complete ? "" : " It is still being read from the node: " + group(h.missing) + " blocks to go, so the charts may have gaps for a few minutes.");
+    var vb = document.querySelector('button[data-range="vault"]');
+    vb.className = c.upgrades && c.upgrades.vault != null ? "" : "hidden";
+  }
+
+  // ---- the charts -----------------------------------------------------------------------------
+  function niceTicks(max, n) {
+    if (!(max > 0)) return { step: 1, top: 1 };
+    var raw = max / n, p = Math.pow(10, Math.floor(Math.log10(raw))), m = raw / p;
+    var step = (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * p;
+    return { step: step, top: Math.ceil(max / step - 1e-9) * step };
+  }
+  function tickLabel(v, step) {
+    if (v === 0) return "0";
+    if (step >= 1e6 || v >= 1e7) return +(v / 1e6).toFixed(2) + "M";
+    if (v >= 1e4) return +(v / 1e3).toFixed(1) + "K";
+    var dec = 0;
+    while (dec < 8 && Math.abs(step * Math.pow(10, dec) - Math.round(step * Math.pow(10, dec))) > 1e-9) dec++;
+    return group(v.toFixed(dec));
+  }
+  function draw(cfg) {
+    var svg = $(cfg.svg), d = state.series; clear(svg);
+    var W = Math.max(280, svg.clientWidth || 320), H = svg.clientHeight || 220;
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    var L = 46, R = 12, T = 18, B = 38, pw = W - L - R, ph = H - T - B;
+    svg.appendChild(sv("text", { x: 0, y: 11 })).textContent = "YEC";
+    if (!d || !d.heights.length) { svg.appendChild(sv("text", { x: L, y: T + 20 })).textContent = "No samples in this range yet."; return; }
+    // points where every series of this chart has a figure
+    var idx = [];
+    d.heights.forEach(function (_, i) { if (cfg.series.every(function (s) { return d.pools[s.id][i] != null; })) idx.push(i); });
+    if (!idx.length) { svg.appendChild(sv("text", { x: L, y: T + 20 })).textContent = "The node does not report these pools in this range (not monitored)."; return; }
+    var h0 = d.heights[0], h1 = d.heights[d.heights.length - 1];
+    function X(i) { return h1 === h0 ? L + pw / 2 : L + (d.heights[i] - h0) / (h1 - h0) * pw; }
+    var vals = cfg.series.map(function (s) { return idx.map(function (i) { return d.pools[s.id][i] / ZAT; }); });
+    var tops = vals.map(function (v) { return v.slice(); });
+    if (cfg.stacked) for (var k = 1; k < tops.length; k++) tops[k] = tops[k].map(function (v, j) { return v + tops[k - 1][j]; });
+    var max = 0; tops.forEach(function (t) { t.forEach(function (v) { if (v > max) max = v; }); });
+    var tk = niceTicks(max, H < 180 ? 2 : 4);
+    function Y(v) { return T + ph - v / tk.top * ph; }
+    for (var ti = 0; ti * tk.step <= tk.top + tk.step / 2; ti++) {
+      var v = ti * tk.step;
+      svg.appendChild(sv("line", { class: "grid", x1: L, x2: W - R, y1: Y(v), y2: Y(v) }));
+      svg.appendChild(sv("text", { x: L - 6, y: Y(v) + 4, "text-anchor": "end" })).textContent = tickLabel(v, tk.step);
+    }
+    var xt = niceTicks(h1 - h0, W < 480 ? 3 : 5), first = Math.ceil(h0 / xt.step) * xt.step;
+    for (var hx = first; hx <= h1 && h1 > h0; hx += xt.step) {
+      var px = L + (hx - h0) / (h1 - h0) * pw;
+      if (px < L + 24 || px > W - R - 24) continue;
+      svg.appendChild(sv("line", { class: "grid", x1: px, x2: px, y1: T + ph, y2: T + ph + 4 }));
+      svg.appendChild(sv("text", { x: px, y: T + ph + 16, "text-anchor": "middle" })).textContent = group(Math.round(hx));
+    }
+    svg.appendChild(sv("text", { x: L + pw / 2, y: H - 4, "text-anchor": "middle" })).textContent = "Block height";
+    function path(arr) { return arr.map(function (v, j) { return (j ? "L" : "M") + X(idx[j]).toFixed(1) + " " + Y(v).toFixed(1); }).join(""); }
+    cfg.series.forEach(function (s, k) {
+      if (cfg.stacked) {
+        var lower = k ? tops[k - 1] : tops[0].map(function () { return 0; });
+        var back = lower.map(function (v, j) { return "L" + X(idx[j]).toFixed(1) + " " + Y(v).toFixed(1); }).reverse().join("");
+        svg.appendChild(sv("path", { class: "band f-" + s.c, d: path(tops[k]) + back + "Z" }));
+      }
+      var ln = sv("path", { class: "line s-" + s.c, d: path(tops[k]) });
+      if (s.dash) ln.setAttribute("stroke-dasharray", s.dash);
+      svg.appendChild(ln);
+      if (idx.length === 1) svg.appendChild(sv("circle", { class: "ring f-" + s.c, cx: X(idx[0]), cy: Y(tops[k][0]), r: 4 }));
+    });
+    // the cursor: the sampled block nearest the pointer, shared by the three charts
+    var ci = state.cursor < 0 ? d.heights.length - 1 : state.cursor, j = idx.indexOf(ci);
+    svg.appendChild(sv("line", { class: "cursor", x1: X(ci), x2: X(ci), y1: T, y2: T + ph }));
+    if (j >= 0) cfg.series.forEach(function (s, k) {
+      svg.appendChild(sv("circle", { class: "ring f-" + s.c, cx: X(ci), cy: Y(tops[k][j]), r: 4 }));
+    });
+    var hit = sv("rect", { x: L, y: T, width: pw, height: ph, fill: "transparent" });
+    function pick(ev) {
+      var r = svg.getBoundingClientRect(), x = (ev.clientX - r.left) * (W / r.width), best = 0, bd = Infinity;
+      for (var i = 0; i < d.heights.length; i++) { var dx = Math.abs(X(i) - x); if (dx < bd) { bd = dx; best = i; } }
+      setCursor(best);
+    }
+    hit.addEventListener("pointermove", pick); hit.addEventListener("pointerdown", pick);
+    svg.appendChild(hit);
+    // the legend doubles as the readout: every series' value at the cursor
+    var lg = $(cfg.legend); clear(lg);
+    cfg.series.forEach(function (s) {
+      var li = el("li"), key = sv("svg", { viewBox: "0 0 22 10", "aria-hidden": "true" });
+      if (cfg.stacked) key.appendChild(sv("rect", { class: "f-" + s.c, x: 4, y: 0, width: 14, height: 10, rx: 2 }));
+      else { var kl = sv("line", { class: "line s-" + s.c, x1: 1, x2: 21, y1: 5, y2: 5 }); if (s.dash) kl.setAttribute("stroke-dasharray", s.dash); key.appendChild(kl); }
+      li.appendChild(key); li.appendChild(el("span", "name", s.name));
+      li.appendChild(el("strong", null, yec(d.pools[s.id][ci]) + " YEC"));
+      lg.appendChild(li);
+    });
+  }
+  function renderAt() {
+    var d = state.series, at = $("at"); clear(at);
+    if (!d || !d.heights.length) return;
+    var ci = state.cursor < 0 ? d.heights.length - 1 : state.cursor;
+    at.appendChild(document.createTextNode("Values below are at block "));
+    var s = el("strong"); s.appendChild(blockLink(d.heights[ci])); at.appendChild(s);
+    at.appendChild(document.createTextNode(" · " + when(d.times[ci]) + (ci === d.heights.length - 1 ? " (the end of the range)" : "")));
+  }
+  function renderCharts() { renderAt(); CHARTS.forEach(draw); }
+  function setCursor(i) {
+    var n = state.series ? state.series.heights.length : 0;
+    i = Math.max(0, Math.min(n - 1, i));
+    if (i === state.cursor || (state.cursor < 0 && i === n - 1)) return;
+    state.cursor = i; renderCharts();
+  }
+  function renderData() {
+    var d = state.series, body = $("datarows"); clear(body);
+    if (!d) return;
+    var n = d.heights.length, want = Math.min(12, n), seen = {};
+    for (var k = 0; k < want; k++) {
+      var i = want === 1 ? n - 1 : Math.round(k * (n - 1) / (want - 1));
+      if (seen[i]) continue; seen[i] = 1;
+      var tr = el("tr"), td = el("td"); td.appendChild(blockLink(d.heights[i])); tr.appendChild(td);
+      tr.appendChild(el("td", null, when(d.times[i])));
+      ["transparent_ecc", "sprout", "sapling", "pq_falcon", "pq_slh_dsa", "vault"].forEach(function (id) { tr.appendChild(el("td", "num", yec(d.pools[id][i]))); });
+      body.appendChild(tr);
+    }
+  }
+
+  // ---- loading --------------------------------------------------------------------------------
+  function seriesUrl() {
+    var r = state.range, v = state.cur && state.cur.upgrades && state.cur.upgrades.vault;
+    if (r === "day") return "api/v1/series?seconds=86400&max=300";
+    if (r === "k") return "api/v1/series?last=1000&max=300";
+    if (r === "vault" && v != null) return "api/v1/series?from=" + v + "&max=300";
+    return "api/v1/series?from=0&max=300";
+  }
+  function loadSeries() {
+    var want = state.range;
+    CHARTS.forEach(function (c) { $(c.svg).classList.add("dim"); });
+    return getJSON(seriesUrl()).then(function (d) {
+      if (want !== state.range) return;
+      state.series = d; state.cursor = -1; state.seriesTip = state.cur && state.cur.hash; state.seriesAt = Date.now();
+      renderCharts(); renderData();
+    }).catch(function () {}).then(function () { CHARTS.forEach(function (c) { $(c.svg).classList.remove("dim"); }); });
+  }
+  function setRange(r) {
+    state.range = r;
+    try { localStorage.setItem("pools.range", r); } catch (e) { /* private window: not remembered */ }
+    Array.prototype.forEach.call(document.querySelectorAll(".ranges button"), function (b) { b.setAttribute("aria-pressed", String(b.getAttribute("data-range") === r)); });
+    loadSeries();
+  }
+  function refresh() {
+    return getJSON("api/v1/current").then(function (c) {
+      state.cur = c; state.fetchedAt = Date.now(); state.failed = false; renderCurrent();
+      if (!c.ready) return;
+      if (state.range == null) {
+        var saved = null; try { saved = localStorage.getItem("pools.range"); } catch (e) { /* none */ }
+        if (["day", "k", "vault", "all"].indexOf(saved) < 0) saved = null;
+        if (saved === "vault" && c.upgrades.vault == null) saved = null;
+        setRange(saved || (c.upgrades.vault != null ? "vault" : "all"));
+      } else if ((c.hash !== state.seriesTip || !c.history.complete) && Date.now() - state.seriesAt > 30000) loadSeries();
+    }).catch(function () { state.failed = true; renderTip(); });
+  }
+  Array.prototype.forEach.call(document.querySelectorAll(".ranges button"), function (b) {
+    b.addEventListener("click", function () { setRange(b.getAttribute("data-range")); });
+  });
+  CHARTS.forEach(function (c) {
+    $(c.svg).addEventListener("keydown", function (ev) {
+      var n = state.series ? state.series.heights.length : 0, cur = state.cursor < 0 ? n - 1 : state.cursor;
+      var to = { ArrowLeft: cur - 1, ArrowRight: cur + 1, Home: 0, End: n - 1, PageUp: cur - 10, PageDown: cur + 10 }[ev.key];
+      if (to == null || !n) return;
+      ev.preventDefault(); setCursor(to); $(c.svg).focus();
+    });
+  });
+  var resizeTimer = 0;
+  window.addEventListener("resize", function () { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderCharts, 150); });
+  setInterval(renderTip, 1000);
+  setInterval(refresh, 15000);
+  refresh();
+})();
+</script>
+</body>
+</html>

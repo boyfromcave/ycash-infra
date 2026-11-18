@@ -12,6 +12,7 @@
 | `ghcr.io/<owner>/yolo` | `images/yolo/Dockerfile` (the stratum pool for the testnet pool host, `infra/testnet-seeds/README.md` "The pool"; published by `yolo-image.yml`) | the yolo tree at one commit |
 | `ghcr.io/<owner>/ycash-miner` | `images/miner/Dockerfile` ([README](miner/README.md): the testnet GPU miner launcher, no miner binary: it downloads lolMiner at start and checks its pinned SHA-256; published by `miner-image.yml`) | `images/miner` |
 | `ycash/inzyght` | `images/inzyght/Dockerfile` ([README](inzyght/README.md): the Inzyght block explorer, cloned at one commit inside the build, with a few one-line build edits; for the explorer stack, `explorer/`). **Local builds only, never pushed**: Inzyght has no licence file yet | `images/inzyght` |
+| `ycash/value-pools` (`ghcr.io/<owner>/ycash-value-pools`) | `images/value-pools/Dockerfile` ([README](value-pools/README.md): the value-pools page of an explorer host, our own service beside Inzyght, Python's standard library; published by `value-pools-image.yml`) | `images/value-pools` |
 | `ycash/personas` | `images/personas/Dockerfile` | see the file |
 
 The node and lightwalletd images are owned by their repositories (rule 5 in AGENTS.md); this
