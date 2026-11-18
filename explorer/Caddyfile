@@ -40,6 +40,10 @@
 	# never send it). One year, this name only: no includeSubDomains, no preload.
 	@https protocol https
 	header @https Strict-Transport-Security "max-age=31536000"
+	# Routes of our own services beside Inzyght, none by default: a Compose override mounts one file
+	# per service here (compose.pools.yaml: /pools/, the value-pools page). The directory does not
+	# exist otherwise and the import matches nothing.
+	import /etc/caddy/routes/*.caddy
 	# Caddy replaces any X-Forwarded-For the client sent (no trusted_proxies here), so Inzyght, which
 	# trusts only this proxy's address, rate-limits on the real client address. WebSocket (/ws)
 	# upgrades pass through.

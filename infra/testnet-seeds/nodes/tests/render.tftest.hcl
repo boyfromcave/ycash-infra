@@ -420,6 +420,48 @@ run "explorer_by_digest_plain_http" {
   }
 }
 
+# The value-pools page beside the explorer (README.md, "The explorer": "Value pools"): the option in
+# the network's config only when set, its image by digest, no new port and no new host file.
+run "explorer_value_pools" {
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, explorer = { hostname = "explorer.example.org", image = "ghcr.io/example/inzyght@sha256:5555555555555555555555555555555555555555555555555555555555555555", postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444", pools = { image = "ghcr.io/example/ycash-value-pools@sha256:7777777777777777777777777777777777777777777777777777777777777777", title = "Ycash fast testnet" } } } }
+  }
+  assert {
+    condition     = jsonencode(local.network_config["yb-fast"].explorer.pools) == jsonencode({ image = "ghcr.io/example/ycash-value-pools@sha256:7777777777777777777777777777777777777777777777777777777777777777", mem_limit_mb = 128, title = "Ycash fast testnet" })
+    error_message = "explorer.pools reaches the network's config: the image, the default limit, the title"
+  }
+  assert {
+    condition     = alltrue([for k in keys(local.host_files) : contains(["frame.py", "prefix-restore.sh", "seedctl-explorer"], k)]) && contains(keys(local.host_files), "seedctl-explorer") && alltrue([for r in aws_vpc_security_group_ingress_rule.explorer : contains([80, 443], r.from_port)]) && length(aws_vpc_security_group_ingress_rule.p2p) == 0
+    error_message = "the value-pools page adds no host file and opens no port (it is served by the explorer's proxy)"
+  }
+}
+
+run "explorer_without_value_pools_has_no_key" {
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, explorer = { hostname = "explorer.example.org", image = "ghcr.io/example/inzyght@sha256:5555555555555555555555555555555555555555555555555555555555555555", postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  assert {
+    condition     = !contains(keys(local.network_config["yb-fast"].explorer), "pools")
+    error_message = "an explorer without pools keeps the config it had before the option"
+  }
+}
+
+run "refuses_a_value_pools_image_by_tag" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, explorer = { hostname = "explorer.example.org", image = "ghcr.io/example/inzyght@sha256:5555555555555555555555555555555555555555555555555555555555555555", postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444", pools = { image = "ghcr.io/example/ycash-value-pools:latest" } } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_a_value_pools_title_with_markup" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, explorer = { hostname = "explorer.example.org", image = "ghcr.io/example/inzyght@sha256:5555555555555555555555555555555555555555555555555555555555555555", postgres_image = "docker.io/library/postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444", pools = { image = "ghcr.io/example/ycash-value-pools@sha256:7777777777777777777777777777777777777777777777777777777777777777", title = "<b>x</b>" } } } }
+  }
+  expect_failures = [var.networks]
+}
+
 # Inbound P2P on the explorer's node (README.md, "The explorer": "Inbound P2P"): the option in the
 # config, the P2P port opened to p2p_ingress_cidrs, the host's address advertised as on every node.
 run "explorer_p2p_inbound" {

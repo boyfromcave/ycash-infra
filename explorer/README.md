@@ -215,6 +215,45 @@ cp explorer/.env explorer/.env.main     # then: EXPLORER_PROJECT=ycash-explorer-
 make explorer-up EXPLORER_ENV=explorer/.env.main EXPLORER_HOST_NODE=1
 ```
 
+## Value pools (optional, off by default)
+
+`make explorer-up EXPLORER_POOLS=1` adds a fifth container, `pools`, and serves it under
+<http://127.0.0.1:8090/pools/>: a page that shows how much YEC sits in each pool of the chain
+(Sapling, Sprout, transparent, post-quantum Falcon and SLH-DSA, vaults), now and over time, from the
+node's value-pool index. It needs a node that reports `transparentPools` (ycashd 6.22.0-beta3 or
+koganyd beta3; set `YCASHD_IMAGE` to such a node, or use a host node); against an older node the
+page shows the shielded and transparent totals and a dash for the split. The service, its API and
+what it costs the node: [`images/value-pools/README.md`](../images/value-pools/README.md).
+
+It is our own code beside Inzyght, not a page of Inzyght's:
+
+- **`compose.pools.yaml`** (an override, like `compose.host-node.yaml`): the `pools` service from
+  `ycash/value-pools:local` (`make image-value-pools`; `explorer-up` builds it when it is missing or
+  stale), uid 2007, read-only root, no capabilities, `POOLS_MEM_LIMIT` 128m, on the internal
+  `backend` network only, so it has no route out. It reads the node's RPC with the credential
+  Inzyght uses and sends only `getblockchaininfo`, `getblockhash` and `getblock`. Its samples are in
+  the `pools-data` volume (`explorer-wipe` leaves it; the service notices a chain that changed and
+  samples again). Without `EXPLORER_POOLS=1` the stack is exactly `compose.yaml`.
+- **`Caddyfile.pools`**: `/pools` and everything under it go to `pools:8080`. The Caddyfile imports
+  `/etc/caddy/routes/*.caddy` inside its site block; the override mounts this one file there, and
+  with no override the import matches nothing. Inzyght has no route under `/pools` (its pages are
+  `/`, `/block/…`, `/transaction/…`, `/address/…`, `/blocks`, `/transactions`, `/api`, `/mempool`,
+  `/supply`, `/difficulty`, `/blocksize`; its API `/api/v1/…`; its WebSocket `/ws`), so nothing of
+  Inzyght's is hidden, and Inzyght's own pages do not link to it: the page links back to the
+  explorer (`/`, and `/block/<height>` for a block).
+- **Limits:** the page cannot make the node work (the tip is polled by one thread, history is
+  sampled once and stored); 120 API requests a minute per client address, which the service reads
+  from the proxy's `X-Forwarded-For` (trusted from the proxy's fixed address only).
+- **With a host node** (`EXPLORER_HOST_NODE=1 EXPLORER_POOLS=1`) `compose.pools.host-node.yaml`
+  points the service at `host.docker.internal:HOST_RPC_PORT` and, like Inzyght in that mode, puts it
+  on `edge` as well.
+- **Settings** (`.env`): `POOLS_NETWORK_NAME` (the heading), `POOLS_MEM_LIMIT`, the history tiers
+  (`POOLS_RECENT_BLOCKS`, `POOLS_FINE_STEP`, `POOLS_FINE_FROM`, `POOLS_COARSE_STEP`) and
+  `POOLS_RPC_INTERVAL_MS`.
+
+On the explorer host the same service is the module's `explorer.pools` option
+([`infra/testnet-seeds/README.md`](../infra/testnet-seeds/README.md), "The explorer": "Value pools").
+
 ## Not yet here
 
 TLS on the testnet host, its Terraform module and ops layer (phase E3), a published image (needs the

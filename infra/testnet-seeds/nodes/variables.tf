@@ -112,7 +112,13 @@ variable "networks" {
     host's address (-externalip, as every node here), and the security group opens that port to
     var.p2p_ingress_cidrs; the module refuses it with no p2p_ingress_cidrs or with a -listen in either
     extra_args. Without it the explorer's node publishes no port and the security group opens none
-    for that network (README.md, "The explorer": "Inbound P2P").
+    for that network (README.md, "The explorer": "Inbound P2P"). `pools` (default none) adds the
+    value-pools page under /pools/ (README.md, "The explorer": "Value pools"): our own small service
+    (images/value-pools, `image` by digest, published by value-pools-image.yml) on the explorer's
+    internal network, a second read-only RPC client of the node at its own fixed address;
+    `mem_limit_mb` (default 128, 64-4096) its memory limit, `title` the network's name in the page's
+    heading (letters, digits, spaces and ._()-, at most 60). Without it nothing is rendered for it and
+    the network's config is what it was before the option.
     One explorer per host (it owns ports 80 and 443), never beside a pool.
 
     `lightwallet` (default none) runs a public light-wallet server beside that network's node
@@ -194,6 +200,12 @@ variable "networks" {
       node_mem_limit_mb = optional(number, 2304)
       # accept inbound P2P: publish the network's P2P port, open it to var.p2p_ingress_cidrs
       p2p_inbound = optional(bool, false)
+      # the value-pools page under /pools/ (images/value-pools), our own sidecar beside Inzyght
+      pools = optional(object({
+        image        = string
+        mem_limit_mb = optional(number, 128)
+        title        = optional(string, "")
+      }))
     }))
     lightwallet = optional(object({
       hostname      = string
@@ -308,9 +320,14 @@ variable "networks" {
       n.explorer.threads >= 1 && n.explorer.threads <= 64 && floor(n.explorer.threads) == n.explorer.threads &&
       n.explorer.mem_limit_mb >= 256 && n.explorer.mem_limit_mb <= 65536 && floor(n.explorer.mem_limit_mb) == n.explorer.mem_limit_mb &&
       n.explorer.pg_shared_buffers_mb >= 32 && n.explorer.pg_shared_buffers_mb <= 16384 && floor(n.explorer.pg_shared_buffers_mb) == n.explorer.pg_shared_buffers_mb &&
-      n.explorer.node_mem_limit_mb >= 512 && n.explorer.node_mem_limit_mb <= 65536 && floor(n.explorer.node_mem_limit_mb) == n.explorer.node_mem_limit_mb
+      n.explorer.node_mem_limit_mb >= 512 && n.explorer.node_mem_limit_mb <= 65536 && floor(n.explorer.node_mem_limit_mb) == n.explorer.node_mem_limit_mb &&
+      (n.explorer.pools == null ? true : (
+        can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", n.explorer.pools.image)) &&
+        n.explorer.pools.mem_limit_mb >= 64 && n.explorer.pools.mem_limit_mb <= 4096 && floor(n.explorer.pools.mem_limit_mb) == n.explorer.pools.mem_limit_mb &&
+        can(regex("^[A-Za-z0-9 ._()-]{0,60}$", n.explorer.pools.title))
+      ))
     )])
-    error_message = "networks: an explorer needs insight = true and no pool; hostname a lowercase DNS name; exactly one of image (by digest) and build; postgres_image and proxy_image by digest; log_level INFO, WARN or ERROR; threads 1-64, mem_limit_mb 256-65536, pg_shared_buffers_mb 32-16384, node_mem_limit_mb 512-65536, whole numbers."
+    error_message = "networks: an explorer needs insight = true and no pool; hostname a lowercase DNS name; exactly one of image (by digest) and build; postgres_image and proxy_image by digest; log_level INFO, WARN or ERROR; threads 1-64, mem_limit_mb 256-65536, pg_shared_buffers_mb 32-16384, node_mem_limit_mb 512-65536, whole numbers; pools (optional): image by digest, mem_limit_mb 64-4096, title letters, digits, spaces and ._()- (at most 60)."
   }
   validation {
     condition = alltrue([for k, n in var.networks : try(n.explorer.build, null) == null ? true : (
