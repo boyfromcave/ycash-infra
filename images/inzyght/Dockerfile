@@ -68,7 +68,10 @@ RUN set -eu; \
     edit schema.sql 'miner_address       character varying(50)' 'miner_address       character varying(128)'; \
     edit src/services/BlockIndexer.cc 'miner_address.size() > 50) miner_address.resize(50)' 'miner_address.size() > 128) miner_address.resize(128)'; \
     : "2. the search box: testnet (sm, s2) and post-quantum (sq., tq.) addresses are addresses too"; \
-    edit public/js/main.js '(s[13]|t[13]|ys1|zs1)' '(s[13]|t[13]|ys1|zs1|sm|s2|[st]q)'
+    edit public/js/main.js '(s[13]|t[13]|ys1|zs1)' '(s[13]|t[13]|ys1|zs1|sm|s2|[st]q)'; \
+    : "3. coinbase maturity is a rule for a coinbase's transparent outputs only (post-quantum ones included)"; \
+    edit public/js/transaction.js 'isCoinbase && confirmations < 100' 'isCoinbase && (tx.vout || []).length > 0 && confirmations < 100'; \
+    edit public/js/transaction.js 'Coinbase outputs are' '${saplingOutputs > 0 ? "Transparent coinbase" : "Coinbase"} outputs are'
 # The dependencies, each at its verified commit (fetch DIR URL SHA). libzmq gets the one-line edit
 # Inzyght's CMakeLists.txt applies to it as its FetchContent PATCH_COMMAND (a source dir given with
 # FETCHCONTENT_SOURCE_DIR_* skips that step).

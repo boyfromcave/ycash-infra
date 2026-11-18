@@ -50,6 +50,10 @@ changes"); the image carries it as `/opt/inzyght/EDITS`. In short:
   miners already cut are read again from the node (the index holds no outputs), before Inzyght runs.
 - **The search box takes testnet and post-quantum addresses** (`sm…`, `s2…`, `sqf…`/`sqs…`,
   `tqf…`/`tqs…`); it knew mainnet's `s1`/`s3` only. Address pages themselves always worked.
+- **"Immature" only where the node means it.** Inzyght marked every coinbase younger than 100 blocks
+  as immature. The node's maturity rule covers a coinbase's transparent outputs (post-quantum ones
+  included), not its Sapling outputs. A coinbase with shielded outputs only now has no banner; one
+  with both says "Transparent coinbase outputs are immature — spendable after 100 confirmations".
 
 ## The services
 

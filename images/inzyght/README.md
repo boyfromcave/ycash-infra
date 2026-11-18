@@ -62,6 +62,12 @@ goes away when upstream has it.
 | `schema.sql` | `miner_address … character varying(50)` → `(128)` | A post-quantum address (`sqf…`, `sqs…`, `tqf…`, `tqs…`) is 53 characters; the column held 50, so a block mined to one showed a cut address that links nowhere |
 | `src/services/BlockIndexer.cc` | `miner_address.size() > 50) miner_address.resize(50)` → `128` twice | The indexer's own cut, made to fit that column |
 | `public/js/main.js` | `(s[13]\|t[13]\|ys1\|zs1)` → `(…\|sm\|s2\|[st]q)` | The search box sent only mainnet-style prefixes to `/address/…`; testnet (`sm`, `s2`) and post-quantum (`sq`, `tq`) addresses were "unrecognized input" |
+| `public/js/transaction.js` | `isCoinbase && confirmations < 100` → `isCoinbase && (tx.vout \|\| []).length > 0 && confirmations < 100` | The "immature" banner and badges were shown for every coinbase younger than 100 blocks. The node applies coinbase maturity to a coinbase's transparent outputs only (`ycash6` `src/main.cpp`, the check is in the loop over transparent inputs; post-quantum outputs are transparent-style and do mature); Sapling outputs of a coinbase are spendable at once. A coinbase with shielded outputs only now gets no banner |
+| `public/js/transaction.js` | `Coinbase outputs are` → `${saplingOutputs > 0 ? "Transparent coinbase" : "Coinbase"} outputs are` | A coinbase with both kinds (a shielded reward beside a transparent fund output) says which outputs wait: "Transparent coinbase outputs are immature — …". The badges were already drawn on transparent outputs only |
+
+`public/js/address.js` has the same `is_coinbase && confirmations < 100` rule and is left alone: an
+address page lists a transparent or post-quantum address's own entries, so a coinbase row there is
+always a transparent output and "Immature" is right.
 
 **Why 128:** the widest address the node prints into a transparent-style output is the post-quantum
 one, 53 characters (P2PKH and P2SH are 35); a shielded coinbase is stored as the word `private`.
