@@ -1,0 +1,174 @@
+{
+  "blockhash": "00000319150b8688b3edbe787786c1dd4cbe8163f6b7597312fa4be463a87409",
+  "bytes": 25261443852,
+  "chainsupply_zat": 1703803799247473,
+  "chainwork": "0000000000000000000000000000000000000000000000000152dafbbd733e24",
+  "commit": "8bfd4621e",
+  "created": "2026-11-17T22:05:31Z",
+  "finalsaplingroot": "51ce0c525204d7ad020299295fe34731e36f85507c1cbadb18a66e2cc7e507dd",
+  "flavour": "full",
+  "format": "ycash-state/3",
+  "height": 3105000,
+  "line": "ycash6",
+  "network": "main",
+  "part_bytes": 1073741824,
+  "parts": [
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.000",
+      "sha256": "7387f1e9e3f1ac604de698a1368fda4c5517731613ba41f342e5544322ed65ab"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.001",
+      "sha256": "190de0d29b2c6e614215015a9069ca7c9d1ec4a3eafbac00f7949e4b8d7edebc"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.002",
+      "sha256": "dc7386790ad24a663e1ebcfbc92d153a68d389cab82415b454e6a4ca2acd1a17"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.003",
+      "sha256": "858928b68879c59c80e776092ec8bffba4adbd90726a62c147e155a50a405599"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.004",
+      "sha256": "2bef0d7ab38e99189edccd4b3a84e4aa5c9cc828376666279ca4b72514e4553c"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.005",
+      "sha256": "fbca218bd662cd9d71d3f0b8310df81d9c52dde7791bf40ef93cc29767b1f267"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.006",
+      "sha256": "b8960b5459383a810079c2fafc4fc9699d561873597fbcbd5d13a8b237bc9919"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.007",
+      "sha256": "7b4ffbddaae8c1794016392aab6577b9317fa33541de30a032b29f3ad6f7aff6"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.008",
+      "sha256": "fd75209e12c5dd78e893735c5a513539f9715c4c38e0895d9e1b37dc6f39ec14"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.009",
+      "sha256": "eb92db58e7de1a9f40714ea20d961d7f2c2c2e2f2e9bacd52afc70b75f129ce7"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.010",
+      "sha256": "d79f11cff39008debc007b6f16f2d348e51666bcb3100848637c877067d97147"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.011",
+      "sha256": "58135cb367b69976fd5fbfbf89d82789ccc12a3a7947debfad5d12409b66636c"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.012",
+      "sha256": "b5cb1e240b58e75bc357a22a8641f6e3da9ee94cc37305f28ed0f8c4ac973d47"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.013",
+      "sha256": "e44583d8171eb8e2c074b6c085ededf2056e7b8b31b364634c27c18b9ea8e56b"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.014",
+      "sha256": "3c58ea3c494e59097fd1e9d110c687975dc335db66c21be9d926b79b123963e8"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.015",
+      "sha256": "ce2ab6127a23fcc4482ac3cd190643edb6e7ac8b4fe5ee716adf735174665bb1"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.016",
+      "sha256": "54d3feb35e49a44d6957ffc04faabf859d27325c43ffa44cda4922032257a582"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.017",
+      "sha256": "c0cd7027fedc27741be6307e331fd499289d8b719656c359e4bde5ce5f07d536"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.018",
+      "sha256": "7d5370c56b4722f35e0b3d6b338657198b4c0d5523f1ab7faa3835e4969a798e"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.019",
+      "sha256": "159d76c7a6f0c96f5a92a1f13d3e7dcbc709b277a86feac9abe0199921f034ad"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.020",
+      "sha256": "fb4209010163a443f7f722508e112a1167f1f9bccfab28fa84e0aba1b27040f4"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.021",
+      "sha256": "a4d1b04f5c4087c59536d17935f204e17f754fe6dcb51f8b3a9153d3143b20cf"
+    },
+    {
+      "bytes": 1073741824,
+      "name": "ycash6-main-3105000-full.tar.gz.022",
+      "sha256": "ab41bcd704b4b6e2b9d8688e9604904edabbc0cc7d3b3f57274f43f6f6d2ecd4"
+    },
+    {
+      "bytes": 565381900,
+      "name": "ycash6-main-3105000-full.tar.gz.023",
+      "sha256": "d3d929484331be8712736bc99d62dd98049d782bb38a26866c53ad6696315765"
+    }
+  ],
+  "pins": {
+    "0": "00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08",
+    "100000": "000000001c5c82cd6baccfc0879e3830fd50d5ede17fa2c37a9a253c610eb285",
+    "1035353": "00000543378a75f173914390c672838c9fbd9dc86ae647ffae18ed6b626edb30",
+    "133337": "0000000002776ccfaf06cc19857accf3e20c01965282f916b8a886e3e4a05be9",
+    "15000": "00000000b6bc56656812a5b8dcad69d6ad4446dec23b5ec456c18641fb5381ba",
+    "1575000": "000002b856230b06caa3412058e6490fab256cee9d9d9fb68eae59b4ebd94471",
+    "180000": "000000001205b742eac4a1b3959635bdf8aeada078d6a996df89740f7b54351d",
+    "222222": "000000000cafb9e56445a6cabc8057b57ee6fcc709e7adbfa195e5c7fac61343",
+    "2250000": "000003f98b7497fdcd8a6b6d10a93a887c5d47127e24a9dc3a40cb65754d21e7",
+    "2500": "00000006dc968f600be11a86cbfbf7feb61c7577f45caced2e82b6d261d19744",
+    "270000": "00000000025c1cfa0258e33ab050aaa9338a3d4aaa3eb41defefc887779a9729",
+    "2800000": "000003170414909d5104f4a71708eca4e5b545d231c412c2d3e0e3f33874facb",
+    "304600": "00000000028324e022a45014c4a4dc51e95d41e6bceb6ad554c5b65d5cea3ea5",
+    "410100": "0000000002c565958f783a24a4ac17cde898ff525e75ed9baf66861b0b9fcada",
+    "497000": "0000000000abd333f0acca6ffdf78a167699686d6a7d25c33fca5f295061ffff",
+    "525000": "0000000001a36c500378be8862d9bf1bea8f1616da6e155971b608139cc7e39b",
+    "570000": "0000014fbc5917ba8bcacf3336faf588d86b32443aa3a490a587af5750c77ec5",
+    "572760": "00000008db657f58222e38e354c18ccbb6c74cf525ef4f3a95f0f8a324a3166d",
+    "67500": "000000006b366d2c1649a6ebb4787ac2b39c422f451880bc922e3a6fbd723616",
+    "980000": "00000510ccc6bae2ddb38b9313ffb9686397f6cd0dee243462baeaf8911d0791"
+  },
+  "producer": "ycash-infra/mainnet-snapshot",
+  "profile": "",
+  "purpose": "the network tip for operators; the first bundle in parts (beta3 item 9)",
+  "sha256": "f3a333b113e21df895f3e5ac9cd1d04347b6e6b612ee12477a81dfecdbf3ce6c",
+  "tarball": "ycash6-main-3105000-full.tar.gz",
+  "tree_sha256": "e79703d788ef3fee0df0b6f34093dd963326c81981d07e9afa533aa3f66c535a",
+  "treestate": "treestate.json",
+  "unpacked_bytes": 32782977980,
+  "utxo_hash_serialized": "b03141fd9d829a9b26578d801973c3f9c6c8fd9071c817c15abd58a9d9079f0d",
+  "vault_statehash": "56944c5d3f98413ef45cf54545538103cc9f298e0575820ad3591376e2e0f65d",
+  "verifiers": [
+    "ycash6"
+  ],
+  "version": "6.22.0-beta3",
+  "yed_statehash": null
+}
