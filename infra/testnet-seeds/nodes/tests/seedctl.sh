@@ -42,7 +42,9 @@ case "$1" in
     case "$1" in
       # FAKE_WARMUP=N: the node a compose up (re)starts answers its next N RPC calls with ycashd's
       # warm-up error, as a real one does while it loads its block index and wallet
-      up) echo "up $(sed -n 's/^name: //p' "$f")" >> "$LOG"; [ -z "${FAKE_WARMUP:-}" ] || echo "$FAKE_WARMUP" > "$LOG.warm" ;;
+      # FAKE_UP_FAIL: compose up fails (a pull or a start that did not succeed)
+      up) [ -z "${FAKE_UP_FAIL:-}" ] || exit 1
+        echo "up $(sed -n 's/^name: //p' "$f")" >> "$LOG"; [ -z "${FAKE_WARMUP:-}" ] || echo "$FAKE_WARMUP" > "$LOG.warm" ;;
       down) echo "down $(sed -n 's/^name: //p' "$f")" >> "$LOG" ;;
     esac ;;
   image) case "$2" in
@@ -407,7 +409,8 @@ grep -q 'container_name: inzyght-yb-fast' "$c" && [ ! -e "$D/yb-fast/explorer/bu
 ok "a failed Inzyght build: the node, PostgreSQL and the proxy run, apply and status name it; the next apply recovers"
 # a new instance on the old volume: no image, no seedctl-explorer on the root disk; boot rebuilds from the volume's copies
 rm -rf "$O/net" "$O/seedctl-explorer" "$O/inzyght-build.json"; : > "$FAKE_IMAGES"; : > "$LOG"
-"$SEEDCTL" boot 2>/dev/null
+FAKE_ABSENT=proxy-yb-fast "$SEEDCTL" boot 2>/dev/null   # a new instance: no container yet, none recreated
+! grep -q -- '--force-recreate' "$LOG" && [ -s "$O/net/yb-fast/restart/proxy.sha256" ] || fail "boot on a new instance: the proxy started with its Caddyfile, recorded, not recreated"
 grep -q "docker build .* -t $IMG " "$LOG" && grep -q 'container_name: inzyght-yb-fast' "$c" || fail "boot on a new instance rebuilds Inzyght and renders the explorer"
 [ "$(grep -n -m1 '^up ycash-yb-fast$' "$LOG" | cut -d: -f1)" -lt "$(grep -n -m1 '^docker build ' "$LOG" | cut -d: -f1)" ] && [ "$(grep -c '^up ycash-yb-fast$' "$LOG")" = 2 ] || fail "boot starts the node before the build, then Inzyght"
 ok "boot on a new instance: the node first, then the image rebuilt from the data volume's copies and Inzyght started"
@@ -485,12 +488,27 @@ grep -q '^up ycash-yb-fast$' "$LOG" && ! grep -q -- '--force-recreate' "$LOG" ||
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null || fail "apply without the value-pools page"
 grep -q -- ' up -d --no-deps --force-recreate proxy$' "$LOG" && [ "$(grep -c -- '--force-recreate' "$LOG")" = 1 ] || fail "a Caddyfile without /pools again recreates the proxy: $(grep 'docker compose' "$LOG")"
-# a mark left by a run that stopped before the recreate is honoured by the next one
-: > "$O/net/yb-fast/restart/proxy"; : > "$O/net/yb-fast/restart/pools"; : > "$LOG"
-"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null || fail "apply with a mark left over"
-grep -q -- ' up -d --no-deps --force-recreate proxy$' "$LOG" && [ "$(grep -c -- '--force-recreate' "$LOG")" = 1 ] && [ -z "$(ls -A "$O/net/yb-fast/restart")" ] \
-  || fail "a left-over mark: the proxy recreated, a service not in the stack only unmarked: $(grep 'docker compose' "$LOG")"
-ok "a changed Caddyfile recreates the proxy once the stack is up (apply and prefix-check), an unchanged one does not"
+# no record of the Caddyfile the running proxy was started with (a host deployed before this code):
+# recreated once, recorded, then left alone; a mark for a service not in the stack is only cleared
+R2="$O/net/yb-fast/restart"
+[ -s "$R2/proxy.sha256" ] && [ "$(cat "$R2/proxy.sha256")" = "$(sha256sum < "$O/net/yb-fast/Caddyfile" | cut -d' ' -f1)" ] || fail "the proxy's record is the Caddyfile's sha256"
+rm -f "$R2/proxy.sha256"; echo x > "$R2/pools"; : > "$LOG"
+"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null || fail "apply with no record"
+grep -q -- ' up -d --no-deps --force-recreate proxy$' "$LOG" && [ "$(grep -c -- '--force-recreate' "$LOG")" = 1 ] && [ -s "$R2/proxy.sha256" ] && [ ! -e "$R2/proxy" ] && [ ! -e "$R2/pools" ] \
+  || fail "no record: the running proxy recreated once and recorded, the pools mark cleared: $(grep 'docker compose' "$LOG"; ls "$R2")"
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null && ! grep -q -- '--force-recreate' "$LOG" || fail "recorded: the next unchanged apply recreated something"
+# a stack that is not running yet (no proxy container): the up starts it with the file, no recreate
+rm -f "$R2/proxy.sha256"; : > "$LOG"
+FAKE_ABSENT=proxy-yb-fast "$SEEDCTL" boot 2>/dev/null
+grep -q '^up ycash-yb-fast$' "$LOG" && ! grep -q -- '--force-recreate' "$LOG" && [ -s "$R2/proxy.sha256" ] || fail "a proxy the up creates is not recreated, and is recorded: $(grep 'docker compose' "$LOG")"
+# an up that fails records nothing: the mark stays for the next run
+rm -f "$R2/proxy.sha256"; : > "$LOG"
+FAKE_UP_FAIL=1 "$SEEDCTL" boot 2>/dev/null
+[ ! -e "$R2/proxy.sha256" ] && [ -s "$R2/proxy" ] || fail "a failed up wrote the record or dropped the mark: $(ls "$R2")"
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null && grep -q -- ' up -d --no-deps --force-recreate proxy$' "$LOG" && [ -s "$R2/proxy.sha256" ] && [ ! -e "$R2/proxy" ] || fail "the next run after a failed up recreates and records"
+ok "a changed or unrecorded Caddyfile recreates a running proxy once the stack is up (apply, prefix-check), recorded only after a successful up; an unchanged one, or a proxy the up creates, is not recreated"
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null
 grep -q 'network_mode: host' "$c" && ! grep -q postgres "$c" && grep -q 'docker rm -f postgres-yb-fast inzyght-yb-fast proxy-yb-fast' "$LOG" && grep -qx 'YCASHD_INSIGHT=0' "$e" || fail "an explorer removed from the config"
