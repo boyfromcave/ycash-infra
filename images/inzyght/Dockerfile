@@ -71,7 +71,9 @@ RUN set -eu; \
     edit public/js/main.js '(s[13]|t[13]|ys1|zs1)' '(s[13]|t[13]|ys1|zs1|sm|s2|[st]q)'; \
     : "3. coinbase maturity is a rule for a coinbase's transparent outputs only (post-quantum ones included)"; \
     edit public/js/transaction.js 'isCoinbase && confirmations < 100' 'isCoinbase && (tx.vout || []).length > 0 && confirmations < 100'; \
-    edit public/js/transaction.js 'Coinbase outputs are' '${saplingOutputs > 0 ? "Transparent coinbase" : "Coinbase"} outputs are'
+    edit public/js/transaction.js 'Coinbase outputs are' '${saplingOutputs > 0 ? "Transparent coinbase" : "Coinbase"} outputs are'; \
+    : "4. the top menu: our value-pools page (images/value-pools, /pools/ behind the same proxy), before API"; \
+    edit public/partials/header.html '<a class="nav-link" href="/api">API</a>' '<a class="nav-link" href="/pools/">Value pools</a></li><li class="nav-item"><a class="nav-link" href="/api">API</a>'
 # The dependencies, each at its verified commit (fetch DIR URL SHA). libzmq gets the one-line edit
 # Inzyght's CMakeLists.txt applies to it as its FetchContent PATCH_COMMAND (a source dir given with
 # FETCHCONTENT_SOURCE_DIR_* skips that step).
