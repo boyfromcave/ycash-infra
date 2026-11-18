@@ -5,7 +5,7 @@
 # host: apply (with the prefix bootstrap and the shared cache), the rendered node arguments and
 # ports, prefix-check, status, reset of one network leaving the other alone, sync stopping a
 # network no longer configured, boot re-rendering from the applied configs, and the refusals; then a
-# pool beside a node (single payout, per miner and paced), an explorer (insight, ZMQ, PostgreSQL, Inzyght built on the host, proxy; a
+# pool beside a node (single payout, per miner, paced and with quotes), an explorer (insight, ZMQ, PostgreSQL, Inzyght built on the host, proxy; a
 # failed build; install-files refusals), a detached run (and one still holding the lock; status
 # before the first applied.json), and a host without the prefix tools.
 # Run: infra/testnet-seeds/nodes/tests/seedctl.sh   (make seeds-validate runs it)
@@ -90,6 +90,9 @@ case "$1" in
       getblockchaininfo) echo "{\"chain\":\"test\",\"blocks\":$FAKE_HEIGHT,\"headers\":${FAKE_HEADERS:-$FAKE_HEIGHT},\"verificationprogress\":1}" ;;
       getconnectioncount) echo "${FAKE_CONNS:-2}" ;;
       getpeerinfo) echo '[{"inbound":true},{"inbound":false}]' ;;
+      # FAKE_YED_INACTIVE: a node where Yellowback is not active (no yed_* calls)
+      yed_getinfo) [ -z "${FAKE_YED_INACTIVE:-}" ] || { echo "error code: -32601" >&2; exit 1; }
+        echo '{"miner":{"quoteKind":"quote","quoteAgeSeconds":42,"payoutAddress":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb"}}' ;;
     esac ;;
   # a container named in FAKE_ABSENT is missing: an empty line on stdout, then the error (as docker does)
   inspect) case " ${FAKE_ABSENT:-} " in *" $4 "*) echo; echo "Error: No such object: $4" >&2; exit 1 ;; esac
@@ -326,6 +329,37 @@ ZEROPACE=$(echo "$POOLED" | base64 -d | jq -c '.pool += {min_block_interval: 0}'
 cmp -s "$c" "$T/unpaced.yaml" && ! grep -q -- '--min-block-interval' "$c" || fail "min_block_interval 0 changed the compose file: $(diff "$T/unpaced.yaml" "$c")"
 "$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null || fail "the pool removed again"
 ok "a paced pool: --min-block-interval only above 0, pacing status fields; bad values refused"
+# 10d. pool quotes (README "The pool": "Pool quotes"): the quote agent from seedctl-quote, in the same
+#      compose project; the node's credential in a private quote.toml; status with pool.quote; off again
+cp "$here/../files/seedctl-quote" "$O/seedctl-quote"
+QIMG=ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333
+QUOTED=$(echo "$POOLED" | base64 -d | jq -c --arg q "$QIMG" '.pool += {quote: {image: $q, poll_seconds: 75}}' | b64)
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$QUOTED" 2>"$T/err" || { cat "$T/err"; fail "apply with pool quotes"; }
+c="$O/net/yb-fast/compose.yaml"
+grep -q 'container_name: yolo-yb-fast' "$c" && grep -q 'container_name: quote-yb-fast' "$c" && grep -qF "image: $QIMG" "$c" || fail "the quote agent beside yolo: $(cat "$c")"
+grep -qF "\"$D/yb-fast/quote.toml:/etc/yellowback-quote/host.toml:ro\"" "$c" && grep -q 'user: "2005:2005"' "$c" && grep -q 'tmpfs: \["/tmp:size=1m,mode=0700,uid=2005,gid=2005"\]' "$c" || fail "the agent: uid 2005, its conf read-only, a private /tmp"
+[ "$(grep -c 'read_only: true' "$c")" = 2 ] && [ "$(grep -c 'cap_drop: \[ALL\]' "$c")" = 2 ] || fail "yolo and the agent: read-only, no capabilities"
+pw=$(sed -n 's/^YCASHD_RPC_PASSWORD=//p' "$D/yb-fast/rpc.env")
+grep -qx "rpc_password = \"$pw\"" "$D/yb-fast/quote.toml" && grep -qx 'rpc_url = "http://127.0.0.1:18832"' "$D/yb-fast/quote.toml" \
+  && grep -qx 'poll_seconds = 75' "$D/yb-fast/quote.toml" && ! grep -q 'min_move_bps\|heartbeat' "$D/yb-fast/quote.toml" && [ "$(stat -c %a "$D/yb-fast/quote.toml")" = 400 ] \
+  || fail "quote.toml: the node's credential on loopback, the agent's settings, mode 0400"
+! grep -q "$pw" "$c" || fail "the node's password is not in the compose file"
+grep -qx 'iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner 2005 -j REJECT' "$LOG" || fail "the agent's uid is refused the metadata service"
+s=$("$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -c '.pool.quote | [.container, .quoteKind, .quoteAgeSeconds]')" = '["running","quote",42]' ] || fail "status with pool quotes: $s"
+s=$(FAKE_YED_INACTIVE=1 "$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -c '.pool.quote | [.container, .quoteKind]')" = '["running",null]' ] || fail "status while Yellowback is not active: $s"
+for bad in '.pool.quote.poll_seconds = 10' '.pool.quote.poll_seconds = 601' '.pool.quote.poll_seconds = 7.5' \
+           '.pool.quote.image = "ghcr.io/example/ycash-quote:latest"' '.pool.payout = "t2UNzUUx8mWBCRYPRezvA363EYXyEpHokyi"'; do
+  BADPOOL=$(echo "$QUOTED" | base64 -d | jq -c "$bad" | b64)
+  if "$SEEDCTL" apply yb-fast "$BADPOOL" 2>/dev/null; then fail "accepted pool quotes with $bad"; fi
+done
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$POOLED" 2>/dev/null || fail "pool quotes off again"
+! grep -q quote-yb-fast "$c" && grep -q 'docker rm -f quote-yb-fast' "$LOG" && [ ! -e "$D/yb-fast/quote.toml" ] && [ "$("$SEEDCTL" status yb-fast | jq -r '.pool | has("quote")')" = false ] || fail "pool quotes removed from the config"
+"$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null || fail "the pool removed again"
+ok "pool quotes: the agent beside yolo (seedctl-quote), a private quote.toml, status pool.quote; bad values refused; off again"
 # 11. an explorer beside fast (the explorer host): the node on the explorer's networks with its
 #     indexes, PostgreSQL and the proxy at once, Inzyght (built on the host from the delivered,
 #     checked build context) and ZMQ only once the prefix is imported; secrets only in 0400 files

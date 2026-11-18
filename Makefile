@@ -54,7 +54,7 @@ ROLLOUT_TIMEOUT ?= 10m
 KOGANY_CLUSTER ?= ycash-kogany
 KOGANY_VALUES  := values-kind.yaml values-kind-kogany.yaml
 
-.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status image-prefix-frame services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner image-yolo miners-test image-inzyght image-value-pools explorer-up explorer-down explorer-status explorer-logs explorer-psql explorer-wipe explorer-wipe-index explorer-lint
+.PHONY: help lint-kogany image-koganyd kind-create-kogany kind-load-kogany kind-up-kogany kind-down-kogany line image-check docker-noauth kind-reset-chain images image-ycashd image-ycashd-legacy proto-sync image-lightwalletd image-yindex image-web image-faucet image-testnet-status image-prefix-frame services-test state-test kind-create kind-load kind-up kind-down kind-cert demo kind-smoke kind-load-test eks-up eks-push eks-deploy eks-smoke eks-down eks-validate seeds-validate harvest-validate lint lint-testnet template kind-parity kind-personas-up kind-personas-down kind-personas-status prefix-test prefix-verify prefix-local mainnet-prefix-local zcash-params-test image-miner image-yolo image-quote miners-test image-inzyght image-value-pools explorer-up explorer-down explorer-status explorer-logs explorer-psql explorer-wipe explorer-wipe-index explorer-lint
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -249,7 +249,7 @@ seeds-validate: ## offline: terraform fmt/validate for infra/testnet-seeds (ips,
 	terraform fmt -check -recursive infra/testnet-seeds
 	set -e; for d in $(SEEDS_DIRS); do terraform -chdir=$$d init -backend=false -input=false >/dev/null; terraform -chdir=$$d validate; done
 	terraform -chdir=infra/testnet-seeds/nodes test
-	shellcheck infra/testnet-seeds/nodes/files/*.sh infra/testnet-seeds/nodes/files/seedctl infra/testnet-seeds/nodes/files/seedctl-explorer infra/testnet-seeds/nodes/files/seedctl-lightwallet infra/testnet-seeds/nodes/files/seedctl-x402 infra/testnet-seeds/nodes/tests/*.sh
+	shellcheck infra/testnet-seeds/nodes/files/*.sh infra/testnet-seeds/nodes/files/seedctl infra/testnet-seeds/nodes/files/seedctl-explorer infra/testnet-seeds/nodes/files/seedctl-lightwallet infra/testnet-seeds/nodes/files/seedctl-x402 infra/testnet-seeds/nodes/files/seedctl-quote infra/testnet-seeds/nodes/tests/*.sh
 	infra/testnet-seeds/nodes/tests/seedctl.sh
 
 harvest-validate: ## offline: terraform fmt/validate/test for infra/mainnet-harvest (mocked AWS), shellcheck and the boot script's offline test; no credentials, no plan
@@ -361,6 +361,9 @@ zcash-params-test: ## the parameter mirror's offline tests: SHA256SUMS vs the ch
 # --- the testnet GPU miners on Vast.ai (images/miner, scripts/vast-fleet.py, infra/vast-miners) ---
 image-yolo: ## the stratum pool (images/yolo/Dockerfile) from the yolo tree YOLO, for the testnet pool host
 	docker build --platform $(PLATFORM) -f images/yolo/Dockerfile -t $(REGISTRY)/yolo:local $(YOLO)
+
+image-quote: ## the pool quote agent (images/quote/Dockerfile) from the ycash6 tree YCASH6, for the testnet pool host
+	docker build --platform $(PLATFORM) -f images/quote/Dockerfile -t $(REGISTRY)/ycash-quote:local $(YCASH6)
 
 image-miner: ## the testnet GPU miner launcher (images/miner: no miner binary; downloads lolMiner at start, SHA-256 pinned in miners.conf)
 	docker build --platform linux/amd64 -t $(REGISTRY)/ycash-miner:local images/miner

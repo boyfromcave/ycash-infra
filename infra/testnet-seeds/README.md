@@ -353,6 +353,53 @@ pool on a testnet profile).
 The image is `ghcr.io/<owner>/yolo`, built from the yolo repository at one commit on its
 `upgrade/vault` by `yolo-image.yml` with [`images/yolo/Dockerfile`](../../images/yolo/Dockerfile).
 
+### Pool quotes (`quote`)
+
+A pool that quotes puts the YEC/USD price in its blocks' coinbase tag (in the scriptSig),
+which is how a Yellowback network learns the price from its miners (ycash6
+`doc/yellowback-mining.md` §3-§4). `quote = { image = ... }` (default null, off) runs the Yellowback
+quote agent, `yellowback-quote` (ycash6 `contrib/yellowback`), beside the node, in the same compose
+project (container `quote-NET`, uid 2005, read-only, no capabilities, host networking with the
+metadata rule, outbound HTTPS to the public price sources only, nothing listening), and gives the
+node `-yellowbackpayoutaddress=<payout>`:
+
+```hcl
+      pool = {
+        image  = "ghcr.io/<owner>/yolo@sha256:..."
+        payout = "sm..."                 # must be P2PKH (sm..., 35 characters) with a quote
+        quote = {
+          image             = "ghcr.io/<owner>/ycash-quote@sha256:..."   # quote-image.yml
+          poll_seconds      = 75         # default (the block time); 30-600: fetch and yed_setquote every poll
+        }
+      }
+```
+
+- **The payout key needs no key on the host.** The tag names the payout address as a 20-byte key
+  hash, and the Yellowback fees the tag earns are paid to P2PKH of it. The pool's node holds no
+  wallet (`-disablewallet`); `-yellowbackpayoutaddress` (and `-mineraddress`) only name the
+  address. Its key stays where the payout address was made (for the fast-testnet pool, the lead
+  architect's own wallet); never put it on the host or in a repository. Today's tag (version 1)
+  carries a P2PKH key hash, so the payout must be transparent P2PKH; a tag version 2 with a
+  post-quantum payout key is planned for beta4 (item 3f), and this check follows it then.
+- **Before Yellowback is active on the network** (testnet-yb-fast until its attestor set is compiled
+  into the nodes, beta4 item 3e) the node ignores `-yellowbackpayoutaddress` (it logs that the
+  Yellowback options are ignored), has no `yed_*` calls and emits no tag; the agent logs once that
+  Yellowback is not active and asks again every poll, so the pool runs exactly as without quotes
+  and starts quoting by itself when the network's release turns Yellowback on. `status` shows
+  `pool.quote.quoteKind` null until then, and `"quote"` while the node holds a fresh quote.
+- **Cadence.** The agent fetches the price and calls `yed_setquote` every `poll_seconds`, so the
+  tag's price is never older than one poll. A new price changes the tag, so yolo sends every miner
+  one new job (`clean_jobs`); the same price again changes nothing (yolo `tests/regtest_pairs.rs`). The image must be built from a ycash6 commit
+  with this cadence (the beta4 agent): its build checks for it and fails on an older tree.
+- Its configuration is `NET/quote.toml` on the data volume: `[node]` (127.0.0.1 and the node's own
+  credential, mode 0400, readable by the agent's uid only) and `[quote]`; the price sources are the
+  image's, cut at build time from the agent's sample configuration in the same ycash6 commit.
+  Setting, changing or removing `quote` recreates the agent container and restarts the node (its
+  arguments change); removing it removes the container and the file.
+
+The image is `ghcr.io/<owner>/ycash-quote`, built from the ycash6 repository at one commit on its
+`upgrade/vault` by `quote-image.yml` with [`images/quote/Dockerfile`](../../images/quote/Dockerfile).
+
 ## The explorer (a network's `explorer`)
 
 The same module, called from a third root with its own state, makes an **explorer host**: one

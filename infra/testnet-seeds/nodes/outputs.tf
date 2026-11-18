@@ -49,7 +49,7 @@ output "explorers" {
 }
 
 output "host_files" {
-  description = "The files seedctl needs for an apply or a reset beyond itself (the prefix tools; for an explorer, seedctl-explorer and in build mode the Inzyght build context; for a lightwallet, seedctl-lightwallet; for an x402 host, seedctl-x402), as one JSON map of name to { mode, content }, gzip + base64: the deploy workflow hands it to `seedctl install-files` before every run, as it installs seedctl. Empty when there are none. No secret."
+  description = "The files seedctl needs for an apply or a reset beyond itself (the prefix tools; for an explorer, seedctl-explorer and in build mode the Inzyght build context; for a lightwallet, seedctl-lightwallet; for an x402 host, seedctl-x402; for a pool with quotes, seedctl-quote), as one JSON map of name to { mode, content }, gzip + base64: the deploy workflow hands it to `seedctl install-files` before every run, as it installs seedctl. Empty when there are none. No secret."
   value       = length(local.host_files) == 0 ? "" : base64gzip(jsonencode(local.host_files))
 }
 
