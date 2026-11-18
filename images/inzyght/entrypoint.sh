@@ -168,6 +168,22 @@ out=$(psql -q -c 'set client_min_messages = warning' -f "$APP/sql/schema_reorg_s
 bad=$(printf '%s\n' "$out" | grep 'ERROR:' \
   | grep -vE 'ERROR: +relation "idx_(reorg_detected_at|reorg_status|reorg_height|blocks_finalized)" already exists' || true)
 [ -z "$bad" ] || { printf 'inzyght-entrypoint: schema_reorg_support.sql failed:\n%s\n' "$bad" >&2; exit 1; }
+# Our migration, on every start and before Inzyght runs: blocks.miner_address was varchar(50), which
+# cut a 53-character post-quantum address. An index made before the image's schema edit
+# (README.md, "What the build changes") is widened here; widening a varchar rewrites nothing, and the
+# statement runs only while the column is narrower, so every later start is a no-op.
+psql -q -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'blocks' AND column_name = 'miner_address'
+               AND data_type = 'character varying' AND character_maximum_length < 128) THEN
+    ALTER TABLE public.blocks ALTER COLUMN miner_address TYPE character varying(128);
+    RAISE WARNING 'inzyght-entrypoint: blocks.miner_address widened to varchar(128)';
+  END IF;
+END
+$$;
+SQL
 missing=$(psql -qtA -v ON_ERROR_STOP=1 <<'SQL'
 select coalesce(string_agg(kind || ' ' || name, ', ' order by kind, name), '') from (
   select 'relation' as kind, n as name from unnest(array[
@@ -195,7 +211,6 @@ SQL
 )
 [ -z "$missing" ] || { echo "inzyght-entrypoint: the schema is incomplete, missing: $missing" >&2; exit 1; }
 echo "inzyght-entrypoint: schema complete"
-unset PGPASSWORD
 
 # Wait until the node answers getblockcount (not during a prefix import or its warm-up): Inzyght
 # started earlier only fills its log with connection errors. INZYGHT_WAIT_RPC=0 skips the wait.
@@ -211,6 +226,69 @@ if [ "${INZYGHT_WAIT_RPC:-1}" = 1 ]; then
     i=$((i + 1)); sleep 10
   done
 fi
+
+# The backfill for that migration: miners the old 50-character cut left in the index. The index
+# holds no outputs (Inzyght reads them from the node), so each such block's coinbase is asked of the
+# node: getblock <height> 1, then getrawtransaction <its first txid> 1. A row is rewritten only when
+# exactly one address among the coinbase's outputs is longer than the stored 50 characters and
+# begins with them; anything else is left as it is and named in the log. A node that does not answer
+# only postpones it (the pass ends after three failures in a row): the rows stay cut and the next
+# start tries again. Without cut rows, one query.
+cut=$(psql -qtA -F ' ' -v ON_ERROR_STOP=1 -c "select height, miner_address from public.blocks where length(miner_address) = 50 order by height") \
+  || { echo "inzyght-entrypoint: the query for cut miner addresses failed" >&2; exit 1; }
+if [ -n "$cut" ]; then
+  echo "inzyght-entrypoint: $(printf '%s\n' "$cut" | wc -l | tr -d ' ') block(s) with a miner address cut at 50 characters: asking the node"
+  printf '%s\n' "$cut" | perl -MHTTP::Tiny -MMIME::Base64 -MJSON::PP -e '
+      my $http = HTTP::Tiny->new(timeout => 30);
+      my $auth = "Basic " . encode_base64("$ENV{INZYGHT_RPC_USER}:$ENV{INZYGHT_RPC_PASSWORD}", "");
+      sub rpc {
+        my ($method, @params) = @_;
+        my $r = $http->post("http://$ENV{INZYGHT_RPC_HOST}:$ENV{INZYGHT_RPC_PORT}/", {
+          headers => { "Content-Type" => "application/json", "Authorization" => $auth },
+          content => encode_json({ jsonrpc => "1.0", id => "backfill", method => $method, params => \@params }) });
+        die "$method: HTTP $r->{status} $r->{reason}\n" unless $r->{success};
+        my $d = decode_json($r->{content});
+        die "$method: no result\n" unless defined $d->{result};
+        return $d->{result};
+      }
+      my ($failed, $in_a_row) = (0, 0);
+      while (my $line = <STDIN>) {
+        my ($height, $have) = $line =~ /^(\d+) ([A-Za-z0-9]{50})$/ or next;
+        my $tx = eval {
+          my $txid = rpc("getblock", "$height", 1)->{tx}[0];
+          die "getblock: no transaction id\n" unless defined $txid && !ref $txid && $txid =~ /^[0-9a-f]{64}$/;
+          rpc("getrawtransaction", $txid, 1);
+        };
+        if (!defined $tx) {   # one block the node cannot answer does not hold up the others; a silent node ends the pass
+          print STDERR "inzyght-entrypoint: block $height: $@";
+          $failed++;
+          last if ++$in_a_row >= 3;
+          next;
+        }
+        $in_a_row = 0;
+        my %full;
+        for my $out (@{ $tx->{vout} || [] }) {
+          for my $a (@{ $out->{scriptPubKey}{addresses} || [] }) {
+            $full{$a} = 1 if $a =~ /^[A-Za-z0-9]{51,128}$/ && substr($a, 0, 50) eq $have;
+          }
+        }
+        my @full = keys %full;
+        if (@full == 1) {
+          print "UPDATE public.blocks SET miner_address = \x27$full[0]\x27 WHERE height = $height AND miner_address = \x27$have\x27;\n";
+        } else {
+          print STDERR "inzyght-entrypoint: block $height: ", scalar(@full), " coinbase output addresses begin with $have; left as it is\n";
+        }
+      }
+      exit($failed ? 1 : 0)' > "$RUN/backfill.sql" \
+    || echo "inzyght-entrypoint: the node did not answer for every cut miner address; the rest are tried again on the next start" >&2
+  if [ -s "$RUN/backfill.sql" ]; then
+    psql -q -1 -v ON_ERROR_STOP=1 -f "$RUN/backfill.sql" \
+      || { echo "inzyght-entrypoint: the miner address backfill failed" >&2; exit 1; }
+    echo "inzyght-entrypoint: $(wc -l < "$RUN/backfill.sql" | tr -d ' ') miner address(es) restored to full length"
+  fi
+  rm -f "$RUN/backfill.sql"
+fi
+unset PGPASSWORD
 
 # Inzyght writes every log line to stdout (the container log, rotated by Docker) and again to
 # ./inzyght.log; the file copy would grow without bound in the tmpfs, so it goes to /dev/null.

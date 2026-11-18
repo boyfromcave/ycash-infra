@@ -379,7 +379,7 @@ EXPLORER_ENV ?= explorer/.env
 EXPLORER_HOST_NODE ?=
 EXPLORER_COMPOSE = docker compose --project-directory explorer --env-file $(EXPLORER_ENV) -f explorer/compose.yaml $(if $(EXPLORER_HOST_NODE),-f explorer/compose.host-node.yaml)
 
-image-inzyght: ## Inzyght, unmodified, from github.com/miodragpop/inzyght at INZYGHT_COMMIT (images/inzyght; local only, never pushed)
+image-inzyght: ## Inzyght from github.com/miodragpop/inzyght at INZYGHT_COMMIT, with the build's few anchored edits (images/inzyght/README.md; local only, never pushed)
 	s=$$(scripts/image-stamp.sh hash $(STAMP_inzyght)) && docker build --platform $(PLATFORM) --build-arg INZYGHT_COMMIT=$(INZYGHT_COMMIT) --label $(STAMP_LABEL)=$$s -t $(REGISTRY)/inzyght:$(shell echo $(INZYGHT_COMMIT) | cut -c1-12) -t $(REGISTRY)/inzyght:local images/inzyght
 
 # the settings file as the recipes below source it (EXPLORER_ENV may be relative or absolute)

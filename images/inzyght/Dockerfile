@@ -1,7 +1,9 @@
 # Inzyght, the Ycash block explorer (https://github.com/miodragpop/inzyght), for the explorer stack
-# (explorer/README.md). Built UNMODIFIED from the author's repository at one commit: the build stage
-# clones that commit itself, so no Inzyght source is copied into this repository and none is patched
-# (AGENTS.md rule 5; workspace docs/plans/explorer/explorer-plan.md, E2).
+# (explorer/README.md). Built from the author's repository at one commit: the build stage clones that
+# commit itself, so no Inzyght source is copied into this repository and there is no patch file
+# (AGENTS.md rule 5; workspace docs/plans/explorer/explorer-plan.md, E2). The build then makes a few
+# one-line edits to the clone, each located by a short anchor that must occur exactly once (the
+# "edits" step below; images/inzyght/README.md, "What the build changes").
 #   docker build -t ycash/inzyght:local images/inzyght           (make image-inzyght)
 #
 # Inzyght has no licence file yet: build and run this image locally only. Do not push it to a
@@ -51,9 +53,28 @@ RUN echo "$INZYGHT_COMMIT" | grep -qxE '[0-9a-f]{40}' || { echo "INZYGHT_COMMIT 
  && git fetch -q --depth 1 origin "$INZYGHT_COMMIT" \
  && git checkout -q FETCH_HEAD \
  && test "$(git rev-parse HEAD)" = "$INZYGHT_COMMIT"
+# The edits (images/inzyght/README.md, "What the build changes"): edit FILE ANCHOR REPLACEMENT, plain
+# strings. The anchor must occur in the file exactly once, or the build stops: a later Inzyght commit
+# that moves or fixes a line can never drop an edit silently. Inzyght has no licence, so this file
+# holds no more of its text than the anchors. The edits made are listed in /opt/inzyght/EDITS.
+RUN set -eu; \
+    edit() { \
+      n=$(A="$2" perl -0777 -ne '$n = () = /\Q$ENV{A}\E/g; print $n' "$1") || n=unreadable; \
+      [ "$n" = 1 ] || { echo "inzyght edit: the anchor '$2' occurs $n times in $1, not exactly once: Inzyght changed there; review the edit (images/inzyght/README.md)" >&2; exit 1; }; \
+      A="$2" B="$3" perl -0777 -pi -e 's/\Q$ENV{A}\E/$ENV{B}/' "$1"; \
+      echo "$1: '$2' -> '$3'" >> /src/EDITS; echo "edit $1: '$2' -> '$3'"; \
+    }; \
+    : "1. a block's miner: room for any address the node prints (a post-quantum address is 53 characters)"; \
+    edit schema.sql 'miner_address       character varying(50)' 'miner_address       character varying(128)'; \
+    edit src/services/BlockIndexer.cc 'miner_address.size() > 50) miner_address.resize(50)' 'miner_address.size() > 128) miner_address.resize(128)'; \
+    : "2. the search box: testnet (sm, s2) and post-quantum (sq., tq.) addresses are addresses too"; \
+    edit public/js/main.js '(s[13]|t[13]|ys1|zs1)' '(s[13]|t[13]|ys1|zs1|sm|s2|[st]q)'; \
+    : "3. coinbase maturity is a rule for a coinbase's transparent outputs only (post-quantum ones included)"; \
+    edit public/js/transaction.js 'isCoinbase && confirmations < 100' 'isCoinbase && (tx.vout || []).length > 0 && confirmations < 100'; \
+    edit public/js/transaction.js 'Coinbase outputs are' '${saplingOutputs > 0 ? "Transparent coinbase" : "Coinbase"} outputs are'
 # The dependencies, each at its verified commit (fetch DIR URL SHA). libzmq gets the one-line edit
 # Inzyght's CMakeLists.txt applies to it as its FetchContent PATCH_COMMAND (a source dir given with
-# FETCHCONTENT_SOURCE_DIR_* skips that step); Inzyght's own source is not touched.
+# FETCHCONTENT_SOURCE_DIR_* skips that step).
 RUN set -eu; \
     fetch() { \
       echo "$3" | grep -qxE '[0-9a-f]{40}' || { echo "$1: $3 is not a full 40-hex SHA" >&2; exit 1; }; \
@@ -81,6 +102,7 @@ RUN --network=none cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT
  && cp -r public /out/opt/inzyght/public \
  && install -m 0644 schema.sql schema_reorg_support.sql /out/opt/inzyght/sql/ \
  && install -m 0644 inzyght.conf.example config/drogon_config.json.example VERSION /out/opt/inzyght/templates/ \
+ && install -m 0644 EDITS /out/opt/inzyght/EDITS \
  && echo "$INZYGHT_COMMIT" > /out/opt/inzyght/COMMIT \
  && printf 'curl %s\nlibzmq %s\nglaze %s\ndrogon %s\ntrantor %s\n' "$CURL_COMMIT" "$ZEROMQ_COMMIT" "$GLAZE_COMMIT" "$DROGON_COMMIT" "$TRANTOR_COMMIT" > /out/opt/inzyght/DEPENDENCIES \
  && (ldd build/inzyght | sort > /out/opt/inzyght/templates/ldd.txt)
@@ -90,7 +112,7 @@ ARG INZYGHT_REPO
 ARG INZYGHT_COMMIT
 LABEL org.opencontainers.image.source="${INZYGHT_REPO}" \
       org.opencontainers.image.revision="${INZYGHT_COMMIT}" \
-      org.opencontainers.image.description="Inzyght block explorer, unmodified, local build (no licence yet: do not publish)"
+      org.opencontainers.image.description="Inzyght block explorer with the build edits in /opt/inzyght/EDITS, local build (no licence yet: do not publish)"
 # libpq5 (the index), libssl3 (Drogon, curl), libjsoncpp, libuuid, zlib, c-ares (Drogon's resolver);
 # postgresql-client applies and checks the schema on every start (Inzyght's binary does not).
 RUN apt-get update \

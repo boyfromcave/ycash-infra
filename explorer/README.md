@@ -1,7 +1,7 @@
 # explorer: a block explorer stack (ycashd + PostgreSQL + Inzyght + proxy)
 
 A Docker Compose stack that runs the [Inzyght](https://github.com/miodragpop/inzyght) block
-explorer, unmodified, against a ycashd 6.22.0-beta2 node. It is the local proof (phases E1 and E2)
+explorer against a ycashd 6.22.0-beta2 node. It is the local proof (phases E1 and E2)
 of the workspace's explorer plan (`docs/plans/explorer/explorer-plan.md`), and the same four
 containers are what the `fastnet-explorer.ycash.team` host runs (phase E3: the seeds module's
 `explorer` option, [`infra/testnet-seeds/README.md`](../infra/testnet-seeds/README.md), "The
@@ -31,6 +31,29 @@ The explorer is then at <http://127.0.0.1:8090/>.
 **Inzyght has no licence file.** Its image is built on the machine that runs it (`make
 image-inzyght`, [`images/inzyght/README.md`](../images/inzyght/README.md)) and is never pushed to a
 registry. There is no image-publishing workflow for it until its author has answered.
+
+## What our build changes in Inzyght
+
+Nothing from Inzyght is copied into this repository, and there is no patch file (a patch's context
+lines would be Inzyght's code). The image build clones the author's repository at the pinned commit
+and then makes a few one-line edits to that clone. Each edit names a short anchor that must occur in
+its file **exactly once**; otherwise the build stops, so a later Inzyght commit that moves or fixes
+a line cannot drop an edit silently. The database side is our own SQL in the image's entrypoint. The
+licence position is unchanged: built on the machine that runs it, never published. The list, with
+the reasons, is in [`images/inzyght/README.md`](../images/inzyght/README.md) ("What the build
+changes"); the image carries it as `/opt/inzyght/EDITS`. In short:
+
+- **A block's miner is shown in full.** A post-quantum address is 53 characters
+  (`tqs2WAG6…KoU4f`); Inzyght's `blocks.miner_address` was `varchar(50)` and its indexer cut the
+  address to fit, so the block page showed 50 characters and linked to an address that does not
+  exist. The column and the cut are now 128. An existing index is widened at the next start, and the
+  miners already cut are read again from the node (the index holds no outputs), before Inzyght runs.
+- **The search box takes testnet and post-quantum addresses** (`sm…`, `s2…`, `sqf…`/`sqs…`,
+  `tqf…`/`tqs…`); it knew mainnet's `s1`/`s3` only. Address pages themselves always worked.
+- **"Immature" only where the node means it.** Inzyght marked every coinbase younger than 100 blocks
+  as immature. The node's maturity rule covers a coinbase's transparent outputs (post-quantum ones
+  included), not its Sapling outputs. A coinbase with shielded outputs only now has no banner; one
+  with both says "Transparent coinbase outputs are immature — spendable after 100 confirmations".
 
 ## The services
 

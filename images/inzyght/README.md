@@ -4,8 +4,9 @@
 PostgreSQL), as a container for the explorer stack ([`explorer/`](../../explorer/README.md)).
 
 **Local builds only.** Inzyght's repository has no licence file. Until its author has answered, we
-build and run it, unmodified, on our own machines and hosts, and we do not publish the image to any
-registry. There is deliberately no image-publishing workflow for it yet.
+build and run it on our own machines and hosts, and we do not publish the image to any registry.
+The build makes a few one-line edits to its clone ("What the build changes", below); no Inzyght
+source and no patch of it is kept in this repository. There is deliberately no image-publishing workflow for it yet.
 
 ```
 make image-inzyght                       # ycash/inzyght:local and ycash/inzyght:<commit12>
@@ -22,7 +23,7 @@ seeds module's own revision, with both arguments from its config
 - The build stage clones `INZYGHT_REPO` (`https://github.com/miodragpop/inzyght`) at `INZYGHT_COMMIT` (a full SHA,
   default `17f505f273c053247b59d20270e4d6a7b74994fb` = version 1.0.9, the workspace's
   `ref/inzyght` pin) and checks the checked-out commit. Nothing from Inzyght is copied into this
-  repository and nothing is patched.
+  repository. The clone then gets the edits listed under "What the build changes".
 - Its `CMakeLists.txt` fetches four dependencies by tag (FetchContent). A tag can move, so the
   build stage clones each at the full commit its tag resolved to on 2026-11-14 (build args, the tag
   beside each), checks `git rev-parse HEAD`, and hands the trees to CMake with
@@ -39,12 +40,52 @@ seeds module's own revision, with both arguments from its config
   | trantor (Drogon's submodule) | the commit Drogon v1.9.13 records | `63a4e5e164e219dc3bf30cdbfa1462ae5602fa97` (`TRANTOR_COMMIT`, checked against Drogon's tree) |
 
   libzmq gets the one `sed` that Inzyght's `CMakeLists.txt` applies to it as its `PATCH_COMMAND`
-  (a given source directory skips that step). Inzyght's own source is not changed. A new
+  (a given source directory skips that step). A new
   `INZYGHT_COMMIT` needs these re-resolved from the tags its `CMakeLists.txt` names. Built on
   Debian 13 (GCC 14).
 - The runtime stage is `debian:trixie-slim` with the shared libraries the binary links, plus
   `postgresql-client` for the schema. It holds `/opt/inzyght/{inzyght,public/,sql/,templates/}` and
   runs as uid 2005 with a read-only root filesystem (the stack mounts a tmpfs at `/run/inzyght`).
+
+## What the build changes
+
+Inzyght has no licence, so this repository holds none of its source and no patch file (a patch's
+context lines are the source). Instead the Dockerfile's `edit FILE ANCHOR REPLACEMENT` step rewrites
+single spots in the clone. An anchor is a short plain string that must occur in its file **exactly
+once**: zero or several occurrences stop the build with the anchor's name, so a new `INZYGHT_COMMIT`
+cannot drop an edit silently (if the author has fixed the line, delete our edit). The image lists
+the edits it was built with in `/opt/inzyght/EDITS`. These changes are reported to the author; each
+goes away when upstream has it.
+
+| File | Anchor → replacement | Why |
+|---|---|---|
+| `schema.sql` | `miner_address … character varying(50)` → `(128)` | A post-quantum address (`sqf…`, `sqs…`, `tqf…`, `tqs…`) is 53 characters; the column held 50, so a block mined to one showed a cut address that links nowhere |
+| `src/services/BlockIndexer.cc` | `miner_address.size() > 50) miner_address.resize(50)` → `128` twice | The indexer's own cut, made to fit that column |
+| `public/js/main.js` | `(s[13]\|t[13]\|ys1\|zs1)` → `(…\|sm\|s2\|[st]q)` | The search box sent only mainnet-style prefixes to `/address/…`; testnet (`sm`, `s2`) and post-quantum (`sq`, `tq`) addresses were "unrecognized input" |
+| `public/js/transaction.js` | `isCoinbase && confirmations < 100` → `isCoinbase && (tx.vout \|\| []).length > 0 && confirmations < 100` | The "immature" banner and badges were shown for every coinbase younger than 100 blocks. The node applies coinbase maturity to a coinbase's transparent outputs only (`ycash6` `src/main.cpp`, the check is in the loop over transparent inputs; post-quantum outputs are transparent-style and do mature); Sapling outputs of a coinbase are spendable at once. A coinbase with shielded outputs only now gets no banner |
+| `public/js/transaction.js` | `Coinbase outputs are` → `${saplingOutputs > 0 ? "Transparent coinbase" : "Coinbase"} outputs are` | A coinbase with both kinds (a shielded reward beside a transparent fund output) says which outputs wait: "Transparent coinbase outputs are immature — …". The badges were already drawn on transparent outputs only |
+
+`public/js/address.js` has the same `is_coinbase && confirmations < 100` rule and is left alone: an
+address page lists a transparent or post-quantum address's own entries, so a coinbase row there is
+always a transparent output and "Immature" is right.
+
+**Why 128:** the widest address the node prints into a transparent-style output is the post-quantum
+one, 53 characters (P2PKH and P2SH are 35); a shielded coinbase is stored as the word `private`.
+128 leaves room for any address encoding the node has (a Sapling address is 78 characters, 88 on
+testnet; a Sprout one 95) and keeps the author's design, a bounded column with a matching cut in the
+indexer so that one odd value can never reject a whole batch. Widening a `varchar` rewrites no rows.
+
+**The existing index** (entrypoint, every start, before Inzyght runs):
+
+1. *Migration.* If `blocks.miner_address` is a `varchar` narrower than 128 it becomes
+   `varchar(128)`; otherwise nothing happens.
+2. *Backfill.* Inzyght's index holds blocks and transaction ids, not outputs, so the cut miners
+   cannot be restored with SQL alone. For every block whose `miner_address` is exactly 50
+   characters, the entrypoint asks the node (`getblock <height> 1`, then `getrawtransaction <first
+   txid> 1`) and rewrites the row only if exactly one address among the coinbase's outputs is longer
+   than the stored text and begins with it. Rows it cannot settle are named in the log and left
+   alone. If the node does not answer, Inzyght starts anyway and the next start tries again. It needs
+   `-txindex`, which the explorer's node has. With no such rows it costs one query.
 
 ## The entrypoint
 

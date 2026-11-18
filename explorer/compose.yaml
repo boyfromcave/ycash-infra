@@ -1,4 +1,4 @@
-# The explorer stack: ycashd with the explorer indexes and ZMQ, PostgreSQL, Inzyght (unmodified) and a
+# The explorer stack: ycashd with the explorer indexes and ZMQ, PostgreSQL, Inzyght (built here, images/inzyght) and a
 # reverse proxy that can terminate TLS. README.md beside this file; `make explorer-up` from the repo root.
 #
 # Networks: `backend` is internal (no route out), so Inzyght and PostgreSQL have no egress at all;
