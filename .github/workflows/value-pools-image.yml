@@ -1,0 +1,85 @@
+# value-pools-image: build the value-pools page's image (images/value-pools) and push it to
+# ghcr.io/<owner>/ycash-value-pools:<sha12>, with build provenance. An explorer host
+# (infra/testnet-seeds/nodes with a network's `explorer.pools`) runs it beside Inzyght, behind the
+# explorer's proxy under /pools/. It runs only when started by hand, from upgrade/vault.
+#
+# In plain words: the page shows how much YEC sits in each pool of the chain (Sapling, Sprout,
+# transparent, post-quantum by scheme, vaults), now and over time, from the node's own index. This job
+# makes its container, in public from this repository at one commit, after the service's offline tests
+# pass, and prints its fingerprint (digest) for the deployment (networks.<key>.explorer.pools.image).
+# It is our own code (Inzyght's image, which has no licence, is never published). The image holds no
+# secret: the node's RPC credential reaches the container from the host.
+name: value-pools-image
+on:
+  workflow_dispatch: {}
+permissions: {}
+concurrency:
+  group: value-pools-image-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/upgrade/vault'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      REPO_OWNER: ${{ github.repository_owner }}
+      SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { persist-credentials: false }
+      - name: the tag and the offline checks
+        id: meta
+        run: |
+          set -euo pipefail
+          python3 -I -m unittest discover -s images/value-pools/tests
+          owner=$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          {
+            echo "image=ghcr.io/$owner/ycash-value-pools"
+            echo "tag=ghcr.io/$owner/ycash-value-pools:${SHA:0:12}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: build and push
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: images/value-pools
+          file: images/value-pools/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=ycash-value-pools (the value-pools page of a Ycash explorer host)
+            org.opencontainers.image.description=The value-pools page of a Ycash explorer host: how much YEC sits in each pool of the chain, now and over time, read from the node's value-pool index over three read-only RPC calls; one self-contained page and a JSON API. Holds no secret.
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/upgrade/vault/images/value-pools/README.md
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: digest
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "image: $IMAGE@$DIGEST"
+          {
+            echo "## value-pools-image at $SHA"
+            echo
+            echo "- tag: \`$TAG\`"
+            echo "- by digest (what a network's \`explorer.pools.image\` takes): \`$IMAGE@$DIGEST\`"
+            echo "- verify: \`gh attestation verify oci://$IMAGE@$DIGEST -R $GITHUB_REPOSITORY\`"
+          } >> "$GITHUB_STEP_SUMMARY"
