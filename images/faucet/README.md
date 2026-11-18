@@ -18,6 +18,7 @@ testnet. It never holds the wallet's secret words itself; the testnet node that 
 | Routes | page, `/send`, `/fund`, `/fund_t`, `/address`, `/mine`, `/reorg`, `/info`, `/params/`, `/metrics` | page, `/info`, `/challenge`, `/send`, `/metrics` (inside the cluster only), `/params/` only with `PARAMS_ENABLED=1` |
 | Amount | chosen by the caller (up to 1,000 YEC) | fixed (`AMOUNT_ZAT`, 1 YEC by default) |
 | Limits | one action per `RATE_SECONDS` | per client IP (`PER_IP_LIMIT` per `PER_IP_WINDOW`; IPv6 per /64, from the gateway's `X-Forwarded-For` entry, `TRUSTED_PROXY_HOPS`), per recipient (`PER_ADDR_*`), `DAILY_CAP_ZAT` in any 24 h, one payment at a time and `RATE_SECONDS` apart, an optional proof-of-work challenge (`POW_BITS` leading zero bits of SHA-256, solved by the page) |
+| Pays to | a regtest transparent or Sapling address | a transparent, post-quantum (Falcon `tqf…` / SLH-DSA `tqs…`, a `TX_PQPKH` output) or Sapling address of the network, by `z_sendmany` from the Sapling address: `AllowRevealedRecipients` for a transparent or post-quantum recipient, `FullPrivacy` for a Sapling one |
 | Safety | regtest only | pays nothing unless the node's `getblockchaininfo.chain` is `test` and its `testnetprofile` is `FAUCET_PROFILE`; the node validates every address (`validateaddress`, `z_validateaddress`); node errors stay in the log |
 
 **The sweep (testnet mode, `SWEEP_FROM`).** On the x402 host the paid API's `payTo` is a

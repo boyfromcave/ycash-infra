@@ -25,6 +25,18 @@ FAUCET = os.path.join(os.path.dirname(HERE), "faucet.py")
 TADDR = "smTestTransparentAddress1234567890"
 ZADDR = "ytestsapling1" + "q" * 60
 SOURCE = "ytestsapling1" + "s" * 60
+PQ_FALCON = "tqf" + "F" * 50          # FN-DSA-512 (pqscheme 2)
+PQ_SLH = "tqs" + "S" * 50             # SLH-DSA-SHA2-128s (pqscheme 1)
+
+
+def validate(addr):
+    """validateaddress as the post-quantum node line answers it: a PQ address is a valid transparent one
+    that also reports its pqscheme."""
+    if addr.startswith("tqf"):
+        return {"isvalid": True, "pqscheme": 2, "pqschemename": "FN-DSA-512"}
+    if addr.startswith("tqs"):
+        return {"isvalid": True, "pqscheme": 1, "pqschemename": "SLH-DSA-SHA2-128s"}
+    return {"isvalid": addr.startswith("sm")}
 
 
 class Node:
@@ -50,7 +62,7 @@ class Node:
                     "getblockchaininfo": {"chain": node.chain, "testnetprofile": node.profile},
                     "z_listaddresses": [SOURCE],
                     "z_getbalance": 50.0,
-                    "validateaddress": {"isvalid": str(p[0]).startswith("sm")} if p else None,
+                    "validateaddress": validate(str(p[0])) if p else None,
                     "z_validateaddress": {"isvalid": str(p[0]).startswith("ytestsapling1"), "address_type": "sapling"} if p else None,
                     "z_sendmany": "opid-1",
                     "z_getoperationstatus": [{"status": "success", "result": {"txid": "ab" * 32}}],
@@ -308,6 +320,16 @@ class Testnet(unittest.TestCase):
         code, body = f.get(f"/send?addr={ZADDR}", xff="203.0.113.2")
         self.assertEqual(code, 200, body)
         self.assertEqual(self.node.sends()[1][4], "FullPrivacy")
+
+    def test_pays_post_quantum_addresses(self):
+        f = self.start()
+        for i, addr in enumerate((PQ_FALCON, PQ_SLH)):
+            code, body = f.get(f"/send?addr={addr}", xff=f"203.0.113.{10 + i}")
+            self.assertEqual(code, 200, body)
+            self.assertEqual(json.loads(body)["kind"], "post-quantum")
+            src, outs, _minconf, _fee, policy = self.node.sends()[i]
+            # a TX_PQPKH output is transparent: revealed, as for a t-address
+            self.assertEqual((src, outs, policy), (SOURCE, [{"address": addr, "amount": "1.00000000"}], "AllowRevealedRecipients"))
 
     def test_daily_cap(self):
         f = self.start(DAILY_CAP_ZAT=200000000)

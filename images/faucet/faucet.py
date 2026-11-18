@@ -420,18 +420,17 @@ ADDR_RE = re.compile(r"[0-9A-Za-z]{26,128}")
 
 
 def classify(addr):
-    """'transparent' or 'sapling' as the node judges the address on its own network; else ValueError."""
+    """'transparent', 'post-quantum' (a TX_PQPKH address, FN-DSA-512 tqf… or SLH-DSA tqs…: validateaddress
+    reports its pqscheme) or 'sapling' as the node judges the address on its own network; else ValueError."""
     if not ADDR_RE.fullmatch(addr):
         raise ValueError("that is not an address")
     v = rpc("validateaddress", addr)
     if v.get("isvalid"):
-        if "pqscheme" in v:
-            raise ValueError("a post-quantum address: the faucet pays transparent and Sapling addresses only")
-        return "transparent"
+        return "post-quantum" if "pqscheme" in v else "transparent"
     z = rpc("z_validateaddress", addr)
     if z.get("isvalid") and z.get("address_type", z.get("type")) == "sapling":
         return "sapling"
-    raise ValueError(f"not a transparent or Sapling address of {NETWORK_NAME}")
+    raise ValueError(f"not a transparent, post-quantum or Sapling address of {NETWORK_NAME}")
 
 
 def sweep_plan():
@@ -497,7 +496,8 @@ def testnet_pay(addr, kind, zat):
     src = source_address()
     yec = zat / 1e8
     ensure_private(src, yec + 0.001)
-    policy = "AllowRevealedRecipients" if kind == "transparent" else "FullPrivacy"
+    # a post-quantum recipient is a transparent (TX_PQPKH) output, revealed like a t-address
+    policy = "FullPrivacy" if kind == "sapling" else "AllowRevealedRecipients"
     r = rpc("z_sendmany", src, [{"address": addr, "amount": f"{yec:.8f}"}], 1, None, policy)
     txid = wait_opid(r if isinstance(r, str) else r.get("opid"))
     log(f"paid {yec} YEC ({kind}) in {txid}")
