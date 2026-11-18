@@ -309,6 +309,72 @@ run "refuses_a_fractional_pacing" {
   expect_failures = [var.networks]
 }
 
+# Pool quotes (README.md, "The pool": "Pool quotes"): the agent's settings in the pool's config (the
+# defaults filled in) and -yellowbackpayoutaddress naming the payout address on the node; without
+# `quote` neither appears (pool_host above).
+run "pool_host_quotes" {
+  variables {
+    networks = {
+      yb-fast = {
+        profile = "fast"
+        pool    = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", per_miner = true, quote = { image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333" } }
+      }
+    }
+  }
+  assert {
+    condition     = endswith(jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args, "-disablewallet -mineraddress=smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb -minetolocalwallet=0 -yellowbackpayoutaddress=smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb")
+    error_message = "a quoting pool's node: the payout address as -yellowbackpayoutaddress too"
+  }
+  assert {
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).pool.quote) == jsonencode({ heartbeat_seconds = 600, image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333", min_move_bps = 10, poll_seconds = 75 })
+    error_message = "the quote agent's config: image, poll 75 s, 10 bps, heartbeat 600 s (the defaults)"
+  }
+  assert {
+    condition     = contains(keys(local.host_files), "seedctl-quote")
+    error_message = "host_files: seedctl's quote half travels with the deploy workflow"
+  }
+}
+
+run "refuses_a_quote_with_a_heartbeat_past_1200" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", quote = { image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333", heartbeat_seconds = 1800 } } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_a_quote_with_a_heartbeat_below_the_poll" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", quote = { image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333", poll_seconds = 120, heartbeat_seconds = 60 } } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_a_quote_without_a_p2pkh_payout" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "t2UNzUUx8mWBCRYPRezvA363EYXyEpHokyi", quote = { image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333" } } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_a_quote_image_by_tag" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", quote = { image = "ghcr.io/example/ycash-quote:latest" } } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_a_payout_option_beside_a_quote" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", extra_args = "-yellowbackpayoutaddress=smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", quote = { image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333" } } } }
+  }
+  expect_failures = [var.networks]
+}
+
 run "refuses_a_bad_per_miner_pool" {
   command = plan
   variables {

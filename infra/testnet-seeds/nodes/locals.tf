@@ -80,6 +80,9 @@ locals {
     # datadir (seedctl x402-backup) and more RPC threads (the API, the facilitator and the faucet).
     extra_args = trimspace(join(" ", compact([n.testnet ? "-maxtipage=999999999" : "", var.extra_args, n.extra_args,
       n.pool == null ? "" : "-disablewallet -mineraddress=${n.pool.payout} -minetolocalwallet=0",
+      # pool quotes: the coinbase tag names the payout address explicitly (an address, no key: the
+      # node holds no wallet); a node where Yellowback is not active ignores it
+      n.pool == null ? "" : n.pool.quote == null ? "" : "-yellowbackpayoutaddress=${n.pool.payout}",
       # yolo's paired jobs: getcoinbasetemplatefor calls in flight plus the template poll and submitblock
       # (the node's default, 4, covers the default concurrency of 2)
       n.pool == null ? "" : n.pool.per_miner && n.pool.coinbase_concurrency > 2 ? "-rpcthreads=${n.pool.coinbase_concurrency + 2}" : "",
@@ -98,7 +101,8 @@ locals {
       share_ratio = n.pool.share_ratio
       }, n.pool.per_miner ? { per_miner = true } : {},
       n.pool.per_miner ? { coinbase_concurrency = n.pool.coinbase_concurrency, max_paired_per_ip = n.pool.max_paired_per_ip } : {},
-    n.pool.min_block_interval > 0 ? { min_block_interval = n.pool.min_block_interval } : {})
+      n.pool.min_block_interval > 0 ? { min_block_interval = n.pool.min_block_interval } : {},
+    n.pool.quote == null ? {} : { quote = n.pool.quote })
     prefix = n.testnet && n.bootstrap && var.prefix != null ? {
       base_url    = local.profile_prefix[n.profile].base_url
       sums_sha256 = local.profile_prefix[n.profile].sums_sha256

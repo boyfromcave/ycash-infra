@@ -37,6 +37,7 @@
 # container yolo-NET, host networking: stratum on pool.port, its status page on 127.0.0.1:pool.status_port,
 # the node's RPC on 127.0.0.1 through NET/pool.conf (the node's credential, readable by yolo's uid
 # only). apply, reset, stop, sync and boot act on both containers together; status adds a `pool` field.
+# A pool with a `quote` also runs the Yellowback quote agent: seedctl-quote, beside this file.
 #
 # A network whose config has an `explorer` also runs the explorer (PostgreSQL, Inzyght, a TLS proxy)
 # in the same project; that half is seedctl-explorer, beside this file (its header). One whose
@@ -98,6 +99,7 @@ check_config() { # file name
   if ex_of "$1"; then need_explorer; explorer_check "$1" "$2"; fi
   if lw_of "$1"; then need_lightwallet; lightwallet_check "$1" "$2"; fi
   if x4_of "$1"; then need_x402; x402_check "$1" "$2"; fi
+  if qt_of "$1"; then need_half quote; quote_check "$1" "$2"; fi
 }
 
 # seedctl-explorer, seedctl-lightwallet and seedctl-x402: from the deploy workflow (install-files;
@@ -105,7 +107,8 @@ check_config() { # file name
 ex_of() { [ "$(cfg "$1" '.explorer != null' 2>/dev/null)" = true ]; }   # config file
 lw_of() { [ "$(cfg "$1" '.lightwallet != null' 2>/dev/null)" = true ]; }   # config file
 x4_of() { [ "$(cfg "$1" '.x402 != null' 2>/dev/null)" = true ]; }   # config file
-need_half() { # explorer | lightwallet | x402
+qt_of() { [ "$(cfg "$1" '.pool.quote != null' 2>/dev/null)" = true ]; }   # config file
+need_half() { # explorer | lightwallet | x402 | quote
   local p
   case " ${HALVES:-} " in *" $1 "*) return 0 ;; esac
   for p in "$O/seedctl-$1" "$D/seedctl-$1"; do
@@ -227,18 +230,19 @@ YAML
 # yolo runs with host networking, so the instance metadata service's hop limit of 1 does not keep it
 # away from IMDS: an owner rule refuses every packet from yolo's uid to the metadata addresses
 # (IPv4 and the Nitro IPv6 one). Idempotent; applied before yolo starts, on every apply and boot.
-imds_guard() {
-  iptables -C OUTPUT -d 169.254.169.254/32 -m owner --uid-owner "$UID_POOL" -j REJECT 2>/dev/null \
-    || iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner "$UID_POOL" -j REJECT \
-    || die "could not install the metadata rule for uid $UID_POOL"
-  ip6tables -C OUTPUT -d fd00:ec2::254/128 -m owner --uid-owner "$UID_POOL" -j REJECT 2>/dev/null \
-    || ip6tables -I OUTPUT 1 -d fd00:ec2::254/128 -m owner --uid-owner "$UID_POOL" -j REJECT \
-    || log "warning: no IPv6 metadata rule for uid $UID_POOL (ip6tables unavailable)"
+imds_guard() { # uid: yolo's (render_pool) or the quote agent's (render_quote)
+  local uid=$1
+  iptables -C OUTPUT -d 169.254.169.254/32 -m owner --uid-owner "$uid" -j REJECT 2>/dev/null \
+    || iptables -I OUTPUT 1 -d 169.254.169.254/32 -m owner --uid-owner "$uid" -j REJECT \
+    || die "could not install the metadata rule for uid $uid"
+  ip6tables -C OUTPUT -d fd00:ec2::254/128 -m owner --uid-owner "$uid" -j REJECT 2>/dev/null \
+    || ip6tables -I OUTPUT 1 -d fd00:ec2::254/128 -m owner --uid-owner "$uid" -j REJECT \
+    || log "warning: no IPv6 metadata rule for uid $uid (ip6tables unavailable)"
 }
 
 render_pool() { # net file
   local net=$1 f=$2 R="$O/net/$1" pc="$D/$1/pool.conf" text ratio pace pay
-  imds_guard
+  imds_guard "$UID_POOL"
   ( umask 077
     # shellcheck source=/dev/null
     . "$D/$net/rpc.env"
@@ -276,6 +280,7 @@ render_pool() { # net file
     stop_grace_period: 10s
     logging: { driver: json-file, options: { max-size: 50m, max-file: "4" } }
 YAML
+  if qt_of "$f"; then need_half quote; render_quote "$net" "$f"; fi
 }
 
 pool_status() { # net: yolo's /status, cut to what an operator reads ({} when it does not answer).
@@ -439,6 +444,7 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   else
     docker rm -f "yolo-$net" >/dev/null 2>&1 || true   # a pool removed from the config
   fi
+  qt_of "$D/$net/applied.json" || { docker rm -f "quote-$net" >/dev/null 2>&1 || true; rm -f "$D/$net/quote.toml"; }
   if ex_of "$D/$net/applied.json"; then job_phase "waiting for the explorer"; explorer_up "$net"
   elif [ -d "$D/$net/explorer" ]; then
     docker rm -f "postgres-$net" "inzyght-$net" "proxy-$net" "pools-$net" >/dev/null 2>&1 || true   # an explorer removed from the config
@@ -461,7 +467,7 @@ reset() { # net config-b64
   valid_name "$net"
   log "$net: RESET: stopping and deleting its chain"
   if [ -e "$O/net/$net/compose.yaml" ]; then compose "$net" down --timeout 180 || true; fi
-  docker rm -f "ycashd-$net" "yolo-$net" "postgres-$net" "inzyght-$net" "proxy-$net" "pools-$net" "lightwalletd-$net" "grpcweb-$net" "lwproxy-$net" \
+  docker rm -f "ycashd-$net" "yolo-$net" "quote-$net" "postgres-$net" "inzyght-$net" "proxy-$net" "pools-$net" "lightwalletd-$net" "grpcweb-$net" "lwproxy-$net" \
     "facilitator-$net" "x402api-$net" "faucet-$net" "x402proxy-$net" >/dev/null 2>&1 || true
   # an x402 host's faucet wallet is not the chain: it moves aside and comes back (apply)
   if [ -e "$D/$net/applied.json" ] && x4_of "$D/$net/applied.json"; then need_x402; x402_keep_wallet "$net"; fi
@@ -568,6 +574,7 @@ status() { # [net]
       pool=$(jq -c --arg st "$(dinspect '{{.State.Status}}' "yolo-$net" absent)" \
         --arg img "$(dinspect '{{.Config.Image}}' "yolo-$net" -)" \
         '{container: $st, image: $img} + .' <<<"$pool")
+      if qt_of "$D/$net/applied.json"; then pool=$( (need_half quote && quote_status "$net" "$pool") 2>/dev/null || echo "$pool"); fi
     fi
     ex=null
     if ex_of "$D/$net/applied.json"; then ex=$( (need_explorer && explorer_status "$net") 2>/dev/null || echo '{"error": "seedctl-explorer is not on this host"}'); fi
@@ -615,7 +622,7 @@ prefix_check() {
 # The module's host files only (main.tf local.host_files): an allow-list of names, so a payload can
 # never write seed.env, setup.sh, seedctl or anything outside /opt/ycash-seed. Checked whole before
 # anything is written; one file or several per call (the workflow may split them across commands).
-HOST_FILES='["prefix-restore.sh", "frame.py", "seedctl-explorer", "inzyght-build.json", "seedctl-lightwallet", "seedctl-x402"]'
+HOST_FILES='["prefix-restore.sh", "frame.py", "seedctl-explorer", "inzyght-build.json", "seedctl-lightwallet", "seedctl-x402", "seedctl-quote"]'
 install_files() { # json: { name: { mode, content } }
   local k m
   jq -e --argjson ok "$HOST_FILES" 'type == "object" and length > 0
