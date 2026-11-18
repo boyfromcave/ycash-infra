@@ -148,8 +148,8 @@ deployment turns on.
 ### The faucet (`faucet`, off by default; needs T-9)
 
 `images/faucet` in `FAUCET_MODE=testnet` ([its README](../../images/faucet/README.md)) pays a fixed
-amount of testnet YEC (`faucet.amountZat`, 1 YEC) to a transparent or Sapling address of this network,
-never YED. Limits: per client IP (`faucet.perIp`, IPv6 per /64, from the gateway's `X-Forwarded-For`),
+amount of testnet YEC (`faucet.amountZat`, 1 YEC) to a transparent, post-quantum (Falcon `tqf…`, SLH-DSA
+`tqs…`) or Sapling address of this network, never YED. Limits: per client IP (`faucet.perIp`, IPv6 per /64, from the gateway's `X-Forwarded-For`),
 per address (`faucet.perAddress`), a rolling 24 h cap (`faucet.dailyCapZat`), one payment at a time
 (`faucet.rateSeconds` apart), a proof-of-work challenge the page solves (`faucet.powBits`, 16 bits), and
 an Envoy limit on its route (`faucet.route.requestsPerSecond`). It has no mining, reorg or node-address

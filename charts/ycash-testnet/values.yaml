@@ -208,7 +208,7 @@ testnetKeys:
   allowed: false
 
 # ---- the faucet (plan §6.2 `faucet`; images/faucet in FAUCET_MODE=testnet): OFF BY DEFAULT ----
-# Pays a fixed amount of testnet YEC (never YED) to a transparent or Sapling address, from the first
+# Pays a fixed amount of testnet YEC (never YED) to a transparent, post-quantum or Sapling address, from the first
 # Sapling address of its own wallet node (`<release>-faucet-node`, ycash6, one replica, nodes.yaml):
 # that node restores its wallet from the recovery phrase in a Secret, mounted as a file and passed as
 # -mnemonicfile (the node image's YCASHD_MNEMONIC_FILE); the faucet process never sees the phrase.
