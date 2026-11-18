@@ -471,6 +471,26 @@ done
 "$SEEDCTL" reset yb-fast "$POOLX" 2>/dev/null
 [ ! -e "$D/yb-fast/explorer/pools/samples.jsonl" ] && ! grep -q 'container_name: pools-yb-fast' "$c" && ! grep -q '/pools' "$O/net/yb-fast/Caddyfile" && grep -qx 'YCASHD_RPC_ALLOWIP=172.31.250.12 172.31.250.13' "$e" || fail "reset: the samples go with the chain; no value-pools service while the prefix imports"
 ok "the value-pools page: a sidecar at its fixed address, /pools in the Caddyfile, its credential private; refuses a tag, a small limit, an injected title; off renders as before; reset wipes its samples"
+# Caddy reads its Caddyfile only at its start (admin off) and compose does not recreate a service for a
+# bind-mounted file's content: a changed Caddyfile recreates the proxy (that service only, after the
+# stack is up), an unchanged one does not
+: > "$LOG"
+"$SEEDCTL" prefix-check 2>/dev/null   # the import done after the reset: the Caddyfile gains /pools
+up=$(grep -n -m1 '^up ycash-yb-fast$' "$LOG" | cut -d: -f1); rc=$(grep -n -- ' up -d --no-deps --force-recreate proxy$' "$LOG" | cut -d: -f1)
+grep -q 'reverse_proxy /pools/\* pools:8080' "$O/net/yb-fast/Caddyfile" && [ -n "$rc" ] && [ "$rc" -gt "$up" ] && [ "$(grep -c -- '--force-recreate' "$LOG")" = 1 ] \
+  && [ ! -e "$O/net/yb-fast/restart/proxy" ] || fail "prefix-check: a Caddyfile that gained /pools recreates the proxy after the stack is up: $(grep 'docker compose' "$LOG")"
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$POOLX" 2>/dev/null || fail "apply with the value-pools page, unchanged"
+grep -q '^up ycash-yb-fast$' "$LOG" && ! grep -q -- '--force-recreate' "$LOG" || fail "an unchanged Caddyfile recreated the proxy: $(grep 'docker compose' "$LOG")"
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null || fail "apply without the value-pools page"
+grep -q -- ' up -d --no-deps --force-recreate proxy$' "$LOG" && [ "$(grep -c -- '--force-recreate' "$LOG")" = 1 ] || fail "a Caddyfile without /pools again recreates the proxy: $(grep 'docker compose' "$LOG")"
+# a mark left by a run that stopped before the recreate is honoured by the next one
+: > "$O/net/yb-fast/restart/proxy"; : > "$O/net/yb-fast/restart/pools"; : > "$LOG"
+"$SEEDCTL" apply yb-fast "$MEMX" 2>/dev/null || fail "apply with a mark left over"
+grep -q -- ' up -d --no-deps --force-recreate proxy$' "$LOG" && [ "$(grep -c -- '--force-recreate' "$LOG")" = 1 ] && [ -z "$(ls -A "$O/net/yb-fast/restart")" ] \
+  || fail "a left-over mark: the proxy recreated, a service not in the stack only unmarked: $(grep 'docker compose' "$LOG")"
+ok "a changed Caddyfile recreates the proxy once the stack is up (apply and prefix-check), an unchanged one does not"
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$FAST2" 2>/dev/null
 grep -q 'network_mode: host' "$c" && ! grep -q postgres "$c" && grep -q 'docker rm -f postgres-yb-fast inzyght-yb-fast proxy-yb-fast' "$LOG" && grep -qx 'YCASHD_INSIGHT=0' "$e" || fail "an explorer removed from the config"

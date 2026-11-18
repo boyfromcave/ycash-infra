@@ -71,7 +71,7 @@ lightwallet_files() { # net file
     chown -R "$UID_LWD:$UID_LWD" "$L/cache"
     chown -R "$UID_LWPROXY:$UID_LWPROXY" "$L/caddy"
   fi
-  chmod 0400 "$L/lightwalletd.conf.new"; mv -f "$L/lightwalletd.conf.new" "$L/lightwalletd.conf"
+  chmod 0400 "$L/lightwalletd.conf.new"; install_conf "$1" lightwalletd "$L/lightwalletd.conf.new" "$L/lightwalletd.conf"
 }
 
 # The Caddyfile: TLS for the public name (Let's Encrypt, HTTP-01 on port 80, renewal, the redirect to
@@ -207,9 +207,9 @@ render_lightwallet() { # net file loadblock-flags
   # it carries the certificate contact: root and Caddy's group only
   chmod 0640 "$R/Caddyfile.new"
   if [ "$(id -u)" = 0 ]; then chown "0:$UID_LWPROXY" "$R/Caddyfile.new"; fi
-  mv -f "$R/Caddyfile.new" "$R/Caddyfile"
+  install_conf "$net" lwproxy "$R/Caddyfile.new" "$R/Caddyfile"   # read at start only (install_conf)
   lightwallet_envoy "$f" > "$R/envoy.yaml.new"
-  chmod 0644 "$R/envoy.yaml.new"; mv -f "$R/envoy.yaml.new" "$R/envoy.yaml"
+  chmod 0644 "$R/envoy.yaml.new"; install_conf "$net" grpcweb "$R/envoy.yaml.new" "$R/envoy.yaml"
   cat > "$R/compose.yaml" <<YAML
 name: ycash-$net
 services:

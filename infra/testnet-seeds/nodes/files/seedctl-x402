@@ -126,7 +126,7 @@ x402_files() { # net file
   x402_facilitator_json "$1" "$f" > "$X/facilitator.json.new"
   chmod 0400 "$X/facilitator.json.new"
   if [ "$(id -u)" = 0 ]; then chown "$UID_X4FAC:$UID_X4FAC" "$X/facilitator.json.new"; fi
-  mv -f "$X/facilitator.json.new" "$X/facilitator.json"
+  install_conf "$1" facilitator "$X/facilitator.json.new" "$X/facilitator.json"   # read at start only
 }
 
 # The facilitator's configuration file (X402_FACILITATOR_CONFIG): the node's RPC credential and the
@@ -387,7 +387,7 @@ render_x402() { # net file loadblock-flags
   # it carries the certificate contact: root and Caddy's group only
   chmod 0640 "$R/Caddyfile.new"
   if [ "$(id -u)" = 0 ]; then chown "0:$UID_X4PROXY" "$R/Caddyfile.new"; fi
-  mv -f "$R/Caddyfile.new" "$R/Caddyfile"
+  install_conf "$net" x402proxy "$R/Caddyfile.new" "$R/Caddyfile"   # read at start only (install_conf)
   # a recovery phrase placed by the operator (README.md, "The faucet's wallet"): read by ycashd only
   # when it creates the wallet, ignored for an existing wallet with this seed
   if [ -e "$X/mnemonic" ]; then
@@ -547,7 +547,7 @@ x402_up() { # net
   x4_owned "$1" "$f"
   if ! grep -q '^  api:' "$O/net/$1/compose.yaml"; then
     render "$1" "$f"
-    compose "$1" up -d
+    compose_up "$1"
   fi
   wait_x402 "$1" 600 || die "$1: the x402 services did not become healthy within 10 minutes (docker logs facilitator-$1 / x402api-$1 / faucet-$1 / x402proxy-$1)"
   log "$1 x402 up: $(cfg "$f" .x402.hostname); payTo $(cat "$D/$1/x402/payto"), faucet $(cat "$D/$1/x402/zaddr")"

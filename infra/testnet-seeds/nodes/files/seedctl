@@ -305,6 +305,33 @@ wait_pool() { # net seconds
 
 compose() { local net=$1; shift; docker compose -f "$O/net/$net/compose.yaml" "$@"; }
 
+# A rendered file that a running container reads only when it starts (a bind-mounted configuration:
+# a Caddyfile, with Caddy's admin API off; Envoy's envoy.yaml; lightwalletd's and the facilitator's
+# files) goes in place with install_conf. Docker compose recreates a service when its definition or an
+# env_file's content changes, never for a bind-mounted file's content (and a file replaced with mv is
+# a new inode, which the running container does not see), so when the content differs from the file
+# in place the service is marked (NET/restart/SERVICE on the root disk), and compose_up recreates the
+# marked services once the stack is up: only those, only when their file changed, so an unchanged
+# deploy drops no connection. A mark outlives a run that fails before the recreate; a file not there
+# before marks nothing (the container that reads it is created with it).
+install_conf() { # net service new-file file
+  if [ -e "$4" ] && ! cmp -s "$3" "$4"; then mkdir -p "$O/net/$1/restart"; : > "$O/net/$1/restart/$2"; fi
+  mv -f "$3" "$4"
+}
+
+compose_up() { # net: compose up -d, then recreate the services whose configuration file changed
+  local s
+  compose "$1" up -d || return 1
+  for s in "$O/net/$1/restart"/*; do
+    [ -e "$s" ] || continue
+    if grep -q "^  ${s##*/}:\$" "$O/net/$1/compose.yaml"; then
+      log "$1: ${s##*/}'s configuration changed: recreating it"
+      compose "$1" up -d --no-deps --force-recreate "${s##*/}" || return 1
+    fi
+    rm -f "$s"   # a service not in the stack (yet) reads the current file when it is created
+  done
+}
+
 # An empty datadir only: fetch and verify the prefix once per host into prefix-cache (the chart's
 # prefix-restore.sh: SHA256SUMS against the pin, every file against SHA256SUMS), then frame it with
 # this network's magic into NET/node/prefix/load (frame.py checks every block again).
@@ -381,7 +408,7 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   # shellcheck disable=SC2046  # one word per service, none for all of them
   retry compose "$net" pull -q $(if ex_of "$tmp"; then pull_services "$tmp"; fi)
   job_phase "starting the containers"
-  compose "$net" up -d
+  compose_up "$net"
   mv "$tmp" "$D/$net/applied.json"
   job_phase "waiting for the node's RPC"
   if wait_rpc "$net" 900; then
@@ -456,13 +483,13 @@ boot() {
   local net
   for net in $(applied_nets); do
     render "$net" "$D/$net/applied.json"
-    compose "$net" up -d || log "$net: did not start"
+    compose_up "$net" || log "$net: did not start"
     # A new instance has no locally built Inzyght image: the node, PostgreSQL and the proxy are up
     # already (render leaves Inzyght out); build the image from the kept context, then start it.
     if ex_of "$D/$net/applied.json" && ! explorer_image_ready "$D/$net/applied.json"; then
       if explorer_build "$net" "$D/$net/applied.json"; then
         render "$net" "$D/$net/applied.json"
-        compose "$net" up -d || log "$net: did not start"
+        compose_up "$net" || log "$net: did not start"
       else
         log "$net: the Inzyght image did not build: $(explorer_build_reason "$net")"
       fi
@@ -552,7 +579,7 @@ prefix_check() {
       [ "$h" -ge "$last" ] || { log "$net: prefix import at $h of $last"; continue; }
       touch "$N/prefix/IMPORTED"
       render "$net" "$D/$net/applied.json"
-      compose "$net" up -d
+      compose_up "$net"
       rm -rf "$N/prefix/load"
       log "$net: prefix imported (height $h); -loadblock retired"
     elif [ -e "$N/prefix/FRAMED" ] && [ ! -e "$N/prefix/IMPORTED" ]; then
