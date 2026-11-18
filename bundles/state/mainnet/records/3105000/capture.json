@@ -1,0 +1,9 @@
+{
+  "clone_seconds": 0.1,
+  "datadir": "$HOME/ycash-b3-bundle/src",
+  "height": 3105000,
+  "method": "stopatheight",
+  "pause_seconds": 0.1,
+  "restarted_at": "2026-11-17T23:08:23Z",
+  "stopped_at": "2026-11-17T23:08:22Z"
+}

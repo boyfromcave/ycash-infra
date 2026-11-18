@@ -280,3 +280,23 @@ at start ("this database has been pruned and cannot be opened in archive storage
 | 3,087,341 (tip) | `0000002ba6d9…338461bf` | pruned (`kogany-state/2`) | 3,051,782 | 5,429,931,325 | `79035357…01dcdb73` | 1,001 |
 
 Its manifest is in `records/kogany-tip-3087341/kogany-pruned/`.
+
+## Taken on 2026-11-17 (ycash6 6.22.0-beta3 at 8bfd4621e)
+
+The beta3 operators' bundle and the first one in parts (`ycash-state/3`). The supervisor stopped the
+node with `-stopatheight=3105000` (pause 0.1 s, `records/3105000/capture.json`); the offline statement
+copy had settled at 3,105,027 and rolled back to H with `invalidateblock`. Packed in 471 s, then
+`verify.py --tree` ok. Published under `main/3105000/` with `SHA256SUMS.minisig` (the release key);
+`main/latest/` names it.
+
+| Height | Block | `utxo_hash_serialized` | Bytes (24 parts of 1 GiB, the last 565,381,900) | Stream sha256 | Unpacked bytes |
+|---|---|---|---|---|---|
+| 3,105,000 | `00000319150b…63a87409` | `b03141fd…d9079f0d` | 25,261,443,852 | `f3a333b1…dbf3ce6c` | 32,782,977,980 |
+
+Restore checks: by hand from the local parts (`sha256sum -c SHA256SUMS`, every file OK, then
+`cat <parts> | tar -xzf -`), and on 2026-11-18 from the public URL `main/latest/` with ycash6
+`upgrade/vault`'s `ycash-bootstrap` and the 6.22.0-beta3 `ycashd`: the signature verified, the 24
+parts and the tree hash matched the manifest, and the offline node agreed with every statement field
+and the 20 pins at 3,105,000.
+
+The full values are in `records/3105000/`. No kogany bundle was taken at this height.
