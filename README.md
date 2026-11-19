@@ -129,6 +129,19 @@ accept the same forms when it serves `--yellowback` (`frontend/service.go` `tadd
 `checkTaddress`), but the five address methods stay in `yindex.routes` so that address queries are
 answered from the index and never reach the node.
 
+`GetAddressUtxos` sets `coinbase` (`GetAddressUtxosReply` field 7, lightwalletd-dd beta4) as
+lightwalletd-dd does: true when the output's transaction is a coinbase, i.e. its one transparent
+input has the null prevout (`yindex/internal/txparse`, lightwalletd-dd's `parser.IsCoinbase` line
+for line). The ingester stores the flag in `outputs.coinbase`. **Migration (beta4):** an index
+written by an older yindex gets the column at the first start of the new image (`schema.sql`, a
+guarded `ALTER TABLE`, NULL on the old rows; metadata only, no table rewrite); `yindex ingest`
+then backfills those rows from the stored transactions (`txs.raw`, the first 64 bytes) before it
+ingests, logging `backfill coinbase: N outputs set`, and `yindex serve` answers any row still NULL
+from `txs.raw` itself, so the flag is right whichever pod rolls first. Nothing is run by hand: the
+ordinary rollout (`make eks-deploy`, the kind chart upgrade) is the migration. Rolling back to an
+older image is safe (it ignores the column); dropping the schema and re-ingesting (EKS runbook §7)
+also works and yields the same flags.
+
 ## Quick start (kind)
 
 Prerequisites: Docker Desktop, `kind`, `kubectl`, `helm` (`brew install kind kubectl helm`),

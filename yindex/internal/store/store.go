@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/boyfromcave/ycash-infra/yindex/internal/rpc"
+	"github.com/boyfromcave/ycash-infra/yindex/internal/txparse"
 )
 
 //go:embed schema.sql
@@ -90,6 +91,12 @@ func (s *Store) Apply(ctx context.Context, b *rpc.Block) error {
 		if err != nil {
 			return fmt.Errorf("tx %s hex: %w", t.Txid, err)
 		}
+		// GetAddressUtxosReply.coinbase, from the bytes as lightwalletd-dd reads them. A prefix
+		// that does not parse stops the ingest rather than store a guess.
+		coinbase, err := txparse.IsCoinbase(raw)
+		if err != nil {
+			return fmt.Errorf("tx %s: coinbase: %w", t.Txid, err)
+		}
 		touched := map[string]struct{}{}
 		for _, o := range t.Vout {
 			if len(o.ScriptPubKey.Addresses) != 1 {
@@ -101,8 +108,8 @@ func (s *Store) Apply(ctx context.Context, b *rpc.Block) error {
 			if val == 0 {
 				val = o.ValueSat
 			}
-			if _, err := tx.Exec(ctx, `INSERT INTO outputs(address,txid,vout,script,value_zat,height) VALUES($1,$2,$3,$4,$5,$6)
-				ON CONFLICT (txid,vout) DO NOTHING`, a, txid, o.N, script, val, b.Height); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO outputs(address,txid,vout,script,value_zat,height,coinbase) VALUES($1,$2,$3,$4,$5,$6,$7)
+				ON CONFLICT (txid,vout) DO NOTHING`, a, txid, o.N, script, val, b.Height, coinbase); err != nil {
 				return err
 			}
 			touched[a] = struct{}{}
@@ -170,20 +177,41 @@ type Utxo struct {
 	Script   []byte
 	ValueZat int64
 	Height   int64
+	Coinbase bool
 }
 
+// Utxos lists unspent outputs. A row written before the coinbase column (NULL until the
+// ingester's backfill reaches it) is answered from the stored transaction's prefix; a row with
+// neither fails the call, as lightwalletd-dd fails it when its lookup fails: a coinbase output
+// reported as an ordinary coin would be offered to an ordinary send, which consensus refuses.
 func (s *Store) Utxos(ctx context.Context, addresses []string, start int64, max int, f func(Utxo) error) error {
-	rows, err := s.db.Query(ctx, `SELECT address,txid,vout,script,value_zat,height FROM outputs
-		WHERE address = ANY($1) AND spent_height IS NULL AND height >= $2 ORDER BY height, txid, vout LIMIT $3`,
-		addresses, start, nullIfZero(max))
+	rows, err := s.db.Query(ctx, `SELECT o.address,o.txid,o.vout,o.script,o.value_zat,o.height,o.coinbase,
+			CASE WHEN o.coinbase IS NULL THEN substring(t.raw FROM 1 FOR $4) END
+		FROM outputs o LEFT JOIN txs t ON o.coinbase IS NULL AND t.txid = o.txid
+		WHERE o.address = ANY($1) AND o.spent_height IS NULL AND o.height >= $2 ORDER BY o.height, o.txid, o.vout LIMIT $3`,
+		addresses, start, nullIfZero(max), txparse.PrefixLen)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var u Utxo
-		if err := rows.Scan(&u.Address, &u.Txid, &u.Vout, &u.Script, &u.ValueZat, &u.Height); err != nil {
+		var coinbase *bool
+		var prefix []byte
+		if err := rows.Scan(&u.Address, &u.Txid, &u.Vout, &u.Script, &u.ValueZat, &u.Height, &coinbase, &prefix); err != nil {
 			return err
+		}
+		if coinbase != nil {
+			u.Coinbase = *coinbase
+		} else {
+			if prefix == nil {
+				return fmt.Errorf("coinbase lookup: no stored transaction for output %x:%d", u.Txid, u.Vout)
+			}
+			v, err := txparse.IsCoinbase(prefix)
+			if err != nil {
+				return fmt.Errorf("coinbase lookup: %x: %w", u.Txid, err)
+			}
+			u.Coinbase = v
 		}
 		if err := f(u); err != nil {
 			return err
@@ -221,6 +249,62 @@ func (s *Store) AddressTxs(ctx context.Context, address string, start, end int64
 		}
 	}
 	return rows.Err()
+}
+
+// BackfillCoinbase sets the coinbase flag on every output written before the column existed,
+// from the creating transaction's stored prefix (txs.raw), batch by batch in txid order; the
+// ingester runs it once at start, before it ingests, and it returns at once on an index with
+// nothing to backfill. An output whose transaction is not stored (none should exist: Apply stores
+// every transaction that creates an indexed output) is left NULL and counted in `missing`.
+func (s *Store) BackfillCoinbase(ctx context.Context, batch int) (updated, missing int64, err error) {
+	after := []byte{}
+	for {
+		rows, err := s.db.Query(ctx, `SELECT o.txid, substring(t.raw FROM 1 FOR $3)
+			FROM (SELECT DISTINCT txid FROM outputs WHERE coinbase IS NULL AND txid > $1 ORDER BY txid LIMIT $2) o
+			LEFT JOIN txs t USING (txid) ORDER BY o.txid`, after, batch, txparse.PrefixLen)
+		if err != nil {
+			return updated, missing, err
+		}
+		var txids [][]byte
+		var flags []bool
+		n := 0
+		for rows.Next() {
+			var txid, prefix []byte
+			if err := rows.Scan(&txid, &prefix); err != nil {
+				rows.Close()
+				return updated, missing, err
+			}
+			n++
+			after = txid
+			if prefix == nil {
+				missing++
+				continue
+			}
+			v, err := txparse.IsCoinbase(prefix)
+			if err != nil {
+				rows.Close()
+				return updated, missing, fmt.Errorf("backfill coinbase: %x: %w", txid, err)
+			}
+			txids = append(txids, txid)
+			flags = append(flags, v)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return updated, missing, err
+		}
+		if len(txids) > 0 {
+			tag, err := s.db.Exec(ctx, `UPDATE outputs o SET coinbase = v.cb
+				FROM unnest($1::bytea[], $2::boolean[]) AS v(txid, cb)
+				WHERE o.txid = v.txid AND o.coinbase IS NULL`, txids, flags)
+			if err != nil {
+				return updated, missing, err
+			}
+			updated += tag.RowsAffected()
+		}
+		if n < batch {
+			return updated, missing, nil
+		}
+	}
 }
 
 func nullIfZero(n int) any {

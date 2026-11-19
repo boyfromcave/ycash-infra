@@ -136,6 +136,12 @@ pointed at it. Then re-run `load/run.sh <domain>:443` for the plan §4 EKS row.
   then `kubectl -n ycash rollout restart statefulset/ycash-ycashd deployment/ycash-lightwalletd deployment/ycash-yindex deployment/ycash-yindex-ingest`
   (External Secrets refreshes the Secret within `refreshInterval: 1h`; `kubectl annotate externalsecret ycashd-rpc force-sync=$(date +%s)` forces it).
 - **Grafana:** `kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80` (admin password in Secret `kube-prometheus-stack-grafana`).
+- **yindex schema changes** run themselves: the store applies `schema.sql` at every start (an
+  advisory lock serializes the pods), and a data migration runs in `yindex ingest` before it
+  ingests. The beta4 one (the `GetAddressUtxos` coinbase flag) adds `outputs.coinbase` and
+  backfills it from `txs.raw`; the serving pods answer un-backfilled rows from `txs.raw` meanwhile.
+  Check it with `kubectl -n ycash logs deploy/ycash-yindex-ingest | grep 'backfill coinbase'` and
+  `psql "$url" -c 'select count(*) from outputs where coinbase is null'` (0 when done).
 - **Scale:** `node_desired` in tfvars for nodes; `lightwalletd.autoscaling.max` for replicas; `ycashd.replicas` adds a node that syncs from scratch (hours).
 
 ## 7. Rollback

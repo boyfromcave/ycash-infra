@@ -66,6 +66,13 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "ingest":
+		// The beta4 coinbase-flag migration: schema.sql added the column (NULL on old rows) at
+		// Open; fill it before ingesting. A no-op once done; a failure restarts the pod.
+		if n, missing, err := st.BackfillCoinbase(ctx, 5000); err != nil {
+			log.Fatalf("backfill coinbase: %v", err)
+		} else if n > 0 || missing > 0 {
+			log.Printf("backfill coinbase: %d outputs set, %d transactions not stored (left NULL)", n, missing)
+		}
 		g := &ingest.Ingester{RPC: node, Store: st, Poll: 2 * time.Second}
 		go health(env("YINDEX_HTTP_ADDR", ":9071"), ready, metrics)
 		log.Fatal(g.Run(ctx))
