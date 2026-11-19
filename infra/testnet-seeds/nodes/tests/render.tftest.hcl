@@ -812,8 +812,8 @@ run "x402_host" {
       faucet            = { amount_zat = 10000000, daily_cap_zat = 1000000000, per_address = 1, per_ip = 1, pow_bits = 16, sweep_min_zat = 1000000, window_seconds = 86400 },
       faucet_image      = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", faucet_mem_limit_mb = 96,
       hostname          = "x402.example.org", node_mem_limit_mb = 1536, paid_per_minute = 120, price_broadcast_zat = 10000, price_exact_zat = 10000, unpaid_per_minute = 30,
-    proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444", tls = true, zero_conf_cap_zat = 100000 })
-    error_message = "the x402's config: name, contact, images, the D-10 prices, the faucet's limits, the memory limits"
+    proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444", shielded = null, tls = true, zero_conf_cap_zat = 100000 })
+    error_message = "the x402's config: name, contact, images, the D-10 prices, the faucet's limits, the memory limits; no private routes unless asked"
   }
   assert {
     condition     = length(aws_vpc_security_group_ingress_rule.p2p) == 0 && length(aws_vpc_security_group_ingress_rule.stratum) == 0 && length(aws_vpc_security_group_ingress_rule.explorer) == 0 && length(aws_vpc_security_group_ingress_rule.lightwallet) == 0 && jsonencode([for r in aws_vpc_security_group_ingress_rule.x402 : "${r.from_port}-${r.to_port} ${r.cidr_ipv4}"]) == jsonencode(["443-443 0.0.0.0/0"])
@@ -837,6 +837,7 @@ run "x402_plain_http_and_limits" {
         x402 = {
           hostname  = "x402.example.org", tls = false, price_exact_zat = 20000, conn_rate_limit = 30
           faucet    = { amount_zat = 50000000, pow_bits = 20 }
+          shielded  = { confirmations = 0 }
           api_image = "ghcr.io/example/x402-ycash-chain-api@sha256:8888888888888888888888888888888888888888888888888888888888888888", facilitator_image = "ghcr.io/example/x402-ycash-facilitator@sha256:9999999999999999999999999999999999999999999999999999999999999999"
         faucet_image = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" }
       }
@@ -850,6 +851,10 @@ run "x402_plain_http_and_limits" {
   assert {
     condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).x402.faucet) == jsonencode({ amount_zat = 50000000, daily_cap_zat = 1000000000, per_address = 1, per_ip = 1, pow_bits = 20, sweep_min_zat = 1000000, window_seconds = 86400 })
     error_message = "a partly given faucet keeps the other defaults"
+  }
+  assert {
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).x402.shielded) == jsonencode({ confirmations = 0, max_outstanding = 1000, note_wait_ms = 30000, price_zat = 10000 })
+    error_message = "the private routes: a partly given shielded keeps the other defaults"
   }
   assert {
     condition     = !contains(keys(jsondecode(base64decode(output.network_configs["yb-slow"]))), "x402") && strcontains(jsondecode(base64decode(output.network_configs["yb-slow"])).extra_args, "") && !strcontains(jsondecode(base64decode(output.network_configs["yb-slow"])).extra_args, "-exportdir") && jsonencode(sort(keys(aws_vpc_security_group_ingress_rule.p2p))) == jsonencode(["yb-slow 0.0.0.0/0"])
@@ -871,6 +876,14 @@ run "refuses_an_x402_placeholder_digest" {
     networks = { yb-fast = { profile = "fast", insight = true, x402 = { hostname = "x.example.org", api_image = "ghcr.io/example/a@sha256:0000000000000000000000000000000000000000000000000000000000000000", facilitator_image = "ghcr.io/example/f@sha256:9999999999999999999999999999999999999999999999999999999999999999", faucet_image = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
   }
   expect_failures = [aws_security_group.seed]
+}
+
+run "refuses_private_routes_deeper_than_the_facilitator_settles" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", insight = true, x402 = { hostname = "x.example.org", shielded = { confirmations = 2 }, api_image = "ghcr.io/example/a@sha256:8888888888888888888888888888888888888888888888888888888888888888", facilitator_image = "ghcr.io/example/f@sha256:9999999999999999999999999999999999999999999999999999999999999999", faucet_image = "ghcr.io/example/faucet@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", proxy_image = "docker.io/library/caddy@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [var.networks]
 }
 
 run "refuses_an_x402_image_by_tag" {

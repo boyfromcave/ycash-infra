@@ -80,7 +80,10 @@ case "$1" in
         if [ -n "${FAKE_PQ:-}" ]; then echo '{"isvalid":true,"isscript":false,"pqscheme":"falcon","ismine":true}'; else echo "{\"isvalid\":true,\"isscript\":false,\"ismine\":$m}"; fi; exit 0 ;;
       *" z_validateaddress "*) m=true; [ "${FAKE_NOTMINE:-}" != z ] || m=false; echo "{\"isvalid\":true,\"type\":\"sapling\",\"ismine\":$m}"; exit 0 ;;
       *" z_listaddresses "*) echo '[]'; exit 0 ;;
-      *" z_getnewaddress sapling "*) echo ytestsapling1fakefaucetaddressqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq; exit 0 ;;
+      # the faucet's Sapling address first; once it exists, the private routes' base address
+      *" z_getnewaddress sapling "*)
+        if [ -s "$SEEDCTL_ROOT/srv/ycash-data/yb-fast/x402/zaddr" ]; then echo ytestsapling1fakeprvaddressqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+        else echo ytestsapling1fakefaucetaddressqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq; fi; exit 0 ;;
       *" z_getbalance ytestsapling1"*) echo 12.5; exit 0 ;;
       *" z_getbalance "*) echo 0.0003; exit 0 ;;
       *" z_exportwallet "*) echo "/var/lib/ycash/export/${!#}"; exit 0 ;;
@@ -751,6 +754,39 @@ rm -f "$X/payto"
 if FAKE_PQ=1 "$SEEDCTL" apply yb-fast "$X4" 2>"$T/err"; then fail "a post-quantum payTo accepted"; fi
 grep -q 'is not a plain transparent address' "$T/err" || fail "a post-quantum payTo: $(cat "$T/err")"
 ok "refuses a payTo the wallet made post-quantum"
+# 15b. the private routes (x402.shielded): a base Sapling address of their own, a receipt key made
+#      on the host and kept, the registry directory shared by the API and the facilitator alone
+#      (their common group), both configured; refusals; turned off again
+SHC=$(echo "$X4C" | jq -c '.x402.shielded = {price_zat: 20000, confirmations: -1, max_outstanding: 500, note_wait_ms: 30000}')
+SHX=$(echo "$SHC" | b64)
+: > "$LOG"
+"$SEEDCTL" apply yb-fast "$SHX" 2>"$T/err" || { cat "$T/err"; fail "apply with the private routes"; }
+rk=$(cat "$X/secrets/receipt-key")
+[[ "$rk" =~ ^[0-9a-f]{64}$ ]] && [ "$(stat -c %a "$X/secrets/receipt-key")" = 600 ] && [ "$(stat -c %a "$X/facilitator.json")" = 400 ] \
+  && jq -e --arg rk "$rk" '.receiptKey == $rk and .issuedAddressRegistryPath == "/shielded/issued.json" and .shieldedMethods == ["sapling-proof"] and .saplingNoteWaitMs == 30000 and .confirmations == {minimum: -1, maximum: 1}' "$X/facilitator.json" >/dev/null \
+  || fail "the facilitator's private setup: the receipt key (made here, private), the shared registry: $(jq -c 'del(.rpc, .apiKey, .receiptKey)' "$X/facilitator.json")"
+! grep -rq "$rk" "$O" "$LOG" || fail "the receipt key reached a rendered file or a command line"
+[ -s "$X/zbase" ] && [ "$(cat "$X/zbase")" != "$(cat "$X/zaddr")" ] && [ "$(cat "$X/owned")" = "$(cat "$X/payto") $(cat "$X/zaddr") $(cat "$X/zbase")" ] \
+  || fail "the private routes' own base address, checked as the wallet's: $(cat "$X/owned" 2>/dev/null)"
+grep -qx 'API_ISSUED_REGISTRY=/shielded/issued.json' "$X/api.env" && grep -qx "API_SAPLING_BASE_ADDRESS=$(cat "$X/zbase")" "$X/api.env" && grep -qx 'API_SHIELDED_CONFIRMATIONS=-1' "$X/api.env" \
+  && grep -qx 'API_PRICE_SHIELDED_ZAT=20000' "$X/api.env" && grep -qx 'API_SHIELDED_MAX_OUTSTANDING=500' "$X/api.env" || fail "the API's private routes: $(sed 's/=.*//' "$X/api.env" | tr '\n' ' ')"
+[ "$(stat -c %a "$X/shielded")" = 2770 ] && [ "$(grep -c 'group_add: \["2011"\]' "$c")" = 2 ] && [ "$(grep -cF "$X/shielded:/shielded" "$c")" = 2 ] \
+  && awk '/^  (faucet|x402proxy|ycashd):$/ { s = 1 } /^  (api|facilitator):$/ { s = 0 } s && /shielded|group_add/ { bad = 1 } END { exit bad }' "$c" \
+  || fail "the registry directory: the API and the facilitator only, by their common group: $(grep -n -e shielded -e group_add "$c")"
+s=$("$SEEDCTL" status yb-fast)
+[ "$(echo "$s" | jq -r .x402.privateBase)" = "$(cat "$X/zbase")" ] || fail "status names the private routes' base: $s"
+"$SEEDCTL" apply yb-fast "$SHX" 2>/dev/null && [ "$(cat "$X/secrets/receipt-key")" = "$rk" ] || fail "the receipt key is kept across applies"
+ok "the private routes: their own base address, a receipt key made on the host and kept, the registry shared by the API and the facilitator alone"
+if FAKE_NOTMINE=z "$SEEDCTL" apply yb-fast "$SHX" 2>"$T/err"; then fail "a base address the wallet cannot spend accepted"; fi
+grep -q "the private routes' base address ytestsapling1fakeprv.* (NET/x402/zbase)" "$T/err" && ! grep -q 'container_name: x402api-' "$c" || fail "a base address not the wallet's: $(cat "$T/err")"
+"$SEEDCTL" apply yb-fast "$SHX" 2>/dev/null && grep -q 'container_name: x402api-yb-fast' "$c" || fail "the API returns once the wallet holds the base again"
+for bad in '.x402.shielded.confirmations = 2' '.x402.shielded.confirmations = -2' '.x402.shielded.price_zat = 0' '.x402.shielded.note_wait_ms = 70000' '.x402.shielded.max_outstanding = 0'; do
+  BADX=$(echo "$SHC" | jq -c "$bad" | b64)
+  if "$SEEDCTL" apply yb-fast "$BADX" 2>/dev/null; then fail "private routes accepted $bad"; fi
+done
+"$SEEDCTL" apply yb-fast "$X4" 2>/dev/null && ! grep -q '^API_ISSUED_REGISTRY=' "$X/api.env" && ! grep -q -e group_add -e '/shielded' "$c" && ! jq -e 'has("receiptKey")' "$X/facilitator.json" >/dev/null \
+  && [ "$(cat "$X/owned")" = "$(cat "$X/payto") $(cat "$X/zaddr")" ] || fail "the private routes turned off again"
+ok "the private routes refuse a policy deeper than the facilitator settles, bad prices and limits; a base the wallet cannot spend stops the API; off again cleanly"
 : > "$LOG"
 "$SEEDCTL" apply yb-fast "$FAST" 2>/dev/null
 grep -q 'network_mode: host' "$c" && ! grep -q x402proxy "$c" && grep -q 'docker rm -f facilitator-yb-fast x402api-yb-fast faucet-yb-fast x402proxy-yb-fast' "$LOG" && [ "$("$SEEDCTL" status yb-fast | jq 'has("x402")')" = false ] && [ -s "$X/zaddr" ] || fail "an x402 removed from the config"

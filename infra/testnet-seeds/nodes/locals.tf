@@ -166,6 +166,7 @@ locals {
       api_mem_limit_mb         = n.x402.api_mem_limit_mb
       facilitator_mem_limit_mb = n.x402.facilitator_mem_limit_mb
       faucet_mem_limit_mb      = n.x402.faucet_mem_limit_mb
+      shielded                 = n.x402.shielded
     } }
   ) }
 }
