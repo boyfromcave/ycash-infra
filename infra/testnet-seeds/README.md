@@ -366,10 +366,11 @@ node `-yellowbackpayoutaddress=<payout>`:
 ```hcl
       pool = {
         image  = "ghcr.io/<owner>/yolo@sha256:..."
-        payout = "sm..."                 # must be P2PKH (sm..., 35 characters) with a quote
+        payout = "sm..."                 # must be P2PKH (sm..., 35 characters) with a quote, unless payout_address is set
         quote = {
           image             = "ghcr.io/<owner>/ycash-quote@sha256:..."   # quote-image.yml
           poll_seconds      = 75         # default (the block time); 30-600: fetch and yed_setquote every poll
+          # payout_address  = "tqf..."   # optional: the tag's payout key, P2PKH or (beta4, tag v2) post-quantum
         }
       }
 ```
@@ -378,9 +379,13 @@ node `-yellowbackpayoutaddress=<payout>`:
   hash, and the Yellowback fees the tag earns are paid to P2PKH of it. The pool's node holds no
   wallet (`-disablewallet`); `-yellowbackpayoutaddress` (and `-mineraddress`) only name the
   address. Its key stays where the payout address was made (for the fast-testnet pool, the lead
-  architect's own wallet); never put it on the host or in a repository. Today's tag (version 1)
-  carries a P2PKH key hash, so the payout must be transparent P2PKH; a tag version 2 with a
-  post-quantum payout key is planned for beta4 (item 3f), and this check follows it then.
+  architect's own wallet); never put it on the host or in a repository. A tag version 1 carries a
+  P2PKH key hash; from beta4 (rpcversion 11) the node emits a tag version 2 for a post-quantum
+  payout key (`tqf…`/`tqs…`, the 32-byte key hash; the fees it earns are paid to that key's
+  post-quantum script). The node still refuses a post-quantum `-mineraddress`, so a post-quantum
+  payout key goes in `quote.payout_address` (`-yellowbackpayoutaddress`) and `payout` stays the
+  transparent address the coinbase pays. Without `payout_address` the tag names `payout`, which
+  must then be P2PKH. Use a post-quantum payout key only on a network whose nodes are beta4.
 - **Before Yellowback is active on the network** (testnet-yb-fast until its attestor set is compiled
   into the nodes, beta4 item 3e) the node ignores `-yellowbackpayoutaddress` (it logs that the
   Yellowback options are ignored), has no `yed_*` calls and emits no tag; the agent logs once that

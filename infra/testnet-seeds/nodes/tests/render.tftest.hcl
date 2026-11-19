@@ -335,6 +335,31 @@ run "pool_host_quotes" {
   }
 }
 
+# Tag v2 (beta4, rpcversion 11): a post-quantum payout key for the tag; the coinbase keeps the
+# transparent payout (the node refuses a post-quantum -mineraddress).
+run "pool_host_quotes_post_quantum_payout_key" {
+  variables {
+    networks = {
+      yb-fast = {
+        profile = "fast"
+        pool    = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", quote = { image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333", payout_address = "tqf2nmjZojm7A3NFNcDRhzZaGrW4Zq3YRc7aAJ91tG2qHhC3pvWYE" } }
+      }
+    }
+  }
+  assert {
+    condition     = endswith(jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args, "-disablewallet -mineraddress=smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb -minetolocalwallet=0 -yellowbackpayoutaddress=tqf2nmjZojm7A3NFNcDRhzZaGrW4Zq3YRc7aAJ91tG2qHhC3pvWYE")
+    error_message = "a quoting pool with payout_address: the coinbase pays payout, the tag names payout_address"
+  }
+}
+
+run "refuses_a_quote_payout_address_that_is_not_p2pkh_or_post_quantum" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", quote = { image = "ghcr.io/example/ycash-quote@sha256:3333333333333333333333333333333333333333333333333333333333333333", payout_address = "t2UNzUUx8mWBCRYPRezvA363EYXyEpHokyi" } } } }
+  }
+  expect_failures = [var.networks]
+}
+
 run "refuses_a_quote_poll_below_30" {
   command = plan
   variables {

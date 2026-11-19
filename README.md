@@ -79,12 +79,13 @@ where Ycash itself forked:
 The `ycashd` image is built from the workspace's `ycash6` tree as checked out, which is
 `upgrade/vault` (`make images`; `YCASH6=` points elsewhere). The post-quantum line
 (`upgrade/quantum-vaults`) has been merged into `upgrade/vault`, so those nodes answer
-`yed_getinfo` with `rpcversion` 9 (beta2: the scheme-visible post-quantum addresses) or 10
-(beta3), and `lightwalletd-dd` built from the same `upgrade/vault` accepts it (from beta3 it
-accepts 9 and 10, `MinRPCVersion..KnownRPCVersion`; before, exactly 9). The chart's arming Job
-accepts a node whose `rpcversion` is in `ycashd.rpcVersion..ycashd.rpcVersionMax`, by default
-9..10, so no `--set` is needed for these trees. For a lightwalletd-dd from before beta3 set
-`ycashd.rpcVersionMax=9`; for an older line, both values to the number `make line` prints.
+`yed_getinfo` with `rpcversion` 9 (beta2: the scheme-visible post-quantum addresses), 10
+(beta3) or 11 (beta4: the v2 coinbase price tag with a post-quantum payout key), and
+`lightwalletd-dd` built from the same `upgrade/vault` accepts it (`MinRPCVersion..KnownRPCVersion`:
+9..11 from beta4, 9..10 in beta3, exactly 9 before). The chart's arming Job accepts a node whose
+`rpcversion` is in `ycashd.rpcVersion..ycashd.rpcVersionMax`, by default 9..11, so no `--set` is
+needed for these trees. For a lightwalletd-dd from before beta4 set `ycashd.rpcVersionMax=10`
+(before beta3, `9`); for an older line, both values to the number `make line` prints.
 `yindex` indexes the
 post-quantum address forms (below), and the regtest arming Job creates the attestor set at the
 YED module's `BOND_MATURITY` (8 on regtest), above the post-quantum line's floor of 2.
@@ -150,10 +151,10 @@ main repo dirs `../ycash6`, `../ycash-dd` and `../lightwalletd-dd` (override `YC
 `LWD=`), on the branch `BRANCH` names (default `upgrade/vault`; `LINE=quantum` is shorthand for
 `BRANCH=upgrade/quantum-vaults`, `LINE=vault` for `upgrade/vault`). `make line` checks that each
 tree's HEAD contains `BRANCH`, that the ycashd trees speak one rpcversion and that
-lightwalletd-dd accepts it (`RPC_VERSION=10` requires that number), and prints it. lightwalletd-dd
-accepts the node rpcversions `MinRPCVersion..KnownRPCVersion` (9..10 from beta3), and the chart's
+lightwalletd-dd accepts it (`RPC_VERSION=11` requires that number), and prints it. lightwalletd-dd
+accepts the node rpcversions `MinRPCVersion..KnownRPCVersion` (9..11 from beta4), and the chart's
 arming Job refuses a node whose rpcversion is outside `ycashd.rpcVersion..ycashd.rpcVersionMax`
-(default 9..10: today's `upgrade/vault` trees speak 9, or 10 from beta3; for an older line set both
+(default 9..11: `upgrade/vault` trees speak 11 from beta4, 10 in beta3; for an older line set both
 to `make line`'s number). The node image needs
 `contrib/docker/ycashd/` (K0a) in the node tree; the first build is a full `zcutil/build.sh` and
 takes 1–2 h on a laptop (depends are cached in a Docker build-cache mount afterwards).
