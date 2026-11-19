@@ -50,7 +50,7 @@ func (s *Server) GetAddressUtxosStream(arg *walletrpc.GetAddressUtxosArg, srv wa
 	}
 	return s.Store.Utxos(srv.Context(), addrs, height(arg.StartHeight), int(arg.MaxEntries), func(u store.Utxo) error {
 		return srv.Send(&walletrpc.GetAddressUtxosReply{
-			Address: u.Address, Txid: u.Txid, Index: u.Vout, Script: u.Script, ValueZat: u.ValueZat, Height: uint64(u.Height), // #nosec G115 -- stored heights are block heights the ingester wrote from getblock, never negative
+			Coinbase: u.Coinbase, Address: u.Address, Txid: u.Txid, Index: u.Vout, Script: u.Script, ValueZat: u.ValueZat, Height: uint64(u.Height), // #nosec G115 -- stored heights are block heights the ingester wrote from getblock, never negative
 		})
 	})
 }

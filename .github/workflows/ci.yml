@@ -7,6 +7,13 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    services:
+      # a disposable Postgres for yindex's store and serve tests (YINDEX_TEST_PG_URL below)
+      postgres:
+        image: postgres:17-alpine@sha256:d3244e8ce3f165ee3c93d9c4a4b1d0fe48b3a89e2287b717fdcbbde92d405065
+        env: { POSTGRES_USER: yindex, POSTGRES_PASSWORD: yindex, POSTGRES_DB: yindex }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U yindex" --health-interval 2s --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with: { persist-credentials: false }
@@ -37,7 +44,10 @@ jobs:
       # the testnet services, offline: the faucet (both modes), the probe and status page, the state
       # bundle (the snapshotter's steps against a stand-in node, verify.py)
       - run: make services-test
-      - run: cd yindex && go vet ./... && go test ./... && go build ./...
+      # -p 1: the Postgres-backed tests of several packages share the one database and reset its schema
+      - run: cd yindex && go vet ./... && go test -p 1 ./... && go build ./...
+        env:
+          YINDEX_TEST_PG_URL: postgres://yindex:yindex@localhost:5432/yindex?sslmode=disable
   eks:
     # offline: terraform fmt/validate for infra/eks (the example root and the module), the module's terraform test
     # (mocked providers), the chart's EKS values through kubeconform with the CRD schemas; infra/testnet-seeds (ips,
