@@ -103,7 +103,8 @@ locals {
       n.pool.per_miner ? { coinbase_concurrency = n.pool.coinbase_concurrency, max_paired_per_ip = n.pool.max_paired_per_ip } : {},
       n.pool.min_block_interval > 0 ? { min_block_interval = n.pool.min_block_interval } : {},
     n.pool.quote == null ? {} : { quote = n.pool.quote })
-    prefix = n.testnet && n.bootstrap && var.prefix != null ? {
+    # a light attestor host has no node, so no chain to bootstrap
+    prefix = n.testnet && n.bootstrap && var.prefix != null && try(n.attestors.backend, "node") != "lightwalletd" ? {
       base_url    = local.profile_prefix[n.profile].base_url
       sums_sha256 = local.profile_prefix[n.profile].sums_sha256
       last_height = local.profile_prefix[n.profile].last_height
@@ -167,6 +168,21 @@ locals {
       facilitator_mem_limit_mb = n.x402.facilitator_mem_limit_mb
       faucet_mem_limit_mb      = n.x402.faucet_mem_limit_mb
       shielded                 = n.x402.shielded
+    } },
+    # The price attestor seats on this network (files/seedctl-attest). Only the public half of each seat
+    # (seq, member key): the keys reach the host by other means (README.md, "The attestors").
+    n.attestors == null ? {} : { attestors = {
+      image            = n.attestors.image
+      backend          = n.attestors.backend
+      lightwalletd     = n.attestors.lightwalletd
+      seats            = [for s in n.attestors.seats : { seq = s.seq, memberkey = s.memberkey }]
+      every_blocks     = n.attestors.every_blocks
+      heartbeat_blocks = n.attestors.heartbeat_blocks
+      peers            = n.attestors.peers
+      relays           = n.attestors.relays
+      cancel           = n.attestors.cancel
+      subscribe        = n.attestors.subscribe
+      mem_limit_mb     = n.attestors.mem_limit_mb
     } }
   ) }
 }

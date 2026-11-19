@@ -64,9 +64,12 @@ class Node:
                                       "statehash": node.vault_hash, "dbtip": {"hash": best, "height": node.height}},
                     "yed_getstatehash": {"height": node.height, "blockhash": best, "statehash": "y" * 64},
                     "getblockhash": node.block(p[0]) if m == "getblockhash" else None,
+                    "yed_listattestors": [{"seq": i, "status": "ELIGIBLE" if i < 8 else "DORMANT", "seated": i < 8} for i in range(9)],
+                    "yed_getattestations": [{"seq": i, "citedHeight": node.height - 2 - i, "fresh": i < 6} for i in range(7)],
+                    "yed_getinfo": {"attest": {"armed": True}},
                 }
                 err = None
-                if m == "yed_getstatehash" and not node.yed:
+                if m.startswith("yed_") and not node.yed:
                     err = {"code": -32601, "message": "Method not found"}
                 body = json.dumps({"result": res.get(m), "error": err, "id": req["id"]}).encode()
                 self.send_response(200)
@@ -135,6 +138,10 @@ class Probe(unittest.TestCase):
         s = P._state["status"]
         self.assertEqual((s["height"], s["peers"], s["agree"], s["seeds"]), (601, 7, True, {"up": 1, "total": 2}))
         self.assertEqual(s["vault"], {"activationHeight": 510400, "active": True})
+        f = s["feed"]
+        self.assertEqual((f["members"], f["byStatus"], f["seated"], f["fresh"], f["armed"], f["lastStatementAge"]),
+                         (9, {"ELIGIBLE": 8, "DORMANT": 1}, 8, 6, True, 2))
+        self.assertTrue(f["operator"].startswith("house-operated"))   # A-7: the feed is named house-operated
         self.assertNotIn("n0", json.dumps(s))          # no node names in the public summary
         self.assertNotIn("127.0.0.1", json.dumps(s))
 

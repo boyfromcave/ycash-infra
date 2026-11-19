@@ -26,6 +26,16 @@ async function refresh() {
     $("vaultheight").textContent = h === undefined || h === null ? "?" : h < 0 ? "not scheduled" : h;
     $("vaultactive").textContent = s.vault?.active === true ? "yes" : s.vault?.active === false ? "no" : "?";
     $("set").textContent = s.attestorSet || "none yet";
+    const f = s.feed;
+    $("feedcard").hidden = !f;
+    if (f) {
+      $("feedop").textContent = f.operator || "";
+      $("feedmembers").textContent = `${f.members} (${Object.entries(f.byStatus || {}).map(([k, v]) => `${v} ${k.toLowerCase()}`).join(", ")})`;
+      $("feedseated").textContent = f.seated;
+      $("feedfresh").textContent = f.fresh;
+      $("feedage").textContent = f.lastStatementAge === null ? "none yet" : `${f.lastStatementAge} blocks ago`;
+      flag($("feedarmed"), f.armed ?? null, "yes", "no");
+    }
     $("release").textContent = s.release || "not named";
     $("version").textContent = s.version || "?";
     const b = s.bundle;

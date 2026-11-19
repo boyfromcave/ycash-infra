@@ -24,7 +24,11 @@ The probe, per round: `getblockchaininfo`, `getblockheader`, `getconnectioncount
 nodes' common height (do they hold the same block?); the vault and YED state hashes between nodes whose
 state is at the same block (the testnet plan §6.4 cross-line check: ycash6 against ycash-dd); a P2P
 `version` message to every seed in `SEEDS`, answered in this network's magic (`MAGIC`) or not; the
-latest state bundle's manifest (`BUNDLE_MANIFEST_URL`). Its metrics:
+latest state bundle's manifest (`BUNDLE_MANIFEST_URL`); and, where Yellowback is live, the price feed as
+the lead node sees it (`yed_listattestors`, `yed_getattestations`, `yed_getinfo`: members by status, seated,
+seats with a fresh statement, ARMED, the newest statement's age in blocks), which the page shows in a
+"price feed" card named by `FEED_OPERATOR` (default: house-operated, the Ycash developers' nine seats on
+three hosts; workspace `docs/plans/beta4/price-feed.md` A-7). Its metrics:
 
 | Metric | Meaning |
 |---|---|

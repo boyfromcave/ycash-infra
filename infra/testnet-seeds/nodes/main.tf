@@ -37,12 +37,13 @@ locals {
   # than in user_data, which EC2 caps at 16 KB and which setup.sh and seedctl fill: the prefix tools,
   # and for an explorer seedctl's explorer half and, in build mode, the Inzyght build context; for a
   # lightwallet seedctl's lightwallet half; for an x402 host seedctl's x402 half; for a pool with
-  # quotes seedctl's quote half.
+  # quotes seedctl's quote half; for attestors seedctl's attest half.
   any_explorer = anytrue([for k, n in local.enabled : n.explorer != null])
   any_build    = anytrue([for k, n in local.enabled : try(n.explorer.build, null) != null])
   any_lw       = anytrue([for k, n in local.enabled : n.lightwallet != null])
   any_x4       = anytrue([for k, n in local.enabled : n.x402 != null])
   any_quote    = anytrue([for k, n in local.enabled : try(n.pool.quote, null) != null])
+  any_attest   = anytrue([for k, n in local.enabled : n.attestors != null])
   host_files = merge(
     var.prefix == null ? {} : {
       "prefix-restore.sh" = { mode = "0755", content = local.restore_sh }
@@ -53,6 +54,7 @@ locals {
     local.any_lw ? { "seedctl-lightwallet" = { mode = "0644", content = file("${path.module}/files/seedctl-lightwallet") } } : {},
     local.any_x4 ? { "seedctl-x402" = { mode = "0644", content = file("${path.module}/files/seedctl-x402") } } : {},
     local.any_quote ? { "seedctl-quote" = { mode = "0644", content = file("${path.module}/files/seedctl-quote") } } : {},
+    local.any_attest ? { "seedctl-attest" = { mode = "0644", content = file("${path.module}/files/seedctl-attest") } } : {},
   )
 
   # /opt/ycash-seed/seed.env: the host's own settings only (no network, no image). Every value is

@@ -1,0 +1,473 @@
+#!/bin/bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
+# seedctl-attest: the price-attestor half of seedctl (sourced by seedctl, never run by itself). A
+# network whose config has `attestors` runs Yellowback price attestor seats (README.md, "The
+# attestors"; workspace docs/plans/beta4/price-feed.md §2, item 3c): one yellowback-attest agent per
+# seat (container attest-SEQ-NET, images/attest), each naming its seq, and with `subscribe` one
+# subscribe agent (attsub-NET) that feeds what the topic carries into this host's node, so the node's
+# pool holds every seat's statements (the monitoring view, and a node a wallet can build bundles on).
+#
+# Two backends:
+#   node          (now) the agents ask this host's ycashd to sign (yed_signattestation): the seat keys
+#                 live in the node's wallet, the equivocation guard in <datadir>/yellowback/
+#                 attest-signed.dat, both on the data volume. The node keeps its wallet (no
+#                 -disablewallet) and accepts no inbound P2P.
+#   lightwalletd  (the light attestor, plan D-6, B-T3: not built yet) no node on the host: each agent
+#                 holds its seat key and its guard file in its own state directory and reads the chain
+#                 from two lightwalletd-dd endpoints. seedctl renders the [backend] table below and
+#                 refuses to start an image whose agent does not accept it (check-config), so the switch
+#                 is safe to set before B-T3 lands.
+#
+# Keys never come from Terraform, user_data, SSM parameters or git: they are generated on the host
+# (attest-newkey) or delivered to it by an operator over an SSM session (attest-import), and leave it
+# only through attest-export, as a root-only file the operator copies off (README.md, "The attestors":
+# "Seat keys"). One key on one host only: a key on two hosts signs two prices for one height and loses
+# its bond (EQV-1). The config names the seats this host may hold (seq and member key, both public);
+# attest-import refuses any other key.
+#
+# Commands (seedctl's dispatcher):
+#   attest-import NET FILE   import a ceremony seat file (<network>-seat-N.json) or an attest-export
+#                            bundle (keys and the guard file); the file is deleted once imported
+#   attest-newkey NET        a fresh seat key in the node's wallet: prints its address and member key
+#   attest-export NET        the held seat keys and the guard file, one root-only file; prints its path
+#   attest-fund NET          the wallet's fee address (heartbeats, cancels) and its balance
+#   attest-health NET [MAX]  exit 1 when a configured seat is not live (agent down, key not held, last
+#                            statement older than MAX blocks, default 2 x every_blocks + ref_lag)
+# shellcheck disable=SC2034  # variables used by seedctl, which sources this file
+# shellcheck disable=SC2154  # D, O, R, SEED_NAME, cfg, die, log, cli, dinspect, imds_guard, install_conf, compose, compose_up, wait_rpc, at_of: seedctl's
+
+UID_ATTEST=2006              # the attest image's user (images/attest/Dockerfile: useradd --uid 2006)
+AT_REF_LAG=2                 # the agent's default citedHeight = tip - ref_lag (attest.toml.sample)
+
+at_light() { at_light_of "$1"; }   # config file: the lightwalletd backend (seedctl's at_light_of)
+
+attest_check() { # file name
+  jq -e '
+    def digest: test("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$");
+    def whole($lo; $hi): type == "number" and . >= $lo and . <= $hi and . == floor;
+    .attestors as $a
+    | (.node_args | test("(^| )-regtest( |$)")) as $rt
+    | (.network == "testnet" or $rt)
+    and (.pool == null and .explorer == null and .lightwallet == null and .x402 == null)
+    and ($a.image | digest)
+    and (($a.backend // "node") | test("^(node|lightwalletd)$"))
+    and ($a.seats | type == "array" and length <= 15)
+    and ($a.seats | all((.seq | whole(0; 65535)) and (.memberkey | test("^0[23][0-9a-f]{64}$"))))
+    and (($a.seats | map(.seq) | unique | length) == ($a.seats | length))
+    and (($a.seats | map(.memberkey) | unique | length) == ($a.seats | length))
+    and (($a.every_blocks // 10) | whole(1; 1000))
+    and (($a.heartbeat_blocks // 576) | whole(0; 100000))
+    and (($a.peers // []) | all(test("^[0-9a-f]{64}$")))
+    and (($a.relays // []) | all(test("^(none|https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?)$")))
+    and (($a.cancel // false) | type == "boolean")
+    and (($a.subscribe // false) | type == "boolean")
+    and (($a.mem_limit_mb // 128) | whole(64; 4096))
+    and (if ($a.backend // "node") == "lightwalletd" then
+          ($a.lightwalletd | type == "array" and length == 2 and (unique | length) == 2
+            and all(test("^https://[a-z0-9.-]+(:[0-9]{1,5})?$")))
+          and .prefix == null
+        else ($a.lightwalletd // [] | length) == 0 end)
+    # regtest only (the local rehearsal, tests/attestors-regtest.sh: network "mainnet", node_args
+    # -regtest, which the module never emits): the dir transport and a mock price
+    and (($a.bus == null and $a.mock_price == null) or ($rt
+          and ($a.bus | type == "string" and test("^/[A-Za-z0-9._/-]+$"))
+          and ($a.mock_price == null or ($a.mock_price | test("^[0-9]{1,6}(\\.[0-9]{1,6})?$")))))
+  ' "$1" >/dev/null || die "config for $2: its attestors are not valid"
+}
+
+# The node's network directory inside its datadir (where wallet.dat and yellowback/ live).
+at_netdir() { # config file
+  if cfg "$1" .node_args | grep -qE '(^| )-regtest( |$)'; then echo regtest; return 0; fi
+  case "$(cfg "$1" .network)/$(cfg "$1" .profile)" in
+    testnet/fast) echo testnet-yb-fast ;;
+    testnet/slow) echo testnet-yb-slow ;;
+    testnet/legacy) echo testnet-legacy ;;
+    *) die "attestors: no network directory for $(cfg "$1" .network)/$(cfg "$1" .profile)" ;;
+  esac
+}
+
+at_seqs() { cfg "$1" '.attestors.seats[].seq'; }   # config file
+
+# A TOML string array from a JSON array (values already checked to a quote-free character set).
+at_toml_list() { jq -r '"[" + (map("\"" + . + "\"") | join(", ")) + "]"'; }
+
+# NET/attest/seat-SEQ.toml (the host part of one seat's configuration: readable by the agent's uid
+# only, it holds the node's RPC password), NET/attest/seat-SEQ/ (the agent's state: its iroh key, its
+# cancel state; on the data volume, so a new instance keeps the agent's endpoint id).
+at_render_seat() { # net file seq
+  local net=$1 f=$2 seq=$3 A="$D/$1/attest" peers relays light=0
+  at_light "$f" && light=1
+  peers=$(cfg "$f" '.attestors.peers // []' | at_toml_list)
+  relays=$(cfg "$f" '.attestors.relays // []' | at_toml_list)
+  mkdir -p "$A/seat-$seq"
+  ( umask 077
+    if [ "$light" = 1 ]; then
+      # the light attestor (B-T3): the agent signs itself, from its own key and guard files
+      printf '[backend]\nkind = "lightwalletd"\nendpoints = %s\nkey_file = "/var/lib/yellowback-attest/seat.key"\nguard_file = "/var/lib/yellowback-attest/attest-signed.dat"\n\n' \
+        "$(cfg "$f" '.attestors.lightwalletd' | at_toml_list)"
+    else
+      # shellcheck source=/dev/null
+      . "$D/$net/rpc.env"
+      printf '[node]\nrpc_url = "http://127.0.0.1:%s"\nrpc_user = "%s"\nrpc_password = "%s"\n\n' \
+        "$(cfg "$f" .rpc_port)" "$YCASHD_RPC_USER" "$YCASHD_RPC_PASSWORD"
+    fi
+    printf '[attest]\nseq = %s\nevery_blocks = %s\nheartbeat_blocks = %s\nref_lag = %s\n\n' \
+      "$seq" "$(cfg "$f" '.attestors.every_blocks // 10')" "$(cfg "$f" '.attestors.heartbeat_blocks // 576')" "$AT_REF_LAG"
+    if [ "$(cfg "$f" '.attestors.bus // ""')" != "" ]; then
+      printf '[transport]\nkind = "dir"\npath = "/var/lib/yellowback-attest-bus"\n\n'
+    else
+      printf '[transport]\nkind = "iroh"\nsecret_key_file = "/var/lib/yellowback-attest/iroh.key"\npeers = %s\nrelays = %s\n\n' "$peers" "$relays"
+    fi
+    printf '[cancel]\nenabled = %s\nstate_file = "/var/lib/yellowback-attest/cancel.json"\ndirect_secret_key_file = "/var/lib/yellowback-attest/direct.key"\n' \
+      "$(cfg "$f" '.attestors.cancel != false')"
+  ) > "$A/seat-$seq.toml.new"
+  at_own "$A/seat-$seq.toml.new" "$A/seat-$seq"
+  chmod 0400 "$A/seat-$seq.toml.new"
+  install_conf "$net" "attest-$seq" "$A/seat-$seq.toml.new" "$A/seat-$seq.toml"
+}
+
+at_render_subscribe() { # net file
+  local net=$1 f=$2 A="$D/$1/attest"
+  mkdir -p "$A/subscribe"
+  ( umask 077
+    # shellcheck source=/dev/null
+    . "$D/$net/rpc.env"
+    printf '[node]\nrpc_url = "http://127.0.0.1:%s"\nrpc_user = "%s"\nrpc_password = "%s"\n\n' \
+      "$(cfg "$f" .rpc_port)" "$YCASHD_RPC_USER" "$YCASHD_RPC_PASSWORD"
+    if [ "$(cfg "$f" '.attestors.bus // ""')" != "" ]; then
+      printf '[transport]\nkind = "dir"\npath = "/var/lib/yellowback-attest-bus"\n'
+    else
+      printf '[transport]\nkind = "iroh"\nsecret_key_file = "/var/lib/yellowback-attest/iroh.key"\npeers = %s\nrelays = %s\n' \
+        "$(cfg "$f" '.attestors.peers // []' | at_toml_list)" "$(cfg "$f" '.attestors.relays // []' | at_toml_list)"
+    fi
+  ) > "$A/subscribe.toml.new"
+  at_own "$A/subscribe.toml.new" "$A/subscribe"
+  chmod 0400 "$A/subscribe.toml.new"
+  install_conf "$net" attsub "$A/subscribe.toml.new" "$A/subscribe.toml"
+}
+
+at_own() { # paths...: the agent's uid owns them (root on a host; the scratch user in the offline test)
+  if [ "$(id -u)" = 0 ]; then chown "$UID_ATTEST:$UID_ATTEST" "$@"; fi
+  chmod 0700 "${@:2}" 2>/dev/null || true
+}
+
+# One compose service (attest-SEQ or attsub) beside the node, host networking (the node's RPC on
+# 127.0.0.1), read-only, no capabilities; its state directory is the one writable path. SIGINT: the
+# agent stops cleanly on it (ctrl-c), not on SIGTERM.
+at_service() { # net file service container state-dir toml command-json
+  local f=$2 dep="" bus="" mock=""
+  at_light "$f" || dep="
+    depends_on: [ycashd]"
+  if [ "$(cfg "$f" '.attestors.bus // ""')" != "" ]; then bus=", \"$(cfg "$f" .attestors.bus):/var/lib/yellowback-attest-bus\""; fi
+  if [ "$(cfg "$f" '.attestors.mock_price // ""')" != "" ]; then mock=", \"$D/$1/attest/mock-price:/etc/yellowback-attest/price:ro\""; fi
+  cat >> "$O/net/$1/compose.yaml" <<YAML
+  $3:
+    image: $(cfg "$f" .attestors.image)
+    container_name: $4
+    restart: unless-stopped
+    network_mode: host$dep
+    user: "$UID_ATTEST:$UID_ATTEST"
+    read_only: true
+    tmpfs: ["/tmp:size=1m,mode=0700,uid=$UID_ATTEST,gid=$UID_ATTEST"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: $(cfg "$f" '.attestors.mem_limit_mb // 128')m
+    volumes: ["$6:/etc/yellowback-attest/host.toml:ro", "$5:/var/lib/yellowback-attest"$bus$mock]
+    command: $7
+    stop_signal: SIGINT
+    stop_grace_period: 20s
+    logging: { driver: json-file, options: { max-size: 20m, max-file: "4" } }
+YAML
+}
+
+render_attestors() { # net file
+  local net=$1 f=$2 A="$D/$1/attest" seq cmd
+  imds_guard "$UID_ATTEST"
+  mkdir -p "$A"
+  if at_light "$f"; then
+    # no node on a light seat host: the compose project is the agents alone
+    printf 'name: ycash-%s\nservices:\n' "$net" > "$O/net/$net/compose.yaml"
+  fi
+  if [ "$(cfg "$f" '.attestors.mock_price // ""')" != "" ] && [ ! -e "$A/mock-price" ]; then
+    cfg "$f" .attestors.mock_price > "$A/mock-price"; chmod 0644 "$A/mock-price"
+  fi
+  cmd='["attest"]'
+  [ "$(cfg "$f" '.attestors.mock_price // ""')" = "" ] || cmd='["attest", "--mock-price", "/etc/yellowback-attest/price"]'
+  for seq in $(at_seqs "$f"); do
+    at_render_seat "$net" "$f" "$seq"
+    at_service "$net" "$f" "attest-$seq" "attest-$seq-$net" "$A/seat-$seq" "$A/seat-$seq.toml" "$cmd"
+  done
+  if ! at_light "$f" && [ "$(cfg "$f" '.attestors.subscribe != false')" = true ]; then
+    at_render_subscribe "$net" "$f"
+    at_service "$net" "$f" attsub "attsub-$net" "$A/subscribe" "$A/subscribe.toml" '["subscribe"]'
+  fi
+}
+
+# Before compose up on a light seat host: the image must accept the [backend] table (the light
+# attestor, B-T3). An image without it refuses an unknown table (exit 2): say so instead of starting
+# agents that exit at once.
+attest_preflight() { # net file
+  local net=$1 f=$2 seq
+  at_light "$f" || return 0
+  seq=$(at_seqs "$f" | head -n 1)
+  [ -n "$seq" ] || return 0
+  docker run --rm --network none --user "$UID_ATTEST:$UID_ATTEST" -v "$D/$net/attest/seat-$seq.toml:/etc/yellowback-attest/host.toml:ro" \
+    "$(cfg "$f" .attestors.image)" check-config >/dev/null 2>&1 \
+    || die "$net: this attest image does not accept the lightwalletd backend (the light attestor, workspace docs/plans/beta4/price-feed.md B-T3); keep backend = \"node\" until an image with it is published"
+}
+
+# Containers of seats no longer configured (and the subscribe agent once turned off) go; their state
+# directories stay (a seat may come back).
+attest_prune() { # net file
+  local net=$1 f=$2 c seq keep
+  keep=" $(at_seqs "$f" | tr '\n' ' ')"
+  for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E "^attest-[0-9]+-$net\$" || true); do
+    seq=${c#attest-}; seq=${seq%%-*}
+    case "$keep" in *" $seq "*) ;; *) docker rm -f "$c" >/dev/null 2>&1 || true; log "$net: seat $seq is no longer configured here: its agent stopped" ;; esac
+  done
+  if at_light "$f" || [ "$(cfg "$f" '.attestors.subscribe != false')" != true ]; then docker rm -f "attsub-$net" >/dev/null 2>&1 || true; fi
+}
+
+# ---- reset: the chain goes, the seat keys (the node's wallet) and the guard file stay ----------
+# A reset deletes NET/node. The wallet holds the seat keys and yellowback/attest-signed.dat records
+# every price this host's keys signed: losing either loses the seat or invites equivocation. They
+# move to NET/attest/keep and come back after the bootstrap (apply), as an x402 host's faucet wallet does.
+attest_keep() { # net file
+  local N="$D/$1/node" K="$D/$1/attest/keep" nd w
+  at_light "$2" && return 0
+  nd=$(at_netdir "$2")
+  [ -z "$(find "$K" -mindepth 1 -print -quit 2>/dev/null)" ] \
+    || die "$1: $K still holds a wallet or guard file from an earlier reset that never returned; move it back by hand (README, \"The attestors\") before another reset"
+  mkdir -p "$K"
+  for w in "$nd/wallet.dat" "$nd/yellowback/attest-signed.dat"; do
+    [ -e "$N/$w" ] || continue
+    mkdir -p "$K/$(dirname "$w")"; mv -f "$N/$w" "$K/$w"
+  done
+}
+attest_restore() { # net file (after the bootstrap)
+  local N="$D/$1/node" K="$D/$1/attest/keep" w rel
+  [ -d "$K" ] || return 0
+  while IFS= read -r w; do
+    rel=${w#"$K"/}
+    if [ -e "$N/$rel" ]; then die "$1: $N/$rel exists, so the kept $K/$rel did not return; resolve it by hand"; fi
+    mkdir -p "$N/$(dirname "$rel")"; mv -f "$w" "$N/$rel"
+  done < <(find "$K" -type f \( -name wallet.dat -o -name attest-signed.dat \))
+  find "$K" -depth -type d -empty -delete
+  log "$1: the seat keys (wallet) and the signing guard are back in the datadir"
+}
+
+# ---- status and health -------------------------------------------------------------------------
+# attestors in status: the backend, Yellowback's state at this node, the wallet's fee balance, and per
+# seat its agent's container, whether the wallet holds its key, its member record (status, seated,
+# lastAct, poolFresh) and the age of its newest statement in this node's pool (blocks since its
+# citedHeight; the subscribe agent puts every seat's statements there). `others` lists the set's other
+# members the same way (the network's view from this host). null fields where the node cannot say.
+attest_status() { # net
+  local net=$1 f="$D/$1/applied.json" info="{}" members="[]" pool="[]" held="{}" heldseqs="[]" bal=null a seats st m k
+  if ! at_light "$f"; then
+    info=$(cli "$net" yed_getinfo 2>/dev/null | jq -c '{height, armed: .attest.armed, attestStatus: .attest.status, seatedCount: .attest.seatedCount, setId: .params.attestorSetId}' 2>/dev/null) || info='{}'
+    [ -n "$info" ] || info='{}'
+    members=$(cli "$net" yed_listattestors 2>/dev/null | jq -c 'map({seq, key: .attestorPubKey, addr: .bondKeyAddress, status, seated, lastAct, poolFresh, lastBundleHeight})' 2>/dev/null) || members='[]'
+    # every member of the set whose key this wallet holds, configured here or not (the inventory check:
+    # a seq held on two hosts is one key on two hosts)
+    for k in $(jq -r '.[] | select(.addr != null) | "\(.seq):\(.addr)"' <<<"$members"); do
+      if [ "$(cli "$net" validateaddress "${k#*:}" 2>/dev/null | jq -r '.ismine == true' 2>/dev/null)" = true ]; then
+        heldseqs=$(jq -c --argjson s "${k%%:*}" '. + [$s]' <<<"$heldseqs")
+      fi
+    done
+    pool=$(cli "$net" yed_getattestations 2>/dev/null | jq -c 'group_by(.seq) | map({seq: .[0].seq, cited: (map(.citedHeight) | max), price: (max_by(.citedHeight).priceMicroUsd)})' 2>/dev/null) || pool='[]'
+    bal=$(cli "$net" getbalance 2>/dev/null | jq -c '. * 100000000 | round' 2>/dev/null) || bal=null
+    [ -n "$bal" ] || bal=null
+    held='{}'
+    for k in $(cfg "$f" '.attestors.seats[].memberkey'); do
+      a=$(jq -r --arg k "$k" '.[$k] // empty' "$D/$net/attest/keys.json" 2>/dev/null || true)
+      m=false
+      if [ -n "$a" ] && [ "$(cli "$net" validateaddress "$a" 2>/dev/null | jq -r --arg k "$k" '.ismine == true and .pubkey == $k' 2>/dev/null)" = true ]; then m=true; fi
+      held=$(jq -c --arg k "$k" --argjson m "$m" '. + {($k): $m}' <<<"$held")
+    done
+  else
+    for k in $(cfg "$f" '.attestors.seats[] | "\(.seq):\(.memberkey)"'); do
+      [ -s "$D/$net/attest/seat-${k%%:*}/seat.key" ] && m=true || m=false
+      held=$(jq -c --arg k "${k#*:}" --argjson m "$m" '. + {($k): $m}' <<<"$held")
+    done
+  fi
+  st="{}"
+  for k in $(at_seqs "$f"); do
+    st=$(jq -c --arg s "$k" --arg c "$(dinspect '{{.State.Status}}' "attest-$k-$net" absent)" '. + {($s): $c}' <<<"$st")
+  done
+  seats=$(jq -cn --argjson cfg "$(jq -c .attestors "$f")" --argjson info "$info" --argjson members "$members" --argjson pool "$pool" \
+      --argjson held "$held" --argjson st "$st" '
+    def row($s): ($members | map(select(.seq == $s)) | first) as $m | ($pool | map(select(.seq == $s)) | first) as $p
+      | {status: ($m.status // null), seated: ($m.seated // null), poolFresh: ($m.poolFresh // null),
+         lastActAge: (if $m == null or $info.height == null then null else $info.height - $m.lastAct end),
+         lastStatementAge: (if $p == null or $info.height == null then null else $info.height - $p.cited end),
+         lastPriceMicroUsd: ($p.price // null)};
+    {mine: [$cfg.seats[] | {seq, memberkey: (.memberkey[0:12] + "…"), container: ($st[(.seq | tostring)] // "absent"), keyHeld: ($held[.memberkey] // false)} + row(.seq)],
+     others: [$members[] | select(.seq as $q | $cfg.seats | map(.seq) | index($q) | not) | {seq} + row(.seq)]}')
+  jq -cn --arg backend "$(cfg "$f" '.attestors.backend // "node"')" --arg image "$(cfg "$f" .attestors.image)" \
+    --arg sub "$(dinspect '{{.State.Status}}' "attsub-$net" absent)" --argjson info "$info" --argjson bal "$bal" \
+    --argjson seats "$seats" --argjson heldseqs "$heldseqs" --arg every "$(cfg "$f" '.attestors.every_blocks // 10')" '
+    {backend: $backend, image: $image, everyBlocks: ($every | tonumber), yellowback: (if $info.height == null then "inactive" else "live" end)}
+    + $info + {walletZat: $bal, subscribe: $sub, heldSeqs: $heldseqs} + $seats'
+}
+
+attest_health() { # net [max-age]
+  local net=$1 f="$D/$1/applied.json" s max bad
+  { [ -e "$f" ] && at_of "$f"; } || die "$net has no attestors on this host"
+  max=${2:-$(( $(cfg "$f" '.attestors.every_blocks // 10') * 2 + AT_REF_LAG ))}
+  [[ "$max" =~ ^[0-9]+$ ]] || die "attest-health: MAX is a number of blocks"
+  s=$(attest_status "$net")
+  bad=$(jq -r --argjson max "$max" '
+    if .yellowback != "live" and .backend == "node" then ["Yellowback is not live at this node (no attestor set, or the node is still syncing)"] else
+    [.mine[] | . as $r
+      | (if $r.container != "running" then "seat \($r.seq): agent \($r.container)" else empty end),
+        (if $r.keyHeld != true then "seat \($r.seq): key not held here" else empty end),
+        (if $r.lastStatementAge == null then "seat \($r.seq): no statement in the pool"
+         elif $r.lastStatementAge > $max then "seat \($r.seq): last statement \($r.lastStatementAge) blocks old (max \($max))" else empty end)]
+    end | .[]' <<<"$s")
+  echo "$s"
+  if [ -n "$bad" ]; then printf '%s\n' "$bad" | while IFS= read -r l; do log "$net: $l"; done; return 1; fi
+  log "$net: every seat live (statements at most $max blocks old)"
+}
+
+# The commands (seedctl's dispatcher hands every attest-* here).
+attest_cmd() { # cmd net [arg]
+  local c=$1; shift
+  case "$c" in
+    attest-import) [ $# -eq 2 ] || die "usage: seedctl attest-import NET FILE"; attest_import "$1" "$2" ;;
+    attest-newkey) [ $# -eq 1 ] || die "usage: seedctl attest-newkey NET"; attest_newkey "$1" ;;
+    attest-export) [ $# -eq 1 ] || die "usage: seedctl attest-export NET"; attest_export "$1" ;;
+    attest-fund)   [ $# -eq 1 ] || die "usage: seedctl attest-fund NET"; attest_fund "$1" ;;
+    attest-health) { [ $# -ge 1 ] && [ $# -le 2 ]; } || die "usage: seedctl attest-health NET [MAX_AGE_BLOCKS]"; attest_health "$1" "${2:-}" ;;
+    *) die "unknown command $c" ;;
+  esac
+}
+
+# ---- keys ----------------------------------------------------------------------------------------
+# NET/attest/keys.json: member key -> wallet address (public), for status and export.
+at_keymap_add() { # net memberkey address
+  local m="$D/$1/attest/keys.json"
+  [ -s "$m" ] || echo '{}' > "$m"
+  jq --arg k "$2" --arg a "$3" '. + {($k): $a}' "$m" > "$m.new" && mv -f "$m.new" "$m"
+}
+
+at_need_node() { # net: the attestor network is applied, node backend, its RPC answers
+  { [ -e "$D/$1/applied.json" ] && at_of "$D/$1/applied.json"; } || die "$1 has no attestors on this host (apply it first)"
+  if at_light "$D/$1/applied.json"; then return 1; fi
+  wait_rpc "$1" 120 || die "$1: the node's RPC does not answer"
+}
+
+attest_newkey() { # net
+  local net=$1 a k
+  at_need_node "$net" || die "$net: a light seat's key is made by the YEW core tools (B-T2), not by seedctl"
+  a=$(cli "$net" getnewaddress) || die "$net: getnewaddress failed"
+  k=$(cli "$net" validateaddress "$a" | jq -r .pubkey)
+  at_keymap_add "$net" "$k" "$a"
+  jq -cn --arg a "$a" --arg k "$k" '{address: $a, memberkey: $k, note: "born on this host; its key never leaves it except by attest-export. Join it to the set (set_join with this memberkey), then name it in this host'"'"'s seats"}'
+}
+
+# FILE: a ceremony seat file ({network, setid, seat, memberkey, address, wif, bondoutpoint}) or an
+# attest-export bundle ({format: "yellowback-attest-export/1", network, seats: [{memberkey, address,
+# wif}], guard_b64}). Every key must be one of this host's configured seats. The guard file of a
+# bundle returns only to a node where Yellowback is live (before that the node would refuse to start
+# with a wallet beside a yellowback/ directory), only where none exists or the same one exists, with
+# the node stopped (it reads the guard at startup), and before the keys. The file is deleted once imported.
+attest_import() { # net file
+  local net=$1 src=$2 f="$D/$1/applied.json" j nd n i k a w g N="$D/$1/node" light=0
+  [ -s "$src" ] || die "attest-import: $src is not a file"
+  j=$(jq -c . "$src" 2>/dev/null) || die "attest-import: $src is not JSON"
+  { [ -e "$f" ] && at_of "$f"; } || die "$net has no attestors on this host (apply it first)"
+  at_light "$f" && light=1
+  nd=$(at_netdir "$f")
+  # the ceremony names the network by its profile name (testnet-yb-fast, regtest), as the netdir is
+  [ "$(jq -r .network <<<"$j")" = "$nd" ] || die "attest-import: $src is for network $(jq -r .network <<<"$j"), this host's $net is $nd"
+  if jq -e '.format == "yellowback-attest-export/1"' >/dev/null <<<"$j"; then :; else
+    j=$(jq -c '{network, seats: [{memberkey, address, wif}], guard_b64: null}' <<<"$j")
+  fi
+  jq -e '.seats | length > 0 and all((.memberkey | test("^0[23][0-9a-f]{64}$")) and (.wif | test("^[1-9A-HJ-NP-Za-km-z]{50,53}$")) and (.address | test("^[1-9A-HJ-NP-Za-km-z]{26,40}$")))' >/dev/null <<<"$j" \
+    || die "attest-import: $src holds no well-formed seat key"
+  for k in $(jq -r '.seats[].memberkey' <<<"$j"); do
+    jq -e --arg k "$k" '.attestors.seats | map(.memberkey) | index($k) != null' "$f" >/dev/null \
+      || die "attest-import: member key ${k:0:12}… is not one of this host's configured seats (one key, one host: name it in the host's seats first)"
+  done
+  # the guard first, then the keys: with a key and no guard, an agent could sign a citedHeight the
+  # lost host already signed, at another price
+  g=$(jq -r '.guard_b64 // empty' <<<"$j")
+  if [ -n "$g" ] && [ "$light" = 0 ]; then
+    wait_rpc "$net" 120 || die "$net: the node's RPC does not answer"
+    cli "$net" yed_getinfo >/dev/null 2>&1 || die "$net: the bundle carries a guard file, but Yellowback is not live at this node yet; import the bundle once it is"
+    w="$N/$nd/yellowback/attest-signed.dat"
+    printf '%s' "$g" | base64 -d > "$D/$net/attest/guard.new" || die "attest-import: the bundle's guard is not base64"
+    if [ -s "$w" ] && ! cmp -s "$w" "$D/$net/attest/guard.new"; then
+      rm -f "$D/$net/attest/guard.new"
+      die "$net: this node already has a different guard file ($w); a host that signed on its own must not take another's guard. Fence one of them (README, \"The attestors\": \"Restoring a host\")"
+    fi
+    if [ ! -s "$w" ]; then
+      log "$net: stopping the node to put the guard file in place (it is read at startup)"
+      compose "$net" stop >/dev/null 2>&1 || true
+      mkdir -p "$(dirname "$w")"; mv -f "$D/$net/attest/guard.new" "$w"; chmod 0600 "$w"
+      if [ "$(id -u)" = 0 ]; then chown -R 2001:2001 "$(dirname "$w")"; fi
+      compose_up "$net" || die "$net: the stack did not start again"
+      wait_rpc "$net" 900 || die "$net: RPC did not answer within 15 minutes after the guard import"
+    fi
+    rm -f "$D/$net/attest/guard.new"
+  fi
+  n=$(jq '.seats | length' <<<"$j")
+  if [ "$light" = 1 ]; then
+    for ((i = 0; i < n; i++)); do
+      k=$(jq -r ".seats[$i].memberkey" <<<"$j"); w=$(jq -r ".seats[$i].wif" <<<"$j")
+      a=$(jq -r --arg k "$k" '.attestors.seats[] | select(.memberkey == $k) | .seq' "$f")
+      mkdir -p "$D/$net/attest/seat-$a"
+      ( umask 077; printf '%s\n' "$w" > "$D/$net/attest/seat-$a/seat.key" )
+      at_own "$D/$net/attest/seat-$a/seat.key"; chmod 0400 "$D/$net/attest/seat-$a/seat.key"
+      at_keymap_add "$net" "$k" "$(jq -r ".seats[$i].address" <<<"$j")"
+    done
+  else
+    wait_rpc "$net" 120 || die "$net: the node's RPC does not answer"
+    for ((i = 0; i < n; i++)); do
+      k=$(jq -r ".seats[$i].memberkey" <<<"$j"); a=$(jq -r ".seats[$i].address" <<<"$j")
+      # the WIF goes to ycash-cli on its standard input (-stdin), never on a command line; no rescan (a
+      # seat key holds no coins: its bond is a P2SH output the module tracks)
+      # shellcheck disable=SC2046  # node_args: whole words, checked by check_config
+      jq -r ".seats[$i].wif, \"seat\", \"false\"" <<<"$j" | docker exec -i "ycashd-$net" ycash-cli -datadir=/var/lib/ycash -conf=/var/lib/ycash/ycash.conf \
+        $(cfg "$f" .node_args) -stdin importprivkey >/dev/null || die "$net: importprivkey failed for ${k:0:12}…"
+      [ "$(cli "$net" validateaddress "$a" | jq -r --arg k "$k" '.ismine == true and .pubkey == $k')" = true ] \
+        || die "$net: after the import the wallet does not hold ${k:0:12}… at $a"
+      at_keymap_add "$net" "$k" "$a"
+    done
+  fi
+  rm -f "$src"
+  log "$net: imported $n seat key(s)$([ -n "$g" ] && echo " and the signing guard"); $src deleted"
+}
+
+attest_export() { # net
+  local net=$1 f="$D/$1/applied.json" nd out seats="[]" k a w g=""
+  at_need_node "$net" || die "$net: a light seat's files are NET/attest/seat-SEQ/seat.key and its guard: copy them with the state directory"
+  nd=$(at_netdir "$f")
+  for k in $(cfg "$f" '.attestors.seats[].memberkey'); do
+    a=$(jq -r --arg k "$k" '.[$k] // empty' "$D/$net/attest/keys.json" 2>/dev/null || true)
+    [ -n "$a" ] || continue
+    w=$(cli "$net" dumpprivkey "$a" 2>/dev/null) || continue
+    seats=$(jq -c --arg k "$k" --arg a "$a" --arg w "$w" '. + [{memberkey: $k, address: $a, wif: $w}]' <<<"$seats")
+  done
+  [ "$(jq length <<<"$seats")" -gt 0 ] || die "$net: the wallet holds none of this host's seat keys"
+  if [ -s "$D/$net/node/$nd/yellowback/attest-signed.dat" ]; then g=$(base64 -w0 < "$D/$net/node/$nd/yellowback/attest-signed.dat" 2>/dev/null || base64 < "$D/$net/node/$nd/yellowback/attest-signed.dat" | tr -d '\n'); fi
+  mkdir -p "$D/$net/attest/export"; chmod 0700 "$D/$net/attest/export"
+  out="$D/$net/attest/export/attest-$SEED_NAME-$(date -u +%Y%m%dT%H%M%SZ).json"
+  ( umask 077
+    jq -n --arg nd "$nd" --arg host "$SEED_NAME" --arg t "$(date -u +%FT%TZ)" --argjson seats "$seats" --arg g "$g" \
+      '{format: "yellowback-attest-export/1", network: $nd, host: $host, created: $t, seats: $seats, guard_b64: (if $g == "" then null else $g end)}' > "$out" )
+  log "$net: $(jq length <<<"$seats") seat key(s)$([ -n "$g" ] && echo " and the signing guard") exported"
+  jq -cn --arg p "$out" --arg h "$(sha256sum "$out" | cut -d' ' -f1)" '{path: $p, sha256: $h, note: "root-only; copy it off the host over the SSM session, keep it offline, then delete it here"}'
+}
+
+attest_fund() { # net
+  local net=$1 A="$D/$1/attest" a
+  at_need_node "$net" || die "$net: a light seat pays its fees from its own coins (B-T2)"
+  if [ ! -s "$A/fee-address" ]; then a=$(cli "$net" getnewaddress) || die "$net: getnewaddress failed"; echo "$a" > "$A/fee-address"; fi
+  jq -cn --arg a "$(cat "$A/fee-address")" --arg b "$(cli "$net" getbalance 2>/dev/null || echo null)" \
+    '{feeAddress: $a, balance: $b, note: "heartbeats and cancels are paid from this wallet: keep a few YEC here"}'
+}

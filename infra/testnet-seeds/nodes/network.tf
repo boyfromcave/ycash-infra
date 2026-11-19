@@ -94,7 +94,8 @@ resource "aws_security_group" "seed" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "p2p" {
-  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.lightwallet == null && n.x402 == null && (n.explorer == null || try(n.explorer.p2p_inbound, false))]), var.p2p_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
+  # an attestor host's node (or a light seat host, which has none) accepts no inbound P2P: it dials out
+  for_each = { for p in setproduct(sort([for k, n in local.enabled : k if n.lightwallet == null && n.x402 == null && n.attestors == null && (n.explorer == null || try(n.explorer.p2p_inbound, false))]), var.p2p_ingress_cidrs) : "${p[0]} ${p[1]}" => { net = p[0], cidr = p[1] } }
 
   security_group_id = aws_security_group.seed.id
   description       = "P2P ${each.value.net}"
