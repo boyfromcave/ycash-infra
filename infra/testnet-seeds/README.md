@@ -899,6 +899,7 @@ module "x402" {   # e.g. the operator's testnet-x402/nodes root, one host, fast 
         lightwalletd      = "<the light-wallet server>:443"                  # shown on the API's page
         # price_exact_zat = 10000, price_broadcast_zat = 10000, zero_conf_cap_zat = 100000   (D-10)
         # faucet = { amount_zat = 10000000, daily_cap_zat = 1000000000, pow_bits = 16, ... }
+        shielded = { price_zat = 10000, confirmations = -1 }   # the private routes (below); omit for none
       }
     }
   }
@@ -990,6 +991,39 @@ What an `x402` adds, per host (`files/seedctl-x402`, seedctl's x402 half):
   `API_LINK_FAUCET`, `API_LINK_EXPLORER`, `API_LINK_LIGHTWALLETD`. The facilitator: its JSON file
   (`testnetProfile`, confirmations from −1) and `/data`.
 - **The certificate contact** (`x402_acme_email`, optional) is handled as the explorer's.
+- **The private routes** (`x402.shielded`, off unless given). The API also sells every read route
+  under `/v1/private/…`, paid in shielded YEC with x402-ycash's `sapling-proof` method: each 402
+  names a fresh diversified Sapling address and a memo for that one request, the client sends
+  shielded YEC there (from a Sapling key and a light-wallet server: x402-ycash `x402-light`), and
+  presents the txid; the facilitator finds the note in the node's wallet, checks memo, amount and
+  depth, records the payment once and signs a receipt, before the answer (upfront). What the host
+  adds:
+  - **A base Sapling address of its own** (`x402/zbase`), made by the node's wallet with the other
+    two addresses and checked with them (`x402/owned` then holds all three); every private
+    request's address is a diversified address of it (`z_getnewdiversifiedaddress`, the API's only
+    wallet call besides the startup `z_validateaddress`). What agents pay privately stays on those
+    addresses in the faucet's wallet, apart from the faucet's own balance: it is not swept (testnet
+    coins; move it by hand with `z_sendmany` if ever wanted).
+  - **The receipt key** (`x402/secrets/receipt-key`, 0600, root): 32 random bytes made on the host
+    at the first apply with `shielded` (drawn again in the unlikely case they are not a valid
+    secp256k1 key), kept across applies, resets and redeploys so receipts stay verifiable; it
+    reaches the facilitator in its 0400 `facilitator.json` (`receiptKey`) and nowhere else. Like the
+    API key, it is never in a repository, a Terraform variable or a GitHub secret.
+  - **The issued-address registry** (`x402/shielded/issued.json`, mounted at `/shielded` in the API
+    and the facilitator only): a directory of group 2011, mode 2770 (setgid), which both containers
+    join (`group_add`); the API writes an issued request per private 402, the facilitator reads it
+    to settle. It keeps every address ever issued (an address is never issued twice).
+  - **Configuration.** The facilitator's file gains `receiptKey`, `issuedAddressRegistryPath`,
+    `shieldedMethods` (`["sapling-proof"]`) and `saplingNoteWaitMs` (`note_wait_ms`, 30 s: the
+    client broadcasts through another node, so its transaction takes a few seconds to reach this
+    one). The API's environment gains `API_ISSUED_REGISTRY`, `API_SAPLING_BASE_ADDRESS`,
+    `API_SHIELDED_CONFIRMATIONS` (`confirmations`: −1, the mempool, as the transparent routes; at
+    most 1, the facilitator's maximum), `API_PRICE_SHIELDED_ZAT` (`price_zat`) and
+    `API_SHIELDED_MAX_OUTSTANDING` (`max_outstanding`, 1000: issued requests held at once; each
+    unpaid private 402 issues one, so past it new private 402s fail until records expire, about
+    75 minutes after issue).
+  - **`status`** adds `privateBase` (the base address) and `privateIssued` (addresses issued so
+    far). The private routes are not probed: a probe's 402 would issue an address.
 
 ## Cost estimate
 

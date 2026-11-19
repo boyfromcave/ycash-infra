@@ -36,6 +36,8 @@ one from the pool. Nothing on the host is a dependency of any other service.
 | **Wrong network**: the services pointed at another testnet or at mainnet | Paying or settling on the wrong chain | The facilitator (`testnetProfile`) and the faucet (`FAUCET_PROFILE`) refuse unless the node reports this testnet profile (D-6); the module and seedctl refuse an `x402` on mainnet |
 | **Dust to payTo**: many tiny coins sent to the public payTo, so every sweep costs more in fees than it moves | The sweep stalls; what agents paid stops flowing back | The sweep never takes a coin below 5,000 zat (`SWEEP_DUST_ZAT`, the ZIP 317 marginal fee) and skips a merge that would not cover its fee, quietly; dust stays on payTo, the real payments are still swept (the largest 50 first) |
 | **Sweeping a payment still being settled** | A settle reading payTo's output with `gettxout` after the sweep spent it reports a paid payment as unseen | The sweep takes only coins two blocks deep (`SWEEP_MIN_CONF`, one deeper than the facilitator's `confirmations.maximum` of 1) and locks the younger ones around each merge |
+| **Private-402 flooding** (`x402.shielded`): unpaid requests to `/v1/private/…`, each of which makes the node's wallet issue a diversified address and the API write a registry record | Wallet and registry growth; once `max_outstanding` records are held, new private 402s fail (the transparent routes are unaffected) | The same limits as any 402 (`unpaid_per_minute` per client address, the connection limit); `max_outstanding` (1000) caps the records held at once, which expire about 75 minutes after issue (the request's 600 s plus the retention grace); parameters are checked before any address is issued; a wallet address costs a few hundred bytes. The registry keeps every address ever issued (by design: none is reused), so it grows with use: a few hundred bytes per private request |
+| **A private payment the facilitator does not see in time** | The agent paid (upfront) and got no answer | The facilitator waits `note_wait_ms` (30 s) for the note to reach the host's node; the API releases the payment's claim when settle fails, so the agent can present the same txid again for the same request until it expires (600 s); once settled, a payment is recorded for good and refused on any other request (409) |
 | **Scraping or reselling answers** | Nothing | Allowed: the data is public chain data (the note's "free-riding") |
 
 ## What is not covered
@@ -47,7 +49,9 @@ one from the pool. Nothing on the host is a dependency of any other service.
   `getnetworkinfo`, `getaddress*`, `vault_getinfo`, `yed_getinfo`, `yed_getprice`, `yed_getstats`),
   and the facilitator little more (`getnetworkinfo`, `getblockchaininfo`, `getblockcount`,
   `gettxout`, `yed_decodepayload`, `signrawtransaction` with no keys as a script check,
-  `sendrawtransaction`). A remote-code bug in either could still spend the faucet's whole wallet or
+  `sendrawtransaction`). With the private routes (`x402.shielded`) each also makes wallet calls:
+  the API `z_validateaddress` and `z_getnewdiversifiedaddress` (it issues addresses), the
+  facilitator `z_listreceivedbyaddress` (it finds the notes): a filter would pass those too. A remote-code bug in either could still spend the faucet's whole wallet or
   `stop` the node. ycashd 6.22 has no way to narrow a login: `-rpcauth` adds users, but every user
   may call every method (`src/httprpc.cpp`: `RPCAuthorized` / `multiUserAuthorized` only check the
   password; `src/rpc/server.cpp` has no per-user table; there is no `-rpcwhitelist`, which Bitcoin

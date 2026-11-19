@@ -167,6 +167,7 @@ locals {
       api_mem_limit_mb         = n.x402.api_mem_limit_mb
       facilitator_mem_limit_mb = n.x402.facilitator_mem_limit_mb
       faucet_mem_limit_mb      = n.x402.faucet_mem_limit_mb
+      shielded                 = n.x402.shielded
     } },
     # The price attestor seats on this network (files/seedctl-attest). Only the public half of each seat
     # (seq, member key): the keys reach the host by other means (README.md, "The attestors").

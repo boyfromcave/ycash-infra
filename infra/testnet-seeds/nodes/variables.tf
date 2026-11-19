@@ -168,6 +168,14 @@ variable "networks" {
     `faucet_mem_limit_mb`. The node's RPC is reachable from the API's, the facilitator's and the
     faucet's fixed addresses on the host's internal network only; nothing but the proxy publishes a
     port. One x402 per host: never beside a pool, an explorer or a lightwallet.
+    `shielded` (default none) adds the private routes (x402-ycash `sapling-proof`, /v1/private/…):
+    the node's wallet issues a fresh diversified address of a Sapling address made for them on the
+    host (NET/x402/zbase) per request, the API and the facilitator share the issued-address
+    registry, and the facilitator signs receipts with a key made on the host (NET/x402/secrets/
+    receipt-key; never in git or a GitHub secret). `price_zat` a private request's price,
+    `confirmations` the policy each request carries (-1 = the mempool, up to the facilitator's
+    maximum of 1), `max_outstanding` the issued requests held at once (each unpaid 402 issues one),
+    `note_wait_ms` how long a settle waits for the client's note to reach the host's node.
 
     `attestors` (default none) runs Yellowback price attestor seats on that network (README.md, "The
     attestors"; workspace docs/plans/beta4/price-feed.md §2, item 3c): one yellowback-attest agent per
@@ -288,6 +296,13 @@ variable "networks" {
       api_mem_limit_mb         = optional(number, 256)
       facilitator_mem_limit_mb = optional(number, 192)
       faucet_mem_limit_mb      = optional(number, 96)
+      # the private routes (sapling-proof); null = transparent routes only
+      shielded = optional(object({
+        price_zat       = optional(number, 10000) # 0.0001 testnet YEC a private request
+        confirmations   = optional(number, -1)    # the mempool, as the transparent routes
+        max_outstanding = optional(number, 1000)
+        note_wait_ms    = optional(number, 30000)
+      }))
     }))
     attestors = optional(object({
       image            = string
@@ -434,6 +449,15 @@ variable "networks" {
       n.x402.faucet_mem_limit_mb >= 32 && n.x402.faucet_mem_limit_mb <= 4096 && floor(n.x402.faucet_mem_limit_mb) == n.x402.faucet_mem_limit_mb
     )])
     error_message = "networks: an x402 needs insight = true, a testnet profile, no pool, explorer or lightwallet; hostname a lowercase DNS name; api_image, facilitator_image, faucet_image and proxy_image pinned by digest; explorer_url empty or https://host[/path]; lightwalletd empty or host[:port]; prices and zero_conf_cap_zat 1-100000000 zat; rate limits 1-100000; faucet: amount_zat 1-10000000000, daily_cap_zat at least amount_zat, per_ip and per_address 1-1000, window_seconds 60-2592000, pow_bits 0-28, sweep_min_zat 1-10000000000; node_mem_limit_mb 512-65536, api and facilitator 64-8192, faucet 32-4096; whole numbers."
+  }
+  validation {
+    condition = alltrue([for k, n in var.networks : n.x402 == null ? true : n.x402.shielded == null ? true : (
+      n.x402.shielded.price_zat >= 1 && n.x402.shielded.price_zat <= 100000000 && floor(n.x402.shielded.price_zat) == n.x402.shielded.price_zat &&
+      n.x402.shielded.confirmations >= -1 && n.x402.shielded.confirmations <= 1 && floor(n.x402.shielded.confirmations) == n.x402.shielded.confirmations &&
+      n.x402.shielded.max_outstanding >= 1 && n.x402.shielded.max_outstanding <= 100000 && floor(n.x402.shielded.max_outstanding) == n.x402.shielded.max_outstanding &&
+      n.x402.shielded.note_wait_ms >= 0 && n.x402.shielded.note_wait_ms <= 60000 && floor(n.x402.shielded.note_wait_ms) == n.x402.shielded.note_wait_ms
+    )])
+    error_message = "networks: an x402's shielded: price_zat 1-100000000, confirmations -1 to 1 (the facilitator settles up to one block deep), max_outstanding 1-100000, note_wait_ms 0-60000; whole numbers."
   }
   validation {
     condition = alltrue([for k, n in var.networks : n.attestors == null ? true : (
