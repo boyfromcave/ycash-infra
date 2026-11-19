@@ -907,3 +907,111 @@ run "refuses_an_x402_on_mainnet" {
   }
   expect_failures = [var.networks]
 }
+
+# Price attestor seats (README.md, "The attestors"; workspace docs/plans/beta4/price-feed.md item 3c):
+# one host of three, three seats, the node keeps its wallet and opens no P2P port, the seats' public
+# half in the config, seedctl's attest half in host_files.
+run "attestor_host" {
+  variables {
+    seeds = { "seed-0" = { allocation_id = "eipalloc-00000000000000000", public_ip = "192.0.2.10" } }
+    networks = {
+      yb-fast = {
+        profile    = "fast"
+        extra_args = "-addnode=fastnet-seed.ycash.team:18833"
+        attestors = {
+          image = "ghcr.io/example/ycash-attest@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          seats = [
+            { seq = 0, memberkey = "020000000000000000000000000000000000000000000000000000000000000001" },
+            { seq = 3, memberkey = "030000000000000000000000000000000000000000000000000000000000000002" },
+            { seq = 6, memberkey = "020000000000000000000000000000000000000000000000000000000000000003" },
+          ]
+          peers = ["aa00000000000000000000000000000000000000000000000000000000000000"]
+        }
+      }
+    }
+  }
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.p2p) == 0
+    error_message = "an attestor host's node accepts no inbound P2P"
+  }
+  assert {
+    condition     = !strcontains(jsondecode(base64decode(output.network_configs["yb-fast"])).extra_args, "-disablewallet")
+    error_message = "the node keeps its wallet: it holds the seat keys"
+  }
+  assert {
+    condition     = jsonencode(jsondecode(base64decode(output.network_configs["yb-fast"])).attestors) == jsonencode({ image = "ghcr.io/example/ycash-attest@sha256:4444444444444444444444444444444444444444444444444444444444444444", backend = "node", lightwalletd = [], seats = [{ seq = 0, memberkey = "020000000000000000000000000000000000000000000000000000000000000001" }, { seq = 3, memberkey = "030000000000000000000000000000000000000000000000000000000000000002" }, { seq = 6, memberkey = "020000000000000000000000000000000000000000000000000000000000000003" }], every_blocks = 10, heartbeat_blocks = 576, peers = ["aa00000000000000000000000000000000000000000000000000000000000000"], relays = [], cancel = true, subscribe = true, mem_limit_mb = 128 })
+    error_message = "the attestors' config: the image, the node backend, the seats' public half, the defaults"
+  }
+  assert {
+    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).prefix.network == "zcash-testnet"
+    error_message = "the node backend bootstraps from the prefix as any node"
+  }
+  assert {
+    condition     = contains(keys(local.host_files), "seedctl-attest") && length(output.attestors["yb-fast"].seats) == 3
+    error_message = "host_files: seedctl's attest half; the attestors output lists the seats"
+  }
+}
+
+run "attestor_host_before_the_ceremony" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", attestors = { image = "ghcr.io/example/ycash-attest@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  assert {
+    condition     = length(jsondecode(base64decode(output.network_configs["yb-fast"])).attestors.seats) == 0
+    error_message = "no seats yet: the node runs, no agent"
+  }
+}
+
+run "light_attestor_host" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", attestors = {
+      image        = "ghcr.io/example/ycash-attest@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      backend      = "lightwalletd"
+      lightwalletd = ["https://lw-a.example.org:443", "https://lw-b.example.org"]
+      seats        = [{ seq = 1, memberkey = "020000000000000000000000000000000000000000000000000000000000000001" }]
+    } } }
+  }
+  assert {
+    condition     = jsondecode(base64decode(output.network_configs["yb-fast"])).prefix == null && jsondecode(base64decode(output.network_configs["yb-fast"])).attestors.backend == "lightwalletd"
+    error_message = "a light seat host has no node, so no prefix to import"
+  }
+}
+
+run "refuses_one_lightwalletd_endpoint" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", attestors = { image = "ghcr.io/example/ycash-attest@sha256:4444444444444444444444444444444444444444444444444444444444444444", backend = "lightwalletd", lightwalletd = ["https://lw-a.example.org"] } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_a_seat_twice" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", attestors = { image = "ghcr.io/example/ycash-attest@sha256:4444444444444444444444444444444444444444444444444444444444444444", seats = [
+      { seq = 1, memberkey = "020000000000000000000000000000000000000000000000000000000000000001" },
+      { seq = 2, memberkey = "020000000000000000000000000000000000000000000000000000000000000001" },
+    ] } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_attestors_beside_a_pool" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast",
+      pool = { image = "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", payout = "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb" }
+    attestors = { image = "ghcr.io/example/ycash-attest@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [var.networks]
+}
+
+run "refuses_attestors_without_a_wallet" {
+  command = plan
+  variables {
+    networks = { yb-fast = { profile = "fast", extra_args = "-disablewallet", attestors = { image = "ghcr.io/example/ycash-attest@sha256:4444444444444444444444444444444444444444444444444444444444444444" } } }
+  }
+  expect_failures = [var.networks]
+}

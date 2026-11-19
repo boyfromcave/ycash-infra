@@ -77,7 +77,10 @@ case "$1" in
       *" getnewaddress "*) echo smFakePayToAddress123456789abcdefg; exit 0 ;;
       # FAKE_NOTMINE=t / z: the wallet no longer holds payTo's / the Sapling address's key
       *" validateaddress "*) m=true; [ "${FAKE_NOTMINE:-}" != t ] || m=false
-        if [ -n "${FAKE_PQ:-}" ]; then echo '{"isvalid":true,"isscript":false,"pqscheme":"falcon","ismine":true}'; else echo "{\"isvalid\":true,\"isscript\":false,\"ismine\":$m}"; fi; exit 0 ;;
+        if [ -n "${FAKE_PQ:-}" ]; then echo '{"isvalid":true,"isscript":false,"pqscheme":"falcon","ismine":true}'
+        # an attestor host's seat keys (seedctl-attest): FAKE_PUBKEY is the key every address has
+        elif [ -n "${FAKE_PUBKEY:-}" ]; then echo "{\"isvalid\":true,\"isscript\":false,\"ismine\":$m,\"pubkey\":\"$FAKE_PUBKEY\"}"
+        else echo "{\"isvalid\":true,\"isscript\":false,\"ismine\":$m}"; fi; exit 0 ;;
       *" z_validateaddress "*) m=true; [ "${FAKE_NOTMINE:-}" != z ] || m=false; echo "{\"isvalid\":true,\"type\":\"sapling\",\"ismine\":$m}"; exit 0 ;;
       *" z_listaddresses "*) echo '[]'; exit 0 ;;
       *" z_getnewaddress sapling "*) echo ytestsapling1fakefaucetaddressqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq; exit 0 ;;
@@ -92,7 +95,12 @@ case "$1" in
       getpeerinfo) echo '[{"inbound":true},{"inbound":false}]' ;;
       # FAKE_YED_INACTIVE: a node where Yellowback is not active (no yed_* calls)
       yed_getinfo) [ -z "${FAKE_YED_INACTIVE:-}" ] || { echo "error code: -32601" >&2; exit 1; }
-        echo '{"miner":{"quoteKind":"quote","quoteAgeSeconds":42,"payoutAddress":"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb"}}' ;;
+        echo "{\"height\":$FAKE_HEIGHT,\"attest\":{\"status\":\"ARMED\",\"armed\":true,\"seatedCount\":9},\"params\":{\"attestorSetId\":\"ab\"},\"miner\":{\"quoteKind\":\"quote\",\"quoteAgeSeconds\":42,\"payoutAddress\":\"smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb\"}}" ;;
+      # the attestor set's members and this node's pool: seq 3 signed 4 blocks ago, seq 6 30 blocks ago
+      yed_listattestors) echo "[{\"seq\":3,\"attestorPubKey\":\"k3\",\"status\":\"ELIGIBLE\",\"seated\":true,\"lastAct\":$((FAKE_HEIGHT - 100)),\"poolFresh\":true},{\"seq\":6,\"attestorPubKey\":\"k6\",\"status\":\"ELIGIBLE\",\"seated\":true,\"lastAct\":$((FAKE_HEIGHT - 100)),\"poolFresh\":false},{\"seq\":9,\"attestorPubKey\":\"k9\",\"status\":\"PENDING\",\"seated\":false,\"lastAct\":0,\"poolFresh\":false}]" ;;
+      yed_getattestations) echo "[{\"seq\":3,\"citedHeight\":$((FAKE_HEIGHT - 4)),\"priceMicroUsd\":250000},{\"seq\":6,\"citedHeight\":$((FAKE_HEIGHT - ${FAKE_AGE6:-30})),\"priceMicroUsd\":251000}]" ;;
+      getbalance) echo 1.5 ;;
+      importprivkey) cat > "$LOG.wif" ;;
     esac ;;
   # a container named in FAKE_ABSENT is missing: an empty line on stdout, then the error (as docker does)
   inspect) case " ${FAKE_ABSENT:-} " in *" $4 "*) echo; echo "Error: No such object: $4" >&2; exit 1 ;; esac
@@ -755,6 +763,59 @@ ok "refuses a payTo the wallet made post-quantum"
 "$SEEDCTL" apply yb-fast "$FAST" 2>/dev/null
 grep -q 'network_mode: host' "$c" && ! grep -q x402proxy "$c" && grep -q 'docker rm -f facilitator-yb-fast x402api-yb-fast faucet-yb-fast x402proxy-yb-fast' "$LOG" && [ "$("$SEEDCTL" status yb-fast | jq 'has("x402")')" = false ] && [ -s "$X/zaddr" ] || fail "an x402 removed from the config"
 ok "an x402 removed from the config: its containers go, its files stay"
+# 12b. price attestor seats (README "The attestors"): one agent per seat and a subscribe agent beside
+#      the node, the node keeps its wallet; a seat's private conf; status and health; a reset keeps
+#      the wallet and the guard; key import refuses an unconfigured key; the light backend has no node
+cp "$here/../files/seedctl-attest" "$O/seedctl-attest"
+AIMG=ghcr.io/example/ycash-attest@sha256:4444444444444444444444444444444444444444444444444444444444444444
+K3=020000000000000000000000000000000000000000000000000000000000000003
+K6=030000000000000000000000000000000000000000000000000000000000000006
+ATT=$(echo "$FAST" | base64 -d | jq -c --arg i "$AIMG" --arg k3 "$K3" --arg k6 "$K6" \
+  '.attestors = {image: $i, backend: "node", lightwalletd: [], seats: [{seq: 3, memberkey: $k3}, {seq: 6, memberkey: $k6}], every_blocks: 10, heartbeat_blocks: 576, peers: ["aa00000000000000000000000000000000000000000000000000000000000000"], relays: [], cancel: true, subscribe: true, mem_limit_mb: 128}' | b64)
+rm -rf "$D/yb-fast"; : > "$LOG"
+"$SEEDCTL" apply yb-fast "$ATT" 2>"$T/err" || { cat "$T/err"; fail "apply with attestors"; }
+c="$O/net/yb-fast/compose.yaml"; A="$D/yb-fast/attest"
+grep -q 'container_name: attest-3-yb-fast' "$c" && grep -q 'container_name: attest-6-yb-fast' "$c" && grep -q 'container_name: attsub-yb-fast' "$c" && grep -qF "image: $AIMG" "$c" || fail "one agent per seat and a subscribe agent: $(cat "$c")"
+grep -q 'user: "2006:2006"' "$c" && grep -qF "\"$A/seat-3.toml:/etc/yellowback-attest/host.toml:ro\", \"$A/seat-3:/var/lib/yellowback-attest\"" "$c" && grep -q 'command: \["attest"\]' "$c" && grep -q 'command: \["subscribe"\]' "$c" || fail "the agents: uid 2006, the seat's conf read-only, its state directory"
+[ "$(stat -c %a "$A/seat-3.toml" 2>/dev/null || stat -f %Lp "$A/seat-3.toml")" = 400 ] && grep -q '^seq = 3$' "$A/seat-3.toml" && grep -q '^rpc_url = "http://127.0.0.1:18832"$' "$A/seat-3.toml" && grep -q '^kind = "iroh"$' "$A/seat-3.toml" && grep -qF 'peers = ["aa00000000000000000000000000000000000000000000000000000000000000"]' "$A/seat-3.toml" || fail "seat 3's conf: $(cat "$A/seat-3.toml")"
+! grep -q -- '-disablewallet' "$O/net/yb-fast/node.env" || fail "an attestor host's node keeps its wallet"
+ok "attestors: one agent per seat (uid 2006, its private conf, its state) and a subscribe agent beside a node that keeps its wallet"
+echo '{"'"$K3"'":"smSeat3AddressSeat3AddressSeat3Add","'"$K6"'":"smSeat6AddressSeat6AddressSeat6Add"}' > "$A/keys.json"
+s=$(FAKE_PUBKEY=$K3 "$SEEDCTL" status yb-fast | jq -c .attestors)
+[ "$(jq -r '.yellowback, .armed, (.mine | length), (.mine[0].keyHeld), .mine[0].lastStatementAge, .mine[1].lastStatementAge, (.others[0].seq), .walletZat' <<<"$s" | tr '\n' ' ')" = "live true 2 true 4 30 9 150000000 " ] || fail "status attestors: $s"
+ok "status: per seat its agent, key, member record and the age of its last statement; the set's other members; the fee wallet"
+if FAKE_PUBKEY=$K3 "$SEEDCTL" attest-health yb-fast >/dev/null 2>"$T/err"; then fail "health passed with a stale seat"; fi
+grep -q 'seat 6: last statement 30 blocks old (max 22)' "$T/err" && grep -q 'seat 6: key not held here' "$T/err" || fail "health: $(cat "$T/err")"
+FAKE_AGE6=5 FAKE_PUBKEY=$K3 "$SEEDCTL" attest-health yb-fast 40 >/dev/null 2>"$T/err" && fail "health passed although seat 6's key is not held" || true
+ok "attest-health: fails on a stale statement and on a key this host does not hold"
+printf '{"network":"testnet-yb-fast","setid":"ab","seat":9,"memberkey":"%s","address":"smNthrAddressNthrAddressNthrAddres","wif":"cSomeWifSomeWifSomeWifSomeWifSomeWifSomeWifSomeWifSom"}' 020000000000000000000000000000000000000000000000000000000000000009 > "$T/seat9.json"
+if "$SEEDCTL" attest-import yb-fast "$T/seat9.json" 2>"$T/err"; then fail "imported a key not configured here"; fi
+grep -q 'is not one of this host.s configured seats' "$T/err" && [ -s "$T/seat9.json" ] || fail "an unconfigured key: $(cat "$T/err")"
+printf '{"network":"testnet-yb-fast","setid":"ab","seat":1,"memberkey":"%s","address":"smSeat3AddressSeat3AddressSeat3Add","wif":"cSomeWifSomeWifSomeWifSomeWifSomeWifSomeWifSomeWifSom"}' "$K3" > "$T/seat3.json"
+FAKE_PUBKEY=$K3 "$SEEDCTL" attest-import yb-fast "$T/seat3.json" 2>"$T/err" || { cat "$T/err"; fail "import a configured seat's key"; }
+[ ! -e "$T/seat3.json" ] && grep -q 'cSomeWif' "$LOG.wif" && ! grep -q 'cSomeWif' "$LOG" || fail "the key goes to importprivkey on stdin, never on a command line, and the file is deleted"
+ok "attest-import: refuses a key that is not one of this host's seats; imports a seat's key through stdin and deletes the file"
+N="$D/yb-fast/node"; mkdir -p "$N/testnet-yb-fast/yellowback"; echo wallet > "$N/testnet-yb-fast/wallet.dat"; echo guard > "$N/testnet-yb-fast/yellowback/attest-signed.dat"; echo blk > "$N/testnet-yb-fast/blk.dat"
+"$SEEDCTL" reset yb-fast "$ATT" 2>/dev/null || fail "reset an attestor host"
+[ "$(cat "$N/testnet-yb-fast/wallet.dat")" = wallet ] && [ "$(cat "$N/testnet-yb-fast/yellowback/attest-signed.dat")" = guard ] && [ ! -e "$N/testnet-yb-fast/blk.dat" ] && [ ! -e "$A/keep" ] || fail "a reset keeps the wallet and the signing guard, and only them"
+ok "reset: the chain goes; the seat keys (wallet) and the signing guard stay"
+ONE=$(echo "$ATT" | base64 -d | jq -c '.attestors.seats |= .[:1] | .attestors.subscribe = false' | b64)
+: > "$LOG"; "$SEEDCTL" apply yb-fast "$ONE" 2>/dev/null || fail "apply with one seat"
+! grep -q 'attest-6-yb-fast\|attsub-yb-fast' "$c" || fail "a seat no longer configured and the subscribe agent turned off leave the stack"
+for bad in '.attestors.image = "ghcr.io/example/a:latest"' '.attestors.seats += [{"seq": 4, "memberkey": .attestors.seats[0].memberkey}]' '.attestors.seats[0].memberkey = "04abc"' \
+           '.attestors.mock_price = "0.5"' '.attestors.bus = "/tmp/bus"' '.attestors.backend = "lightwalletd"' '.attestors.peers = ["x; rm -rf /"]' \
+           '.pool = {"image": "ghcr.io/example/yolo@sha256:2222222222222222222222222222222222222222222222222222222222222222", "payout": "smFo5fMXqQU2CTMv97yXCu4kbcKbaooMRLb", "port": 3333, "status_port": 3334}'; do
+  BADA=$(echo "$ATT" | base64 -d | jq -c "$bad" | b64)
+  if "$SEEDCTL" apply yb-fast "$BADA" 2>/dev/null; then fail "attestors accepted $bad"; fi
+done
+ok "refuses attestors with an image by tag, a key twice, a bad key, the regtest knobs on a testnet, the light backend without endpoints, a bad peer, a pool beside them"
+LIGHT=$(echo "$ATT" | base64 -d | jq -c '.prefix = null | .attestors.backend = "lightwalletd" | .attestors.lightwalletd = ["https://lw-a.example.org", "https://lw-b.example.org:9067"]' | b64)
+rm -rf "$D/yb-fast" "$O/net/yb-fast"; : > "$LOG"
+"$SEEDCTL" apply yb-fast "$LIGHT" 2>"$T/err" || { cat "$T/err"; fail "apply a light seat host"; }
+! grep -q 'ycashd' "$c" && grep -q 'container_name: attest-3-yb-fast' "$c" && ! grep -q 'attsub' "$c" && grep -qF 'endpoints = ["https://lw-a.example.org", "https://lw-b.example.org:9067"]' "$D/yb-fast/attest/seat-3.toml" && ! grep -q rpc_password "$D/yb-fast/attest/seat-3.toml" && grep -q 'docker run --rm --network none' "$LOG" || fail "a light seat host: the agents alone, the [backend] table, the image checked first: $(cat "$c")"
+ok "the lightwalletd backend: no node, the agents alone with [backend] (the image's check-config runs first)"
+rm -rf "$D/yb-fast" "$O/net/yb-fast"
+
 # 13. a host without the prefix tools (an instance made by this module revision, its root without
 #     the host_files output): an empty datadir refuses at once, nothing is fetched
 rm -f "$O/prefix-restore.sh"; rm -rf "$D/yb-slow" "$D/prefix-cache"; : > "$LOG"

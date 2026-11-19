@@ -400,6 +400,100 @@ node `-yellowbackpayoutaddress=<payout>`:
 The image is `ghcr.io/<owner>/ycash-quote`, built from the ycash6 repository at one commit on its
 `upgrade/vault` by `quote-image.yml` with [`images/quote/Dockerfile`](../../images/quote/Dockerfile).
 
+## The attestors (a network's `attestors`)
+
+Yellowback's price comes from a bonded set of price attestors (workspace
+`docs/plans/beta4/price-feed.md` §1): each seat's agent signs a 74-byte statement every 10 blocks
+and publishes it; wallets put 4 to 6 of the drawn seats' statements into every mint and claim. The
+house seats run on **three hosts in three regions, three seats each** (decisions D-1, D-2): no host
+holds enough seats to stop the feed (a mint needs 4 live seats among the 6 drawn of 9; one host down
+leaves 6), and no key is on two hosts. `attestors = { ... }` (default none) turns a host into one of
+them:
+
+```hcl
+    yb-fast = {
+      profile    = "fast"
+      extra_args = "-addnode=fastnet-seed.ycash.team:18833"
+      attestors = {
+        image = "ghcr.io/<owner>/ycash-attest@sha256:..."   # attest-image.yml
+        seats = [                                          # this host's seats: public (seq, member key)
+          { seq = 0, memberkey = "02..." },
+          { seq = 3, memberkey = "03..." },
+          { seq = 6, memberkey = "02..." },
+        ]
+        peers            = ["<64-hex iroh endpoint id>", ...]   # the other agents, to form the swarm
+        every_blocks     = 10    # default: sign every 10 blocks
+        heartbeat_blocks = 576   # default: half the fast testnet's livenessWindow (D-4: 1,152)
+        # backend = "node" (default) | "lightwalletd" (the light attestor, below)
+      }
+    }
+```
+
+What runs (seedctl's attest half, [`files/seedctl-attest`](nodes/files/seedctl-attest)), in the
+network's compose project, host networking, uid 2006, read-only, no capabilities, the metadata rule:
+
+| Container | What |
+|---|---|
+| `ycashd-NET` | the network's node, **with its wallet**: it holds the seat keys and signs (`yed_signattestation`); its signing guard `<datadir>/yellowback/attest-signed.dat` refuses a second price for a height it signed. No inbound P2P (the module opens no port for an attestor network) |
+| `attest-SEQ-NET` | one `yellowback-attest attest` per seat: its private configuration `NET/attest/seat-SEQ.toml` (the node's RPC credential, mode 0400), its state `NET/attest/seat-SEQ/` (its iroh key, so its endpoint id survives a new instance; the cancel watcher's state) |
+| `attsub-NET` | (`subscribe`, default true) one `yellowback-attest subscribe`: every statement the topic carries goes into this node's pool, so the node sees the whole feed (the monitoring view) and can build bundles itself |
+
+- **Seat keys never pass through Terraform, user_data, SSM parameters or git.** The config carries
+  only each seat's seq and member key (public). The keys reach the node's wallet on the host:
+  - **delivered** (the ceremony's key files, `contrib/testnet/ceremony` `<network>-seat-N.json`,
+    split 3/3/3): an operator opens an SSM session on the host, writes the file under
+    `/srv/ycash-data` (root only), and runs `seedctl attest-import NET FILE`. It checks the file is
+    for this network and that every key is one of this host's configured seats (one key, one host),
+    imports the WIF through ycash-cli's standard input (never a command line), checks the wallet
+    then holds it at the recorded address, and deletes the file. The ceremony host deletes its copy.
+  - **born on the host**: `seedctl attest-newkey NET` makes a key in the node's wallet and prints only
+    its address and member key, which the set's `SET_JOIN` then names (`set_join <setid> <bond>
+    <lock> <memberkey>` from any funded wallet). That key has no copy anywhere until exported.
+  - **backed up**: `seedctl attest-export NET` writes the host's seat keys **and its signing guard**
+    to one root-only file under `NET/attest/export/` and prints its path and sha256, never the
+    content; copy it off over the SSM session, keep it offline, delete it on the host.
+- **Restoring a host** (a lost instance or volume; runbook in ycash-ops `docs/testnet-attestors.md`):
+  fence the old host first (it must never sign again), then `seedctl attest-import NET <bundle>` on
+  the new one. The guard goes in before the keys (with a key and no guard an agent could sign a
+  height the old host signed, at another price: equivocation, and the bond is frozen), with the
+  node stopped (it reads the guard at startup), only where Yellowback is live (before that the node
+  refuses to start with a wallet beside a `yellowback/` directory, init.cpp H6), and never over a
+  different guard. A seat whose host was away longer than the set's livenessWindow is DORMANT:
+  `yed_revive` or `set_heartbeat` per seat.
+- **A reset keeps the seats.** `reset` deletes the chain only: the wallet and the guard move to
+  `NET/attest/keep` and return after the bootstrap (as an x402 host's faucet wallet).
+- **The fee wallet.** Heartbeats (every `heartbeat_blocks`) and cancels are paid from the node's
+  wallet: `seedctl attest-fund NET` prints its fee address and balance; keep a few YEC there.
+  Status shows `walletZat`.
+- **Before Yellowback is live** (the fast testnet until beta4 compiles the set id in, item 3e) the
+  node runs and syncs, the agents log that there is no attestor set and ask again; deploy the hosts
+  ahead of the release, with `seats = []` until the ceremony.
+- **Monitoring.** `status` adds `attestors`: the backend, Yellowback's state at the node (height,
+  ARMED, seated count), the fee wallet, `heldSeqs` (every member of the set whose key this wallet
+  holds, configured here or not: the inventory check across hosts), and per seat (`mine`) its
+  agent's container, whether the wallet holds its key, its member record (status, seated, poolFresh,
+  blocks since its last act) and **the age in blocks of its newest statement** in the node's pool;
+  `others` the same for the set's other members. `seedctl attest-health NET [MAX]` exits 1, naming
+  the seat, when an agent is not running, a key is not held, or a statement is older than MAX
+  blocks (default 2 x every_blocks + 2). The workspace's ycash-ops renders the three hosts' status
+  as one table (`scripts/attestors.sh view`).
+- **The light backend** (`backend = "lightwalletd"`, `lightwalletd = ["https://a", "https://b"]`, two
+  different servers; plan D-6, B-T3, not built yet): no node on the host and no prefix; each agent
+  gets a `[backend]` table (the two endpoints, its key file `seat.key` and guard file in its state
+  directory, which `attest-import` fills from the same key files). seedctl first runs the image's
+  `check-config` on it and refuses, with the reason, an image whose agent does not accept the table,
+  so the switch is safe before B-T3 ships; the table's exact fields are this module's proposal to
+  B-T3, and follow it when it lands.
+- **Local rehearsal:** [`nodes/tests/attestors-regtest.sh`](nodes/tests/attestors-regtest.sh) runs one
+  host for real (Docker, regtest, seedctl as on an instance, three seats): the set and its seats from a
+  ceremony node, `attest-import`, statements in both nodes' pools, status and health, an agent
+  stopped, a reset, and a lost host restored from its export that refuses to re-sign a height at
+  another price. It uses two regtest-only knobs the module never emits (a `bus` directory transport
+  and a `mock_price`), refused by seedctl on any node without `-regtest`.
+
+The image is `ghcr.io/<owner>/ycash-attest`, built from the ycash6 repository at one commit on its
+`upgrade/vault` by `attest-image.yml` with [`images/attest/Dockerfile`](../../images/attest/Dockerfile).
+
 ## The explorer (a network's `explorer`)
 
 The same module, called from a third root with its own state, makes an **explorer host**: one

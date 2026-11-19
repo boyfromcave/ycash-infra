@@ -39,12 +39,8 @@
 # only). apply, reset, stop, sync and boot act on both containers together; status adds a `pool` field.
 # A pool with a `quote` also runs the Yellowback quote agent: seedctl-quote, beside this file.
 #
-# A network whose config has an `explorer` also runs the explorer (PostgreSQL, Inzyght, a TLS proxy)
-# in the same project; that half is seedctl-explorer, beside this file (its header). One whose
-# config has a `lightwallet` runs a light-wallet server (lightwalletd, a gRPC-web proxy, a TLS proxy)
-# the same way: seedctl-lightwallet. One whose config has an `x402` runs the x402 demonstration (the
-# paid chain-data API, the facilitator, the faucet with its wallet in the node, a TLS proxy):
-# seedctl-x402.
+# The other halves, beside this file, each with its own header: `explorer` seedctl-explorer,
+# `lightwallet` seedctl-lightwallet, `x402` seedctl-x402, `attestors` seedctl-attest.
 #
 # Layout: /srv/ycash-data (the data volume) holds per network NET/node (the datadir, mounted at
 # /var/lib/ycash), NET/rpc.env (its RPC credential, made here, never leaves the host) and
@@ -100,6 +96,7 @@ check_config() { # file name
   if lw_of "$1"; then need_lightwallet; lightwallet_check "$1" "$2"; fi
   if x4_of "$1"; then need_x402; x402_check "$1" "$2"; fi
   if qt_of "$1"; then need_half quote; quote_check "$1" "$2"; fi
+  if at_of "$1"; then need_half attest; attest_check "$1" "$2"; fi
 }
 
 # seedctl-explorer, seedctl-lightwallet and seedctl-x402: from the deploy workflow (install-files;
@@ -108,6 +105,10 @@ ex_of() { [ "$(cfg "$1" '.explorer != null' 2>/dev/null)" = true ]; }   # config
 lw_of() { [ "$(cfg "$1" '.lightwallet != null' 2>/dev/null)" = true ]; }   # config file
 x4_of() { [ "$(cfg "$1" '.x402 != null' 2>/dev/null)" = true ]; }   # config file
 qt_of() { [ "$(cfg "$1" '.pool.quote != null' 2>/dev/null)" = true ]; }   # config file
+at_of() { [ "$(cfg "$1" '.attestors != null' 2>/dev/null)" = true ]; }   # config file
+# shellcheck disable=SC2046
+at_rm() { docker rm -f "attsub-$1" $(docker ps -aq --filter "name=^attest-[0-9]+-$1\$" 2>/dev/null) >/dev/null 2>&1 || true; }
+at_light_of() { [ "$(cfg "$1" '.attestors.backend // "node"' 2>/dev/null)" = lightwalletd ]; }   # config file: no node
 need_half() { # explorer | lightwallet | x402 | quote
   local p
   case " ${HALVES:-} " in *" $1 "*) return 0 ;; esac
@@ -156,6 +157,7 @@ dinspect() { # format container default
 render() { # net file
   local net=$1 f=$2 N="$D/$1/node" R="$O/net/$1"
   local p2p rpc args p lb="" zmq="" zp ex lw x4 insight=0 bind=127.0.0.1 allow=127.0.0.1 zb=127.0.0.1
+  if at_light_of "$f"; then mkdir -p "$R"; rm -f "$R/node.env"; need_half attest; render_attestors "$net" "$f"; return 0; fi
   p2p=$(cfg "$f" .p2p_port); rpc=$(cfg "$f" .rpc_port)
   ex=$(cfg "$f" '.explorer != null'); lw=$(cfg "$f" '.lightwallet != null'); x4=$(cfg "$f" '.x402 != null')
   [ "$(cfg "$f" '.insight // false')" = true ] && insight=1
@@ -217,6 +219,7 @@ services:
 YAML
   fi
   [ "$(cfg "$f" .pool)" != null ] && render_pool "$net" "$f"
+  if at_of "$f"; then need_half attest; render_attestors "$net" "$f"; fi
   return 0
 }
 
@@ -419,6 +422,7 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   # an x402 host's faucet wallet, moved aside by a reset, returns once the bootstrap has seen the
   # empty datadir (seedctl-x402)
   if x4_of "$tmp"; then need_x402; x402_restore_wallet "$net"; fi
+  if at_of "$tmp"; then need_half attest; attest_restore "$net" "$tmp"; fi
   # An Inzyght image that does not build keeps Inzyght down, never the node: the rest starts and
   # apply fails at the end, naming the reason (status shows it too).
   xb=0
@@ -428,11 +432,13 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
   job_phase "pulling the images"
   # shellcheck disable=SC2046  # one word per service, none for all of them
   retry compose "$net" pull -q $(if ex_of "$tmp"; then pull_services "$tmp"; fi)
+  if at_of "$tmp"; then attest_preflight "$net" "$tmp"; fi
   job_phase "starting the containers"
   compose_up "$net"
   mv "$tmp" "$D/$net/applied.json"
   job_phase "waiting for the node's RPC"
-  if wait_rpc "$net" 900; then
+  if at_light_of "$D/$net/applied.json"; then log "$net up: light seats, no node"
+  elif wait_rpc "$net" 900; then
     log "$net up: $(cfg "$D/$net/applied.json" .image), $EXTERNAL_IP:$(cfg "$D/$net/applied.json" .p2p_port)"
   else
     die "$net: RPC did not answer within 15 minutes (docker logs ycashd-$net)"
@@ -445,6 +451,7 @@ apply() { # net config-b64 | net - (the config is already in NET/desired.json)
     docker rm -f "yolo-$net" >/dev/null 2>&1 || true   # a pool removed from the config
   fi
   qt_of "$D/$net/applied.json" || { docker rm -f "quote-$net" >/dev/null 2>&1 || true; rm -f "$D/$net/quote.toml"; }
+  if at_of "$D/$net/applied.json"; then attest_prune "$net" "$D/$net/applied.json"; else at_rm "$net"; fi
   if ex_of "$D/$net/applied.json"; then job_phase "waiting for the explorer"; explorer_up "$net"
   elif [ -d "$D/$net/explorer" ]; then
     docker rm -f "postgres-$net" "inzyght-$net" "proxy-$net" "pools-$net" >/dev/null 2>&1 || true   # an explorer removed from the config
@@ -469,8 +476,10 @@ reset() { # net config-b64
   if [ -e "$O/net/$net/compose.yaml" ]; then compose "$net" down --timeout 180 || true; fi
   docker rm -f "ycashd-$net" "yolo-$net" "quote-$net" "postgres-$net" "inzyght-$net" "proxy-$net" "pools-$net" "lightwalletd-$net" "grpcweb-$net" "lwproxy-$net" \
     "facilitator-$net" "x402api-$net" "faucet-$net" "x402proxy-$net" >/dev/null 2>&1 || true
+  at_rm "$net"
   # an x402 host's faucet wallet is not the chain: it moves aside and comes back (apply)
   if [ -e "$D/$net/applied.json" ] && x4_of "$D/$net/applied.json"; then need_x402; x402_keep_wallet "$net"; fi
+  if [ -e "$D/$net/applied.json" ] && at_of "$D/$net/applied.json"; then need_half attest; attest_keep "$net" "$D/$net/applied.json"; fi
   # the chain, and what was built from it (the explorer's index, lightwalletd's block cache); the
   # certificates, the secrets and an x402 host's wallet stay
   rm -rf "${D:?}/${net:?}/node" "$D/$net/applied.json" "$D/$net/explorer/pg" "$D/$net/explorer/pools/samples.jsonl" "$D/$net/lightwallet/cache"
@@ -519,15 +528,10 @@ boot() {
   done
 }
 
-# The kernel log's OOM kills of a ycashd process, the source that records them (Docker's
-# State.OOMKilled read false for the first explorer run's cgroup kill): one JSON object,
-# {"sinceStart": {"cgroup": N, "host": N}, "sinceBoot": {...}}. `cgroup` counts "Memory cgroup out of
-# memory: Killed process ... (ycashd)" (the container's own limit), `host` "Out of memory: Killed
-# process ... (ycashd)" (the whole host out of memory). `sinceStart` counts the kills from a minute
-# before the container's current StartedAt on, so the kill that caused this start is in it and one
-# from an earlier start is not; null when the start time or the kernel log's times are not known;
-# both null when no kernel log is readable. journalctl first; dmesg only when journalctl fails, and
-# then alone (what a failing journalctl printed is dropped, so no kill is counted twice).
+# The kernel log's OOM kills of a ycashd process, one JSON object {"sinceStart": {"cgroup": N,
+# "host": N}, "sinceBoot": {...}}: cgroup = the container's limit, host = the whole host. sinceStart
+# counts from a minute before the container's StartedAt (null when a time is unknown); both null
+# without a readable kernel log. journalctl first; dmesg only when it fails (no kill counted twice).
 node_oom_kills() { # started-at (Docker's StartedAt, UTC)
   local log src bt="" start
   if log=$(journalctl -k -b -q --no-pager -o short-unix 2>/dev/null); then src=journal
@@ -554,7 +558,7 @@ node_oom_kills() { # started-at (Docker's StartedAt, UTC)
 }
 
 status() { # [net]
-  local nets net st img info peers pool ex lw x4 job
+  local nets net st img info peers pool ex lw x4 at job
   nets=${1:-$(applied_nets || true)}   # (applied_nets fails when there is none)
   # before a host's first applied.json (a detached first deploy still going, or interrupted by a
   # reboot): one line with the job, so its phase and state show from the start
@@ -582,13 +586,15 @@ status() { # [net]
     if lw_of "$D/$net/applied.json"; then lw=$( (need_lightwallet && lightwallet_status "$net") 2>/dev/null || echo '{"error": "seedctl-lightwallet is not on this host"}'); fi
     x4=null
     if x4_of "$D/$net/applied.json"; then x4=$( (need_x402 && x402_status "$net") 2>/dev/null || echo '{"error": "seedctl-x402 is not on this host"}'); fi
+    at=null
+    if at_of "$D/$net/applied.json"; then at=$( (need_half attest && attest_status "$net") 2>/dev/null || echo '{}'); fi
     job=$(job_json)
     jq -cn --arg host "$SEED_NAME" --arg ip "$EXTERNAL_IP" --arg net "$net" --arg st "$st" --arg img "$img" \
-      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" --argjson ex "$ex" --argjson lw "$lw" --argjson x4 "$x4" --argjson job "$job" \
+      --argjson info "$info" --argjson peers "$peers" --argjson pool "$pool" --argjson ex "$ex" --argjson lw "$lw" --argjson x4 "$x4" --argjson at "$at" --argjson job "$job" \
       '{host: $host, ip: $ip, network: $net, container: $st, image: $img} + $info + $peers
        + (if $pool == null then {} else {pool: $pool} end) + (if $ex == null then {} else {explorer: $ex} end)
        + (if $lw == null then {} else {lightwallet: $lw} end) + (if $x4 == null then {} else {x402: $x4} end)
-       + (if $job == null then {} else {job: $job} end)'
+       + (if $at == null then {} else {attestors: $at} end) + (if $job == null then {} else {job: $job} end)'
   done
 }
 
@@ -622,7 +628,7 @@ prefix_check() {
 # The module's host files only (main.tf local.host_files): an allow-list of names, so a payload can
 # never write seed.env, setup.sh, seedctl or anything outside /opt/ycash-seed. Checked whole before
 # anything is written; one file or several per call (the workflow may split them across commands).
-HOST_FILES='["prefix-restore.sh", "frame.py", "seedctl-explorer", "inzyght-build.json", "seedctl-lightwallet", "seedctl-x402", "seedctl-quote"]'
+HOST_FILES='["prefix-restore.sh", "frame.py", "seedctl-explorer", "inzyght-build.json", "seedctl-lightwallet", "seedctl-x402", "seedctl-quote", "seedctl-attest"]'
 install_files() { # json: { name: { mode, content } }
   local k m
   jq -e --argjson ok "$HOST_FILES" 'type == "object" and length > 0
@@ -708,7 +714,7 @@ shift
 # refuses at once, naming the run's phase; held by anything else (the timer, a boot, another
 # workflow run), it waits at most 9 minutes, inside the workflow's 10-minute command timeout.
 SELF=$(readlink -f "$0")
-if [ "$cmd" != status ] && [ "$cmd" != detach ] && [ "$cmd" != job ]; then
+if [ "$cmd" != status ] && [ "$cmd" != detach ] && [ "$cmd" != job ] && [ "$cmd" != attest-health ]; then
   mkdir -p "$R/run"
   exec 9>"$R/run/ycash-seedctl.lock"
   if [ "$cmd" = prefix-check ]; then flock -n 9 || exit 0
@@ -729,6 +735,7 @@ case "$cmd" in
   prefix-check) prefix_check ;;
   install-files) [ $# -eq 1 ] || die "usage: seedctl install-files FILE"; install_files "$1" ;;
   x402-backup)  [ $# -eq 1 ] || die "usage: seedctl x402-backup NET"; valid_name "$1"; need_x402; x402_backup "$1" ;;
+  attest-*)     valid_name "${1:-}"; need_half attest; attest_cmd "$cmd" "$@" ;;   # seedctl-attest's header
   detach)       detach "$@" ;;
   job)          job ;;
   *)            die "unknown command $cmd" ;;

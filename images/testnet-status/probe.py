@@ -40,6 +40,9 @@ SEEDS = os.environ.get("SEEDS", "").split()
 MAGIC = bytes.fromhex(os.environ.get("MAGIC", "f77962d3"))
 NETWORK_NAME = os.environ.get("NETWORK_NAME", "testnet")
 PROFILE = os.environ.get("PROFILE", "")
+# Who runs the price feed's attestor seats, shown on the page (the testnet plan: the feed is labelled
+# house-operated while the Ycash developers run its seats)
+FEED_OPERATOR = os.environ.get("FEED_OPERATOR", "house-operated: the Ycash developers run 9 of the attestor set's 15 seats, on 3 hosts in 3 regions; the other 6 are open to anyone")
 BUNDLE_MANIFEST_URL = os.environ.get("BUNDLE_MANIFEST_URL", "")
 INTERVAL = float(os.environ.get("INTERVAL", "30"))
 PORT = int(os.environ.get("PORT", "9100"))
@@ -79,6 +82,24 @@ def optional(url, method, *params):
         return None
 
 
+def feed_round(url, height):
+    """The price feed as this node sees it (workspace docs/plans/beta4/price-feed.md, item 3c): the set's
+    members by status, the seated and those with a fresh statement in the node's pool, ARMED or not, and
+    the age of the newest statement in blocks. Counts only: no keys, no prices per seat."""
+    members = optional(url, "yed_listattestors") or []
+    pool = optional(url, "yed_getattestations") or []
+    info = optional(url, "yed_getinfo") or {}
+    statuses = {}
+    for m in members:
+        statuses[m.get("status", "?")] = statuses.get(m.get("status", "?"), 0) + 1
+    newest = max((int(a.get("citedHeight", 0)) for a in pool), default=None)
+    return {"members": len(members), "byStatus": statuses,
+            "seated": sum(1 for m in members if m.get("seated")),
+            "fresh": len({a.get("seq") for a in pool if a.get("fresh")}),
+            "armed": (info.get("attest") or {}).get("armed"),
+            "lastStatementAge": None if newest is None else max(0, height - newest)}
+
+
 def node_round(n):
     url = n["url"]
     r = {"name": n["name"], "line": n.get("line", ""), "up": 0}
@@ -105,6 +126,7 @@ def node_round(n):
         y = optional(url, "yed_getstatehash")
         if y is not None:
             r["yed"] = {"statehash": y.get("statehash"), "at": y.get("blockhash")}
+            r["feed"] = feed_round(url, r["height"])
     except Exception as e:  # noqa: BLE001
         r["error"] = str(e)[:200]
     return r
@@ -253,6 +275,8 @@ def summary(nodes, agree, seeds, now):
         "agree": agree[0], "stateAgree": None if agree[1] is None and agree[2] is None else all(a is not False for a in agree[1:]),
         "vault": {"activationHeight": vault.get("activation"), "active": vault.get("active")},
         "attestorSet": vault.get("set"),
+        # the price feed (A-7: named house-operated on the page; FEED_OPERATOR says by whom)
+        "feed": None if not (lead or {}).get("feed") else {**lead["feed"], "operator": FEED_OPERATOR},
         "version": (lead or {}).get("subversion"),
         "seeds": {"up": sum(u for _, u, _ in seeds), "total": len(seeds)},
         "bundle": {k: m.get(k) for k in ("height", "blockhash", "version", "created", "tarball", "sha256", "bytes")} if m else None,
