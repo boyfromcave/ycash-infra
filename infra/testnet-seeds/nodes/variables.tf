@@ -168,6 +168,29 @@ variable "networks" {
     `faucet_mem_limit_mb`. The node's RPC is reachable from the API's, the facilitator's and the
     faucet's fixed addresses on the host's internal network only; nothing but the proxy publishes a
     port. One x402 per host: never beside a pool, an explorer or a lightwallet.
+
+    `attestors` (default none) runs Yellowback price attestor seats on that network (README.md, "The
+    attestors"; workspace docs/plans/beta4/price-feed.md §2, item 3c): one yellowback-attest agent per
+    seat (`image`, by digest: attest-image.yml). `seats` names the seats this host holds, each `seq`
+    (the member's sequence number, yed_listattestors) and `memberkey` (its compressed public key, 66
+    hex), both public; empty before the set's ceremony (the node runs, no agent). The keys themselves
+    never pass through Terraform: they are generated on the host or delivered to it over an SSM
+    session (seedctl attest-newkey, attest-import), and seedctl refuses a key that is not one of
+    `seats`. One key on one host: a caller with several hosts checks that no seq or key is named
+    twice (README.md, "The attestors": "One key, one host"). `backend` "node" (default) keeps the
+    seat keys in this network's node wallet (the node keeps its wallet and the module opens no P2P
+    port for it); "lightwalletd" (the light attestor, plan B-T3, not built yet) runs no node: the
+    agents read the chain from the two `lightwalletd` endpoints (https://host[:port], two different
+    servers) and seedctl refuses an image whose agent does not accept that backend. `every_blocks`
+    (default 10) the signing cadence; `heartbeat_blocks` (default 576, half the fast testnet's
+    livenessWindow; 0 = never) a SET_HEARTBEAT that keeps an idle seat from going DORMANT; `peers`
+    the iroh endpoint ids (64 hex) of other attestors and subscribers to bootstrap the gossip swarm
+    from (each agent prints its own; seedctl status shows none, the logs do); `relays` (default
+    [] = iroh's defaults; ["none"] = direct only) the iroh relays; `cancel` (default true) the
+    agents' cancel watcher; `subscribe` (default true, node backend only) a subscribe agent that
+    feeds the topic into this host's node, so its pool holds every seat's statements (the
+    monitoring view: seedctl status `attestors`); `mem_limit_mb` (default 128) each agent's memory
+    limit. On a testnet profile only, never beside a pool, an explorer, a lightwallet or an x402.
   EOT
   type = map(object({
     profile    = string
@@ -265,6 +288,19 @@ variable "networks" {
       api_mem_limit_mb         = optional(number, 256)
       facilitator_mem_limit_mb = optional(number, 192)
       faucet_mem_limit_mb      = optional(number, 96)
+    }))
+    attestors = optional(object({
+      image            = string
+      backend          = optional(string, "node")
+      lightwalletd     = optional(list(string), [])
+      seats            = optional(list(object({ seq = number, memberkey = string })), [])
+      every_blocks     = optional(number, 10)
+      heartbeat_blocks = optional(number, 576)
+      peers            = optional(list(string), [])
+      relays           = optional(list(string), [])
+      cancel           = optional(bool, true)
+      subscribe        = optional(bool, true)
+      mem_limit_mb     = optional(number, 128)
     }))
   }))
   default = {
@@ -398,6 +434,28 @@ variable "networks" {
       n.x402.faucet_mem_limit_mb >= 32 && n.x402.faucet_mem_limit_mb <= 4096 && floor(n.x402.faucet_mem_limit_mb) == n.x402.faucet_mem_limit_mb
     )])
     error_message = "networks: an x402 needs insight = true, a testnet profile, no pool, explorer or lightwallet; hostname a lowercase DNS name; api_image, facilitator_image, faucet_image and proxy_image pinned by digest; explorer_url empty or https://host[/path]; lightwalletd empty or host[:port]; prices and zero_conf_cap_zat 1-100000000 zat; rate limits 1-100000; faucet: amount_zat 1-10000000000, daily_cap_zat at least amount_zat, per_ip and per_address 1-1000, window_seconds 60-2592000, pow_bits 0-28, sweep_min_zat 1-10000000000; node_mem_limit_mb 512-65536, api and facilitator 64-8192, faucet 32-4096; whole numbers."
+  }
+  validation {
+    condition = alltrue([for k, n in var.networks : n.attestors == null ? true : (
+      n.profile != "main" && n.pool == null && n.explorer == null && n.lightwallet == null && n.x402 == null &&
+      can(regex("^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$", n.attestors.image)) &&
+      contains(["node", "lightwalletd"], n.attestors.backend) &&
+      length(n.attestors.seats) <= 15 &&
+      alltrue([for s in n.attestors.seats : s.seq >= 0 && s.seq <= 65535 && floor(s.seq) == s.seq && can(regex("^0[23][0-9a-f]{64}$", s.memberkey))]) &&
+      length(distinct([for s in n.attestors.seats : s.seq])) == length(n.attestors.seats) &&
+      length(distinct([for s in n.attestors.seats : s.memberkey])) == length(n.attestors.seats) &&
+      (n.attestors.backend == "lightwalletd" ?
+        length(n.attestors.lightwalletd) == 2 && length(distinct(n.attestors.lightwalletd)) == 2 &&
+        alltrue([for e in n.attestors.lightwalletd : can(regex("^https://[a-z0-9.-]+(:[0-9]{1,5})?$", e))])
+      : length(n.attestors.lightwalletd) == 0) &&
+      n.attestors.every_blocks >= 1 && n.attestors.every_blocks <= 1000 && floor(n.attestors.every_blocks) == n.attestors.every_blocks &&
+      n.attestors.heartbeat_blocks >= 0 && n.attestors.heartbeat_blocks <= 100000 && floor(n.attestors.heartbeat_blocks) == n.attestors.heartbeat_blocks &&
+      alltrue([for p in n.attestors.peers : can(regex("^[0-9a-f]{64}$", p))]) &&
+      alltrue([for r in n.attestors.relays : can(regex("^(none|https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?)$", r))]) &&
+      n.attestors.mem_limit_mb >= 64 && n.attestors.mem_limit_mb <= 4096 && floor(n.attestors.mem_limit_mb) == n.attestors.mem_limit_mb &&
+      !can(regex("(^| )-disablewallet", n.extra_args))
+    )])
+    error_message = "networks: attestors on a testnet profile only, never beside a pool, an explorer, a lightwallet or an x402; image pinned by digest; backend node or lightwalletd; seats: at most 15, each seq a whole number 0-65535 and memberkey a compressed public key (66 hex), no seq or key twice; lightwalletd: exactly two different https://host[:port] endpoints with backend lightwalletd, none otherwise; every_blocks 1-1000, heartbeat_blocks 0-100000, mem_limit_mb 64-4096, whole numbers; peers 64-hex endpoint ids; relays none or https URLs; no -disablewallet in extra_args (the node wallet holds the seat keys)."
   }
   validation {
     condition     = length([for k, n in var.networks : k if n.enabled && (n.explorer != null || n.lightwallet != null || n.x402 != null)]) <= 1

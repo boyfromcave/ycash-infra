@@ -49,7 +49,7 @@ output "explorers" {
 }
 
 output "host_files" {
-  description = "The files seedctl needs for an apply or a reset beyond itself (the prefix tools; for an explorer, seedctl-explorer and in build mode the Inzyght build context; for a lightwallet, seedctl-lightwallet; for an x402 host, seedctl-x402; for a pool with quotes, seedctl-quote), as one JSON map of name to { mode, content }, gzip + base64: the deploy workflow hands it to `seedctl install-files` before every run, as it installs seedctl. Empty when there are none. No secret."
+  description = "The files seedctl needs for an apply or a reset beyond itself (the prefix tools; for an explorer, seedctl-explorer and in build mode the Inzyght build context; for a lightwallet, seedctl-lightwallet; for an x402 host, seedctl-x402; for a pool with quotes, seedctl-quote; for attestors, seedctl-attest), as one JSON map of name to { mode, content }, gzip + base64: the deploy workflow hands it to `seedctl install-files` before every run, as it installs seedctl. Empty when there are none. No secret."
   value       = length(local.host_files) == 0 ? "" : base64gzip(jsonencode(local.host_files))
 }
 
@@ -62,6 +62,15 @@ output "lightwallets" {
     tls          = n.lightwallet.tls
     lightwalletd = n.lightwallet.image
   } if n.lightwallet != null }
+}
+
+output "attestors" {
+  description = "Per enabled network with attestors: the backend, the image and the seats this host holds (seq and member key: public; the keys are never in Terraform). A caller with several attestor hosts checks across them that no seq or key appears twice."
+  value = { for k, n in local.enabled : k => {
+    backend = n.attestors.backend
+    image   = n.attestors.image
+    seats   = [for s in n.attestors.seats : { seq = s.seq, memberkey = s.memberkey }]
+  } if n.attestors != null }
 }
 
 output "x402s" {
