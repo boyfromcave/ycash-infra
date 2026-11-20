@@ -81,8 +81,9 @@ locals {
     extra_args = trimspace(join(" ", compact([n.testnet ? "-maxtipage=999999999" : "", var.extra_args, n.extra_args,
       n.pool == null ? "" : "-disablewallet -mineraddress=${n.pool.payout} -minetolocalwallet=0",
       # pool quotes: the coinbase tag names the payout address explicitly (an address, no key: the
-      # node holds no wallet); a node where Yellowback is not active ignores it
-      n.pool == null ? "" : n.pool.quote == null ? "" : "-yellowbackpayoutaddress=${n.pool.payout}",
+      # node holds no wallet); a node where Yellowback is not active ignores it. quote.payout_address
+      # (P2PKH, or post-quantum for tag v2 from beta4) overrides the coinbase's payout address.
+      n.pool == null ? "" : n.pool.quote == null ? "" : "-yellowbackpayoutaddress=${coalesce(n.pool.quote.payout_address, n.pool.payout)}",
       # yolo's paired jobs: getcoinbasetemplatefor calls in flight plus the template poll and submitblock
       # (the node's default, 4, covers the default concurrency of 2)
       n.pool == null ? "" : n.pool.per_miner && n.pool.coinbase_concurrency > 2 ? "-rpcthreads=${n.pool.coinbase_concurrency + 2}" : "",
@@ -102,7 +103,7 @@ locals {
       }, n.pool.per_miner ? { per_miner = true } : {},
       n.pool.per_miner ? { coinbase_concurrency = n.pool.coinbase_concurrency, max_paired_per_ip = n.pool.max_paired_per_ip } : {},
       n.pool.min_block_interval > 0 ? { min_block_interval = n.pool.min_block_interval } : {},
-    n.pool.quote == null ? {} : { quote = n.pool.quote })
+    n.pool.quote == null ? {} : { quote = { image = n.pool.quote.image, poll_seconds = n.pool.quote.poll_seconds } })
     # a light attestor host has no node, so no chain to bootstrap
     prefix = n.testnet && n.bootstrap && var.prefix != null && try(n.attestors.backend, "node") != "lightwalletd" ? {
       base_url    = local.profile_prefix[n.profile].base_url

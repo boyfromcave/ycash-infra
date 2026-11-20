@@ -24,8 +24,9 @@ $(error LINE=$(LINE): quantum or vault, or set BRANCH)
 endif
 BRANCH      ?= upgrade/vault
 # The rpcversion the node trees must speak (ycashd YELLOWBACK_RPC_VERSION; lightwalletd-dd accepts
-# MinRPCVersion..KnownRPCVersion, 9..10 from beta3); empty = the node trees only have to agree and
-# lightwalletd-dd has to accept their number. The chart's arming Job accepts ycashd.rpcVersion..rpcVersionMax (9..10).
+# MinRPCVersion..KnownRPCVersion, 9..10 from beta3, 9..11 from beta4); empty = the node trees only have to
+# agree and lightwalletd-dd has to accept their number. The chart's arming Job accepts
+# ycashd.rpcVersion..rpcVersionMax (9..11).
 RPC_VERSION ?=
 # the node image's Dockerfile (contrib/docker/ycashd/, K0a); it COPYs its entrypoint from the build context
 YCASHD_DOCKERFILE ?= $(YCASH6)/contrib/docker/ycashd/Dockerfile
@@ -92,7 +93,7 @@ line: ## check the source trees: on BRANCH (or a branch containing it), one rpcv
 	set -- $$vs; for v in "$$@"; do [ "$$v" = "$$1" ] || { echo "  rpcversion differs between the node trees:$$vs"; exit 1; }; done; \
 	[ -n "$$lmax" ] && [ "$$1" -ge "$$lmin" ] 2>/dev/null && [ "$$1" -le "$$lmax" ] || { echo "  the node trees speak rpcversion $$1, lightwalletd-dd accepts $${lmin:-?}..$${lmax:-?}"; exit 1; }; \
 	if [ -n "$(RPC_VERSION)" ] && [ "$$1" != "$(RPC_VERSION)" ]; then echo "  the trees speak rpcversion $$1, RPC_VERSION=$(RPC_VERSION)"; exit 1; fi; \
-	echo "  line $(BRANCH): rpcversion $$1, lightwalletd-dd $$lmin..$$lmax (the chart accepts ycashd.rpcVersion..rpcVersionMax, default 9..10)"
+	echo "  line $(BRANCH): rpcversion $$1, lightwalletd-dd $$lmin..$$lmax (the chart accepts ycashd.rpcVersion..rpcVersionMax, default 9..11)"
 
 image-ycashd: line ## ycashd from YCASH6 (BRANCH) and its contrib/docker/ycashd/Dockerfile (first build: 1-2 h; depends cached in a buildx mount)
 	@test -f $(YCASHD_DOCKERFILE) || { echo "$(YCASHD_DOCKERFILE) missing: contrib/docker/ycashd (K0a) is not in $(YCASH6) yet"; exit 1; }
