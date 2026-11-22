@@ -359,7 +359,11 @@ gpu_check() { # prints the listings; true when a GPU the miner can use is there
   driver_check
   case "$miner" in
     lolminer)
-      out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "$bin" --list-devices --nocolor 2>&1) || true
+      # lolMiner now and then exits at once with no output at all (seen on CI runners): ask again
+      for _ in 1 2 3; do
+        out=$(timeout 120 env -u CONTAINER_API_KEY -u CONTAINER_ID "$bin" --list-devices --nocolor 2>&1) || true
+        [ -n "${out//[[:space:]]/}" ] && break
+      done
       printf '%s\n' "$out" | grep -v '^[|+]' | say "lolMiner --list-devices: "
       if printf '%s\n' "$out" | grep -q 'No OpenCL driver or GPUs detected'; then
         ocl=0
